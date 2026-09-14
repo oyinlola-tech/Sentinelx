@@ -40,6 +40,7 @@ dependencies = [
   "argon2-cffi>=23.1",
   "psutil>=5.9",
   "httpx>=0.27",
+  "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -123,6 +124,8 @@ warn_unreachable = true
 disallow_any_generics = true
 show_error_codes = true
 plugins = ["pydantic.mypy"]
+# Generated Alembic revisions: checked by `alembic check` and the PostgreSQL tests instead.
+exclude = ["packages/sentinelx/storage/migrations/versions/"]
 
 [[tool.mypy.overrides]]
 module = ["scapy.*", "sklearn.*", "pyshark.*", "redis.*", "psutil.*", "joblib.*"]

@@ -1,0 +1,8 @@
+# Local threat-intelligence denylist.
+# One IPv4/IPv6 address or CIDR per line; text after '#' becomes the label shown
+# in risk explanations. Invalid lines are reported together at startup, never
+# silently skipped.
+#
+# Examples (documentation ranges - uncomment or replace with real indicators):
+# 203.0.113.0/24   # TEST-NET-3 example scanner range
+# 2001:db8:bad::/48 # example IPv6 range

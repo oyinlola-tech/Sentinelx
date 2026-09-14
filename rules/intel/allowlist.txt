@@ -1,0 +1,5 @@
+# Local threat-intelligence allowlist.
+# Sources listed here are scored as trusted (risk reduced, never auto-blocked).
+# One address or CIDR per line, optional '# label'.
+#
+# 192.0.2.10   # example: vulnerability scanner operated by the security team

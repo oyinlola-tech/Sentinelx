@@ -89,6 +89,11 @@ class SafetyGuard:
         self._allowlist = parse_networks(merged)
         self.settings.allowlist_networks = merged
 
+    def update_management(self, networks: list[str]) -> None:
+        """Replace the protected management addresses. Validates before applying."""
+        self._management = parse_networks(networks)
+        self.settings.management_addresses = list(networks)
+
     @property
     def allowlist(self) -> list[str]:
         return [str(net) for net in self._allowlist]

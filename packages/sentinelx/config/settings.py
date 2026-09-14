@@ -436,8 +436,18 @@ class ApiSettings(BaseModel):
 
     jwt_secret: str = Field(default="", description="HS256 signing key. Required in production.")
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
-    access_token_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
+    access_token_ttl_seconds: int = Field(
+        default=900, ge=60, le=86_400, description="Short-lived; the dashboard refreshes silently."
+    )
     refresh_token_ttl_seconds: int = Field(default=604_800, ge=300)
+    jwt_issuer: str = "sentinelx"
+    cookie_secure: bool = Field(
+        default=False,
+        description="Mark auth cookies Secure (HTTPS only). Forced on in production.",
+    )
+    password_min_length: int = Field(default=12, ge=8, le=128)
+    lockout_threshold: int = Field(default=5, ge=1, description="Failed logins before an account locks.")
+    lockout_seconds: int = Field(default=900, ge=30)
 
     auth_enabled: bool = True
     bootstrap_admin_username: str = Field(default="admin", min_length=3, max_length=64)
@@ -459,6 +469,23 @@ class ApiSettings(BaseModel):
         "rather than allowed to back-pressure the detection pipeline.",
     )
     max_upload_mb: int = Field(default=200, ge=1)
+    trusted_proxies: list[str] = Field(
+        default_factory=list,
+        description="CIDRs of reverse proxies whose X-Forwarded-For header is believed. "
+        "Empty means the header is ignored, so clients cannot spoof their address.",
+    )
+    metrics_token: str = Field(
+        default="",
+        description="Bearer token for the Prometheus endpoint. When empty, metrics are "
+        "served to loopback clients only.",
+    )
+    docs_enabled: bool = Field(default=True, description="Serve interactive OpenAPI docs. Disabled in production.")
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _validate_proxies(cls, value: list[str]) -> list[str]:
+        parse_networks(value)
+        return value
 
     @field_validator("cors_origins")
     @classmethod
@@ -585,6 +612,8 @@ class Settings(BaseSettings):
             return self
 
         problems: list[str] = []
+        self.api.cookie_secure = True
+        self.api.docs_enabled = False
         if len(self.api.jwt_secret) < 32:
             problems.append("JWT_SECRET must be set to at least 32 characters in production")
         if not self.api.auth_enabled:
