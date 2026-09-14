@@ -201,10 +201,10 @@ class ResponseEngine:
                     f"threshold of {self.scoring.auto_block_threshold:.0f}"
                 ),
                 executed=False,
-                dry_run=self.settings.dry_run,
+                dry_run=False,
                 detection_id=detection.detection_id,
             )
-            decisions.append(await self._finalise(decision, source="engine", publish=False))
+            decisions.append(await self._finalise(decision, source="engine", record=False))
             return decisions
 
         duration = self.settings.default_block_seconds if action in (ActionType.TEMPORARY_BLOCK, ActionType.RATE_LIMIT) else None
@@ -251,7 +251,9 @@ class ResponseEngine:
             duration_seconds=duration, detection_id=detection_id, incident_id=incident_id,
         )
         if target in self._blocks and action in (ActionType.BLOCK_IP, ActionType.TEMPORARY_BLOCK):
-            return await self._finalise(replace(base, reason=f"{reason}; already blocked"), source="engine", publish=False)
+            return await self._finalise(
+                replace(base, dry_run=False, reason=f"{reason}; already blocked"), source="engine", record=False
+            )
 
         if mode is ResponseMode.DETECT_ONLY:
             return await self._finalise(
@@ -381,16 +383,25 @@ class ResponseEngine:
         raise ValueError(f"{action.value} is not an executable preventive action")
 
     async def _finalise(
-        self, decision: ResponseDecision, *, source: str, actor: str = "system", publish: bool = True
+        self, decision: ResponseDecision, *, source: str, actor: str = "system", record: bool = True
     ) -> ResponseDecision:
+        """Store, count, publish and audit a decision.
+
+        ``record=False`` is for non-actions (below threshold, already blocked):
+        they are kept in :attr:`decisions` and counted, but neither published nor
+        audited - the audit log records what was done or attempted, not every
+        occasion on which nothing happened.
+        """
         self.decisions.append(decision)
         if len(self.decisions) > 5000:
             del self.decisions[:1000]
         metrics.responses.labels(action=decision.action.value, outcome=decision.outcome).inc()
         if decision.action is ActionType.ALERT:
             return decision  # alerts are the detection itself; auditing each would duplicate it
+        if not record:
+            return decision
         payload = decision_payload(decision)
-        if publish and self.bus:
+        if self.bus:
             await self.bus.publish(EventType.RESPONSE_DECIDED, payload)
         if decision.action.is_preventive:
             log.info("response_decision", **{k: payload[k] for k in ("action", "target", "outcome", "reason")}, actor=actor)
@@ -441,8 +452,8 @@ class ResponseEngine:
                 response = await client.post(self.settings.webhook_url, json=body)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            return await self._finalise(replace(decision, error=f"webhook failed: {type(exc).__name__}"), source="engine", publish=False)
-        return await self._finalise(replace(decision, executed=True), source="engine", publish=False)
+            return await self._finalise(replace(decision, error=f"webhook failed: {type(exc).__name__}"), source="engine", record=False)
+        return await self._finalise(replace(decision, executed=True), source="engine", record=False)
 
     # --------------------------------------------------------------- expiry
 
