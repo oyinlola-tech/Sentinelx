@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import pytest
 import structlog
@@ -49,6 +50,43 @@ class TestEnvironment:
     def test_nested_variable_overrides_threshold(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DETECTION__PORT_SCAN_UNIQUE_PORTS", "77")
         assert Settings().detection.port_scan_unique_ports == 77
+
+    def test_flat_aliases_are_read_from_dotenv_file(self, tmp_path: Path) -> None:
+        # .env.example documents the flat names, so they must work from .env too.
+        (tmp_path / ".env").write_text(
+            "CAPTURE_INTERFACE=eth9\nDETECTION_MODE=aggressive\nCORS_ORIGINS=https://a.example\n",
+            encoding="utf-8",
+        )
+        settings = Settings()
+        assert settings.capture.interface == "eth9"
+        assert settings.detection.mode is DetectionMode.AGGRESSIVE
+        assert settings.api.cors_origins == ["https://a.example"]
+
+    def test_precedence_environment_over_dotenv_and_nested_over_flat(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        (tmp_path / ".env").write_text(
+            "CAPTURE_INTERFACE=from-dotenv\nBPF_FILTER=tcp\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("CAPTURE_INTERFACE", "from-env")
+        assert Settings().capture.interface == "from-env"
+        monkeypatch.setenv("CAPTURE__INTERFACE", "nested-env")
+        assert Settings().capture.interface == "nested-env"
+        assert Settings().capture.bpf_filter == "tcp"
+
+    @pytest.mark.parametrize("value", ["ture", "nope", "enabled", "2"])
+    def test_mistyped_dry_run_is_an_error_not_false(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        # Fail closed: a typo must never silently switch dry run off.
+        monkeypatch.setenv("DRY_RUN", value)
+        with pytest.raises(ValidationError, match="dry_run"):
+            Settings()
+
+    def test_mistyped_dry_run_in_dotenv_is_an_error(self, tmp_path: Path) -> None:
+        (tmp_path / ".env").write_text("DRY_RUN=flase\n", encoding="utf-8")
+        with pytest.raises(ValidationError, match="dry_run"):
+            Settings()
 
     def test_invalid_network_lists_every_bad_entry(self) -> None:
         with pytest.raises(ValidationError) as excinfo:

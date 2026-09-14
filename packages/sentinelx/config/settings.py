@@ -1,7 +1,7 @@
 """Typed configuration, loaded once from the environment.
 
 Every environment-specific value in SentinelX lives here.  Nothing else in the
-codebase calls ``os.getenv``.  Settings are grouped into nested models so that a
+codebase reads the environment directly.  Settings are grouped into nested models so that a
 detector can be handed just ``settings.detection`` rather than the whole world,
 which keeps the security core testable without an environment at all.
 
@@ -12,6 +12,7 @@ and explains but never touches traffic.
 
 from __future__ import annotations
 
+import os
 import secrets
 from functools import lru_cache
 from pathlib import Path
@@ -24,7 +25,13 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import dotenv_values
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from sentinelx.common.enums import DetectionMode, ResponseMode
 from sentinelx.common.netutils import parse_networks
@@ -528,6 +535,72 @@ class TelemetrySettings(BaseModel):
     )
 
 
+# ============================================================== flat aliases
+
+#: Short variable names from the project brief, mapped onto their nested fields.
+FLAT_ALIASES: dict[str, tuple[str, str]] = {
+    "DATABASE_URL": ("storage", "database_url"),
+    "REDIS_URL": ("storage", "redis_url"),
+    "RETENTION_DAYS": ("storage", "retention_days"),
+    "API_HOST": ("api", "host"),
+    "API_PORT": ("api", "port"),
+    "JWT_SECRET": ("api", "jwt_secret"),
+    "CORS_ORIGINS": ("api", "cors_origins"),
+    "CAPTURE_INTERFACE": ("capture", "interface"),
+    "BPF_FILTER": ("capture", "bpf_filter"),
+    "PCAP_DIRECTORY": ("capture", "pcap_directory"),
+    "DETECTION_MODE": ("detection", "mode"),
+    "RESPONSE_MODE": ("response", "mode"),
+    "DRY_RUN": ("response", "dry_run"),
+    "FIREWALL_BACKEND": ("response", "firewall_backend"),
+    "LOG_LEVEL": ("telemetry", "log_level"),
+    "LOG_FORMAT": ("telemetry", "log_format"),
+}
+_LIST_ALIASES = frozenset({"CORS_ORIGINS"})
+
+
+class FlatAliasSource(PydanticBaseSettingsSource):
+    """Reads :data:`FLAT_ALIASES` from the process environment or a dotenv file.
+
+    Values are passed through as strings, so pydantic validates them exactly like
+    the nested form: ``DRY_RUN=ture`` is a configuration error, never a silent
+    ``False``.
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings], env_file: Any) -> None:
+        super().__init__(settings_cls)
+        self._env_file = env_file
+
+    def _raw_values(self) -> dict[str, str | None]:
+        if self._env_file is None:
+            return {key.upper(): value for key, value in os.environ.items()}
+        files = self._env_file if isinstance(self._env_file, list | tuple) else [self._env_file]
+        merged: dict[str, str | None] = {}
+        for file in files:
+            path = Path(file).expanduser()
+            if path.is_file():
+                values = dotenv_values(path, encoding="utf-8")
+                merged.update({key.upper(): value for key, value in values.items()})
+        return merged
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        # Unused: __call__ builds the whole mapping at once.
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        raw = self._raw_values()
+        data: dict[str, dict[str, Any]] = {}
+        for env_name, (section, field_name) in FLAT_ALIASES.items():
+            value = raw.get(env_name)
+            if value is None or value == "":
+                continue
+            parsed: Any = value
+            if env_name in _LIST_ALIASES:
+                parsed = [part.strip() for part in value.split(",") if part.strip()]
+            data.setdefault(section, {})[field_name] = parsed
+        return data
+
+
 # ==================================================================== root
 
 
@@ -536,8 +609,8 @@ class Settings(BaseSettings):
 
     Environment variables map to nested fields with a double underscore, e.g.
     ``DETECTION__PORT_SCAN_UNIQUE_PORTS=30``.  The flat aliases required by the
-    project brief (``DATABASE_URL``, ``DRY_RUN``, ...) are also supported and are
-    applied in :meth:`_apply_flat_aliases`.
+    project brief (``DATABASE_URL``, ``DRY_RUN``, ...) are also supported, from both
+    the environment and ``.env``; see :meth:`settings_customise_sources`.
     """
 
     model_config = SettingsConfigDict(
@@ -563,59 +636,33 @@ class Settings(BaseSettings):
 
     rules_directory: Path = Field(default=Path("rules"))
 
-    @model_validator(mode="before")
     @classmethod
-    def _apply_flat_aliases(cls, data: Any) -> Any:
-        """Map the documented flat env vars onto their nested homes.
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Add the documented flat aliases (``DRY_RUN``, ``DATABASE_URL``...).
 
-        The brief specifies short names like ``DRY_RUN``; the nested structure is
-        better for code.  Rather than choose, we support both, with the nested
-        form winning when a variable is set twice.
+        Precedence, highest first: explicit arguments, nested environment variables,
+        flat environment variables, nested ``.env`` entries, flat ``.env`` entries,
+        defaults. So a real environment variable always beats the ``.env`` file, and
+        the nested form wins when both spellings are set at the same level.
         """
-        if not isinstance(data, dict):
-            return data
-        import os
-
-        flat_map: dict[str, tuple[str, str]] = {
-            "DATABASE_URL": ("storage", "database_url"),
-            "REDIS_URL": ("storage", "redis_url"),
-            "RETENTION_DAYS": ("storage", "retention_days"),
-            "API_HOST": ("api", "host"),
-            "API_PORT": ("api", "port"),
-            "JWT_SECRET": ("api", "jwt_secret"),
-            "CORS_ORIGINS": ("api", "cors_origins"),
-            "CAPTURE_INTERFACE": ("capture", "interface"),
-            "BPF_FILTER": ("capture", "bpf_filter"),
-            "PCAP_DIRECTORY": ("capture", "pcap_directory"),
-            "DETECTION_MODE": ("detection", "mode"),
-            "RESPONSE_MODE": ("response", "mode"),
-            "DRY_RUN": ("response", "dry_run"),
-            "FIREWALL_BACKEND": ("response", "firewall_backend"),
-            "LOG_LEVEL": ("telemetry", "log_level"),
-            "LOG_FORMAT": ("telemetry", "log_format"),
-        }
-        list_fields = {"cors_origins"}
-        bool_fields = {"dry_run"}
-
-        for env_name, (section, field_name) in flat_map.items():
-            raw = os.environ.get(env_name)
-            if raw is None:
-                continue
-            section_data = data.get(section)
-            if not isinstance(section_data, dict):
-                section_data = {} if section_data is None else section_data
-            if not isinstance(section_data, dict):
-                continue
-            if field_name in section_data:
-                continue  # nested form already supplied it; it wins
-            value: Any = raw
-            if field_name in list_fields:
-                value = [part.strip() for part in raw.split(",") if part.strip()]
-            elif field_name in bool_fields:
-                value = raw.strip().lower() in {"1", "true", "yes", "on"}
-            section_data[field_name] = value
-            data[section] = section_data
-        return data
+        env_file = settings_cls.model_config.get("env_file")
+        if isinstance(dotenv_settings, DotEnvSettingsSource):
+            env_file = dotenv_settings.env_file
+        return (
+            init_settings,
+            env_settings,
+            FlatAliasSource(settings_cls, None),
+            dotenv_settings,
+            FlatAliasSource(settings_cls, env_file),
+            file_secret_settings,
+        )
 
     @model_validator(mode="after")
     def _validate_production(self) -> Settings:
