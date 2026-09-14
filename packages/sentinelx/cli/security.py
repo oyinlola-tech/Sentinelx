@@ -198,11 +198,9 @@ def _respond(settings: Any, action: ActionType, target: str, reason: str, durati
     async def main() -> Any:
         async with platform_context(settings, persist=False) as platform:
             pipeline, _, _, _ = platform.require()
-            preview = pipeline.response.guard.evaluate(target)
-            decision = await pipeline.response.manual_action(action, target, actor=actor(), reason=reason, duration=duration, source="cli")
-            return preview, decision
+            return await pipeline.response.manual_action(action, target, actor=actor(), reason=reason, duration=duration, source="cli")
 
-    preview, decision = run(main)
+    decision = run(main)
     from sentinelx.response.engine import decision_payload
 
     payload = decision_payload(decision)
@@ -212,8 +210,6 @@ def _respond(settings: Any, action: ActionType, target: str, reason: str, durati
         style = {"executed": "green", "simulated": "yellow", "failed": "red"}.get(decision.outcome, "")
         console.print(Panel(Text(f"{decision.outcome.upper()}: {decision.reason}" + (f"\n{decision.error}" if decision.error else ""), style=style),
                             title=f"{action.value} {target}", expand=False))
-        if not preview.allowed and action is not ActionType.UNBLOCK_IP:
-            err.print(f"[dim]safety guard: {preview.reason}[/]")
     if decision.error:
         raise typer.Exit(1)
 

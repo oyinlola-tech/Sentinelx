@@ -99,6 +99,9 @@ class SafetyGuard:
         return [str(net) for net in self._allowlist]
 
     def check(self, target: str) -> IPNetworkT:
+        return self._check(target, record=True)
+
+    def _check(self, target: str, *, record: bool) -> IPNetworkT:
         """Validate a target and return the parsed network to act on.
 
         Args:
@@ -110,18 +113,18 @@ class SafetyGuard:
         if not target or target != target.strip() or any(not ch.isprintable() or ch.isspace() for ch in target):
             # Reject rather than normalise: the raw target is written to the audit
             # log, and embedded newlines there would allow forged log entries.
-            self._refuse(repr(target), "invalid_address", "target contains whitespace or control characters")
+            self._refuse(record, repr(target), "invalid_address", "target contains whitespace or control characters")
         try:
             network = parse_network(target, strict=False)
         except ValueError as exc:
-            self._refuse(target, "invalid_address", str(exc))
+            self._refuse(record, target, "invalid_address", str(exc))
 
         if network.prefixlen == 0:
-            self._refuse(target, "default_route", "a /0 prefix would block all traffic")
+            self._refuse(record, target, "default_route", "a /0 prefix would block all traffic")
 
         limit = self.settings.max_block_prefix_hosts
         if network.num_addresses > limit:
-            self._refuse(
+            self._refuse(record,
                 target,
                 "prefix_too_wide",
                 f"{describe_network(network)} exceeds the maximum of {limit} addresses "
@@ -130,15 +133,15 @@ class SafetyGuard:
 
         for address in (network.network_address, network.broadcast_address):
             if is_special(address):
-                self._refuse(target, "special_address", f"{address} is loopback, link-local, multicast or reserved")
+                self._refuse(record, target, "special_address", f"{address} is loopback, link-local, multicast or reserved")
 
         for protected in self._allowlist:
             if network.version == protected.version and network.overlaps(protected):
-                self._refuse(target, "allowlisted", f"{network} overlaps allowlisted network {protected}")
+                self._refuse(record, target, "allowlisted", f"{network} overlaps allowlisted network {protected}")
 
         for protected in self._management:
             if network.version == protected.version and network.overlaps(protected):
-                self._refuse(target, "management_address", f"{network} overlaps management address {protected}")
+                self._refuse(record, target, "management_address", f"{network} overlaps management address {protected}")
 
         if self.settings.protect_management_addresses:
             for raw in self._local_addresses():
@@ -147,10 +150,10 @@ class SafetyGuard:
                 except ValueError:
                     continue
                 if local.version == network.version and network.overlaps(local):
-                    self._refuse(target, "local_address", f"{network} contains {local.network_address}, an address of this host")
+                    self._refuse(record, target, "local_address", f"{network} contains {local.network_address}, an address of this host")
 
         if self._active_block_count() >= self.settings.max_blocked_addresses:
-            self._refuse(
+            self._refuse(record,
                 target,
                 "block_limit_reached",
                 f"{self.settings.max_blocked_addresses} blocks already active (response.max_blocked_addresses)",
@@ -158,17 +161,16 @@ class SafetyGuard:
         return network
 
     def evaluate(self, target: str) -> SafetyReport:
-        """Non-raising form of :meth:`check`, for previews. Does not count refusals."""
-        before = self.refusals
+        """Non-raising form of :meth:`check`, for previews. Records no refusal, log or metric."""
         try:
-            network = self.check(target)
+            network = self._check(target, record=False)
         except SafetyViolationError as exc:
-            self.refusals = before
             return SafetyReport(target=target, allowed=False, network=None, reason=exc.reason)
         return SafetyReport(target=target, allowed=True, network=str(network), reason="permitted")
 
-    def _refuse(self, target: str, code: str, reason: str) -> None:
-        self.refusals += 1
-        metrics.safety_refusals.labels(reason=code).inc()
-        log.warning("safety_refusal", target=target, rule=code, reason=reason)
+    def _refuse(self, record: bool, target: str, code: str, reason: str) -> None:
+        if record:
+            self.refusals += 1
+            metrics.safety_refusals.labels(reason=code).inc()
+            log.warning("safety_refusal", target=target, rule=code, reason=reason)
         raise SafetyViolationError(target, reason)

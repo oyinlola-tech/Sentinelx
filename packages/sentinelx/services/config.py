@@ -37,7 +37,7 @@ from sentinelx.storage.database import Database
 from sentinelx.storage.repositories import SettingRepository
 from sentinelx.telemetry.logging import get_logger
 
-__all__ = ["EDITABLE", "PREVENTION_CONFIRMATION", "WINDOW_FIELDS", "ConfigService"]
+__all__ = ["EDITABLE", "PREVENTION_CONFIRMATION", "WINDOW_FIELDS", "ConfigService", "redact_url"]
 
 log = get_logger(__name__)
 
@@ -81,8 +81,8 @@ class ConfigService:
         data = self.settings.model_dump(mode="json")
         data["api"].pop("jwt_secret", None)
         data["api"].pop("bootstrap_admin_password", None)
-        data["storage"]["database_url"] = _redact_url(self.settings.storage.database_url)
-        data["storage"]["redis_url"] = _redact_url(self.settings.storage.redis_url)
+        data["storage"]["database_url"] = redact_url(self.settings.storage.database_url)
+        data["storage"]["redis_url"] = redact_url(self.settings.storage.redis_url)
         if data["response"].get("webhook_url"):
             data["response"]["webhook_url"] = data["response"]["webhook_url"].split("?")[0]
         return {
@@ -179,7 +179,8 @@ class ConfigService:
         return applied
 
 
-def _redact_url(url: str) -> str:
+def redact_url(url: str) -> str:
+    """A connection URL with its password hidden, for display."""
     from sqlalchemy.engine.url import make_url
 
     try:

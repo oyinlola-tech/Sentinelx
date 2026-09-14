@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import shutil
 import time
 from collections import deque
 from pathlib import Path
@@ -72,15 +74,26 @@ def register(app: typer.Typer) -> None:
         settings = load_settings()
         settings.response.dry_run = True  # replays never enforce, whatever the configuration says
 
+        if persist:
+            stored = run(lambda: _replay_persisted(settings, pcap, speed, limit))
+            if report:
+                report.write_text(json.dumps(stored, indent=2, default=str), encoding="utf-8")
+            if as_json:
+                emit_json(stored)
+            else:
+                console.print(table("Replay report (stored)", ["Metric", "Value"], [
+                    (key, stored.get(key)) for key in
+                    ("replay_id", "frames", "packets_per_second", "wall_seconds", "detection_count", "incident_count", "response_decisions")
+                ]))
+            return
+
         async def main() -> tuple[RunReport, dict[str, Any], int]:
             metadata = await asyncio.to_thread(pcap_metadata, pcap)
-            if persist:
-                return await _replay_persisted(settings, pcap, speed, limit, metadata)
             pipeline = Pipeline(settings, firewall=MemoryFirewall())
             rules = await _rules_into(pipeline, settings)
             await pipeline.start()
             try:
-                with _progress(metadata["packet_count"], quiet=as_json) as update:
+                with _ReplayProgress(metadata["packet_count"], quiet=as_json) as update:
                     result = await pipeline.run(PcapFileCapture(pcap, speed=speed, limit=limit), progress=update, progress_interval=0.2)
             finally:
                 await pipeline.stop()
@@ -89,7 +102,7 @@ def register(app: typer.Typer) -> None:
         result, metadata, rule_count = run(main)
         data = _report_dict(result, metadata)
         if report:
-            report.write_text(__import__("json").dumps(data, indent=2, default=str), encoding="utf-8")
+            report.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
             err.print(f"[dim]report written to {report}[/]")
         if as_json:
             emit_json(data)
@@ -160,7 +173,7 @@ def register(app: typer.Typer) -> None:
     @fixtures.command("list")
     def fixtures_list(as_json: JsonOption = False) -> None:
         """Available scenarios and what a correct detector should find in each."""
-        rows = []
+        rows: list[dict[str, Any]] = []
         for name in SCENARIOS:
             scenario = get_scenario(name)
             rows.append({"name": name, "packets": scenario.packet_count, "benign": scenario.benign,
@@ -224,40 +237,35 @@ def register(app: typer.Typer) -> None:
         console.print("[dim]Enable with ANOMALY__ML_ENABLED=true. Treat its output as leads, not verdicts.[/]")
 
 
-async def _replay_persisted(settings: Settings, pcap: Path, speed: float, limit: int | None, metadata: dict[str, Any]) -> tuple[RunReport, dict[str, Any], int]:
-    """Replay through the platform so results land in the database under a replay id."""
+async def _replay_persisted(settings: Settings, pcap: Path, speed: float, limit: int | None) -> dict[str, Any]:
+    """Replay through the platform's replay service so results are stored under a replay id.
+
+    The service only reads inside ``PCAP_DIRECTORY``, so a file elsewhere is copied in first.
+    """
     from sentinelx.cli.runtime import actor, platform_context
+    from sentinelx.common.errors import PcapError
 
     async with platform_context(settings) as platform:
-        _, _, replay_service, _ = platform.require()
-        directory = replay_service.directory
-        directory.mkdir(parents=True, exist_ok=True)
-        resolved = pcap.resolve()
-        if directory not in resolved.parents:
-            target = directory / "cli" / pcap.name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(resolved.read_bytes())
-            resolved = target
-        started = await replay_service.start(str(resolved.relative_to(directory)), actor=actor(), speed=speed, limit=limit)
-        await replay_service.wait(started["replay_id"])
-        pipeline = replay_service  # report comes from the stored record
-        record = await pipeline.get(started["replay_id"])
+        _, _, service, _ = platform.require()
+        await asyncio.to_thread(service.directory.mkdir, parents=True, exist_ok=True)
+        source = await asyncio.to_thread(pcap.resolve)
+        if service.directory not in source.parents:
+            copy = service.directory / "cli" / pcap.name
+            await asyncio.to_thread(copy.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(shutil.copyfile, source, copy)
+            source = copy
+        started = await service.start(str(source.relative_to(service.directory)), actor=actor(), speed=speed, limit=limit)
+        await service.wait(started["replay_id"])
+        record = await service.get(started["replay_id"])
         if record is None or record["status"] != "completed":
-            from sentinelx.common.errors import PcapError
-
             raise PcapError(f"replay failed: {record.get('error') if record else 'record missing'}")
+        # Give the persister one flush interval so the detections are queryable on exit.
         await asyncio.sleep(settings.storage.flush_interval_seconds + 0.2)
-        err.print(f"[dim]stored as replay {started['replay_id']} - view in the PCAP Lab or: sentinelx incidents[/]")
-        stored = record["report"]
-        fake = RunReport(source=str(pcap), started_at=__import__("datetime").datetime.now(__import__("datetime").UTC))
-        fake.frames = stored.get("frames", 0)
-        fake.wall_seconds = stored.get("wall_seconds", 0.0)
-        return fake, {**metadata, "stored_report": stored}, len(platform.rules.engines)
+    err.print(f"[dim]stored as replay {started['replay_id']}; view it in the PCAP Lab[/]")
+    return {"replay_id": started["replay_id"], **record["report"]}
 
 
 def _report_dict(result: RunReport, metadata: dict[str, Any]) -> dict[str, Any]:
-    if "stored_report" in metadata:
-        return {"file": {k: v for k, v in metadata.items() if k != "stored_report"}, **metadata["stored_report"]}
     data = result.as_dict()
     data["file"] = metadata
     data["detections"] = [detection_to_dict(r.detection, r.risk) for r in result.detections]
@@ -266,7 +274,7 @@ def _report_dict(result: RunReport, metadata: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-class _progress:
+class _ReplayProgress:
     def __init__(self, total: int, *, quiet: bool) -> None:
         from rich.progress import (
             BarColumn,
@@ -297,11 +305,6 @@ class _progress:
 
 
 def _print_report(result: RunReport, metadata: dict[str, Any], rule_count: int) -> None:
-    if "stored_report" in metadata:
-        data = metadata["stored_report"]
-        console.print(table("Replay report", ["Metric", "Value"], [(k, data.get(k)) for k in
-                            ("frames", "packets_per_second", "wall_seconds", "detection_count", "incident_count", "response_decisions")]))
-        return
     data = result.as_dict()
     summary = Table.grid(padding=(0, 3))
     summary.add_column(style="dim")
