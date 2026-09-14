@@ -266,6 +266,8 @@ class Detection:
     destination_port: int | None = None
     protocol: Protocol | None = None
     recommended_action: ActionType = ActionType.ALERT
+    recommended_duration_seconds: int | None = None
+    """How long a preventive action should last, when the source (a rule) specifies it."""
     timestamp: datetime = field(default_factory=utcnow)
     detection_id: str = field(default_factory=new_id)
     rule_name: str | None = None

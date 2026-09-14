@@ -135,7 +135,7 @@ For emitted detections the engine also increments the source profile's `detectio
 
 ## Detection modes
 
-`DETECTION_MODE` (nested form `DETECTION__MODE`; the nested form wins if both are set) selects which built-in detectors are instantiated when the pipeline is built. Values are defined in `packages/sentinelx/common/enums.py` and applied in `default_detectors()` in `engine.py`.
+`DETECTION_MODE` (nested form `DETECTION__MODE`; when both are set in the same place, environment or `.env`, the nested form wins) selects which built-in detectors are instantiated when the pipeline is built. Values are defined in `packages/sentinelx/common/enums.py` and applied in `default_detectors()` in `engine.py`.
 
 | Value | Built-in detectors instantiated |
 |---|---|

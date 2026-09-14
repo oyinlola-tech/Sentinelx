@@ -3,7 +3,7 @@
 from sentinelx.common.errors import FirewallError
 from sentinelx.config.settings import ResponseSettings
 from sentinelx.firewall.base import BlockEntry, CommandResult, CommandRunner, FirewallAdapter
-from sentinelx.firewall.memory import MemoryFirewall
+from sentinelx.firewall.memory import MemoryFirewall, NullFirewall
 
 __all__ = [
     "BlockEntry",
@@ -11,6 +11,7 @@ __all__ = [
     "CommandRunner",
     "FirewallAdapter",
     "MemoryFirewall",
+    "NullFirewall",
     "create_firewall",
 ]
 
@@ -35,5 +36,5 @@ def create_firewall(settings: ResponseSettings) -> FirewallAdapter:
 
         return IptablesAdapter(rate_limit_pps=settings.rate_limit_packets_per_second)
     if settings.firewall_backend == "null":
-        return MemoryFirewall()
+        return NullFirewall()
     raise FirewallError(f"unknown firewall backend {settings.firewall_backend!r}")

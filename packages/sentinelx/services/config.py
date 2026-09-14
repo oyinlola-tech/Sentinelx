@@ -22,7 +22,6 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from sentinelx.common.enums import ResponseMode
 from sentinelx.common.errors import ConfigurationError
 from sentinelx.config.settings import (
     CorrelationSettings,
@@ -42,6 +41,9 @@ __all__ = ["EDITABLE", "PREVENTION_CONFIRMATION", "WINDOW_FIELDS", "ConfigServic
 log = get_logger(__name__)
 
 PREVENTION_CONFIRMATION = "ENABLE PREVENTION"
+
+#: Response fields where an explicit environment value beats a stored runtime override.
+ENVIRONMENT_WINS = frozenset({"mode", "dry_run"})
 
 #: section -> fields that may change at runtime. Absent fields are environment-only.
 EDITABLE: dict[str, set[str]] = {
@@ -112,10 +114,28 @@ class ConfigService:
         }
 
     async def load_overrides(self) -> None:
-        """Apply persisted runtime changes on startup. Invalid ones are skipped and logged."""
+        """Apply persisted runtime changes on startup. Invalid ones are skipped and logged.
+
+        Stored values normally win over the environment, so a threshold tuned in the
+        dashboard survives a restart. The safety posture is the exception: when the
+        environment explicitly sets ``RESPONSE_MODE`` or ``DRY_RUN``, that value wins,
+        so an operator can always switch prevention off by editing the environment
+        and restarting, whatever was enabled at runtime.
+        """
         async with self.database.session() as session:
             stored = await SettingRepository(session).all()
+        explicit_response = self.settings.response.model_fields_set & ENVIRONMENT_WINS
         for section, values in stored.items():
+            if section == "response" and explicit_response:
+                ignored = sorted(explicit_response & set(values))
+                if ignored:
+                    log.warning(
+                        "stored_setting_overridden_by_environment",
+                        section=section,
+                        fields=ignored,
+                        effect="the environment's safety posture applies",
+                    )
+                values = {k: v for k, v in values.items() if k not in explicit_response}
             try:
                 self._apply(section, values, allow_prevention=True)
             except (ConfigurationError, ValidationError) as exc:
@@ -191,15 +211,16 @@ class ConfigService:
         return self.view()
 
     def _would_enable_prevention(self, section: str, changes: dict[str, Any]) -> bool:
-        if section != "response":
+        """True when applying ``changes`` would switch prevention on (it is off now)."""
+        if section != "response" or self.settings.prevention_active:
             return False
-        mode = ResponseMode(changes.get("mode", self.settings.response.mode))
-        dry_run = changes.get("dry_run", self.settings.response.dry_run)
-        return (
-            mode is ResponseMode.AUTOMATIC
-            and dry_run is False
-            and not self.settings.prevention_active
-        )
+        try:
+            trial = ResponseSettings.model_validate(
+                {**self.settings.response.model_dump(), **changes}
+            )
+        except ValidationError:
+            return False  # _apply reports the validation error itself
+        return trial.prevention_active
 
     def _apply(
         self, section: str, changes: dict[str, Any], *, allow_prevention: bool
@@ -212,10 +233,14 @@ class ConfigService:
                 f"not editable at runtime (set via environment and restart): {', '.join(illegal)}"
             )
         current: BaseModel = getattr(self.settings, section)
+        was_active = self.settings.prevention_active
         validated = type(current).model_validate({**current.model_dump(), **changes})
+        # Only *switching prevention on* needs confirmation. Changes made while it is
+        # already on (adding an allowlist entry, say) must not be refused.
         if (
             isinstance(validated, ResponseSettings)
             and validated.prevention_active
+            and not was_active
             and not allow_prevention
         ):
             raise ConfigurationError(

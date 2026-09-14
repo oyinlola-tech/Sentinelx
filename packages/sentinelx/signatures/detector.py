@@ -162,7 +162,9 @@ class RuleDetector(Detector):
             tags=("rule", *self.rule.tags),
         )
         # rule_name is not a build() parameter and Detection is frozen.
-        return replace(detection, rule_name=self.rule.name)
+        return replace(
+            detection, rule_name=self.rule.name, recommended_duration_seconds=self.rule.duration
+        )
 
     def stats(self) -> dict[str, object]:
         return {

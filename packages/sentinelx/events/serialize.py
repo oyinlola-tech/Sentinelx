@@ -42,6 +42,7 @@ def detection_to_dict(detection: Detection, risk: RiskAssessment | None = None) 
         "protocol": detection.protocol.value if detection.protocol else None,
         "evidence": [item.as_dict() for item in detection.evidence],
         "recommended_action": detection.recommended_action.value,
+        "recommended_duration_seconds": detection.recommended_duration_seconds,
         "observation_window_seconds": detection.observation_window_seconds,
         "packet_count": detection.packet_count,
         "tags": list(detection.tags),

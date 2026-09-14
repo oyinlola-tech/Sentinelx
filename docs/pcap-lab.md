@@ -168,7 +168,7 @@ The **PCAP Lab** page (`/lab`, in the Respond group of the navigation) is a fron
 
 **Add a capture.**
 
-- **Upload pcap or pcapng** accepts `.pcap`, `.pcapng` and `.cap` files. The server checks the file signature and size and stores it under a generated name. The uploaded file is selected when the upload succeeds.
+- **Upload pcap or pcapng** accepts `.pcap`, `.pcapng` and `.cap` files. The server checks the file signature and size and stores it under a generated name in `uploads/`, and a notification shows the packet count.
 - **Generate a synthetic test fixture** writes the selected scenario to `PCAP_DIRECTORY/fixtures/<scenario>.pcap`. The confirmation lists the detectors a correct engine should report.
 
 **Recent replays** lists the last 20 runs with file, age, user, detection count and status (`queued`, `running`, `completed`, `failed`, `cancelled`). Progress for a running replay arrives over the WebSocket (`replay.progress` and `replay.completed` events).
@@ -185,7 +185,7 @@ All paths are under `/api/v1`. Scripts authenticate with a bearer token from `PO
 |---|---|---|
 | `GET /replay/files` | viewer | List `.pcap`, `.pcapng` and `.cap` files under `PCAP_DIRECTORY` with `path`, `filename`, `size_bytes`, `modified_at` |
 | `GET /replay/files/inspect?path=` | viewer | Capture metadata (packet count, link type, time span) without replaying |
-| `POST /replay/upload` | analyst | Multipart upload in the `file` field. Returns `201` with the stored `path` and the file metadata |
+| `POST /replay/upload` | analyst | Multipart upload in the `file` field. Returns `201` with the file metadata (see [Uploads](#uploads)) |
 | `GET /replay/scenarios` | viewer | Scenario names with a one-line description |
 | `POST /replay/scenarios/{name}` | analyst | Write a scenario to `fixtures/<name>.pcap`. Body `{"params": {...}}` |
 | `POST /replay` | analyst | Start a replay. Body `{"path": "...", "speed": 0, "limit": null}`. Returns `202` with `replay_id` and status `queued` |
@@ -208,10 +208,11 @@ Capture errors (a path outside the directory, a missing file, a rejected upload,
 
 `ReplayService.store_upload` streams the upload to `PCAP_DIRECTORY/uploads/` in 1 MB chunks.
 
-- **Size limit.** The limit is the smaller of `api.max_upload_mb` (default 200, env `API__MAX_UPLOAD_MB`) and `capture.max_pcap_size_mb` (default 512, env `CAPTURE__MAX_PCAP_SIZE_MB`). Writing stops and the partial file is deleted as soon as the limit is exceeded.
+- **Size limit.** The limit is the smaller of `api.max_upload_mb` (default 200, env `API__MAX_UPLOAD_MB`) and `capture.max_pcap_size_mb` (default 512, env `CAPTURE__MAX_PCAP_SIZE_MB`). Writing into `PCAP_DIRECTORY` stops and the partial file is deleted as soon as the limit is exceeded.
 - **Magic number.** The first four bytes must be a pcap header in either byte order, with microsecond or nanosecond timestamps (`d4c3b2a1`, `a1b2c3d4`, `4d3cb2a1`, `a1b23c4d`), or a pcapng section header block (`0a0d0d0a`). The file must then parse as a capture. Otherwise it is deleted and the upload is rejected.
 - **Stored name.** Files are saved as `<UTC timestamp>-<8 random hex characters>-<sanitised stem>.pcapng` when the original name ends in `.pcapng`, and `.pcap` otherwise. The stem keeps only letters, digits, `.`, `_` and `-`, up to 60 characters. The original name is recorded only in the audit log.
 - **Permissions and audit.** Stored files are set to mode `0640`. Each upload is recorded as an `UPLOAD_PCAP` audit event with the original name and size.
+- **Response.** The response carries the capture metadata: `filename` (the stored name), `size_bytes`, `packet_count`, `total_bytes`, `link_type`, `first_timestamp`, `last_timestamp`, `duration_seconds` and `average_packet_size`. In this version its `path` field is the absolute path on the server, not the path relative to `PCAP_DIRECTORY`. Use `uploads/<filename>`, or the `path` from `GET /replay/files`, when starting a replay.
 
 There is no API endpoint for deleting captures. Remove files from `PCAP_DIRECTORY` on the server when they are no longer needed.
 
@@ -221,7 +222,7 @@ There is no API endpoint for deleting captures. Remove files from `PCAP_DIRECTOR
 
 ### Path resolution
 
-Every client-supplied path (`inspect`, `POST /replay`, and `pcap_path` in `POST /rules/test`) goes through `ReplayService.resolve`. The path is joined to `PCAP_DIRECTORY`, fully resolved (which also follows symbolic links), and rejected with `path is outside the PCAP directory` unless the result is inside that directory. Absolute paths and `..` traversal are refused this way. The resolved path must also be an existing regular file.
+Every client-supplied path (`inspect`, `POST /replay`, and `pcap_path` in `POST /rules/test`) goes through `ReplayService.resolve`. The path is joined to `PCAP_DIRECTORY`, fully resolved (which also follows symbolic links), and rejected with `path is outside the PCAP directory` unless the result is inside that directory. An absolute path or a `..` sequence that leads outside the directory is refused this way. The resolved path must also be an existing regular file. The extension is not checked here; only the file listing filters on `.pcap`, `.pcapng` and `.cap`.
 
 ### Running and cancelling
 
@@ -318,7 +319,7 @@ Files are opened with Scapy's `RawPcapReader`, falling back to `RawPcapNgReader`
 |---|---|
 | Classic pcap, microsecond timestamps, either byte order | Supported, with any of the link types above |
 | pcapng with an Ethernet interface | Supported |
-| pcapng with any other link type (for example captured on `any`, a raw IP tunnel interface or loopback) | Not decoded. The reader takes the link type from the file object, which pcapng readers do not expose, and falls back to Ethernet, so every frame fails to decode. Convert to classic pcap first |
+| pcapng with any other link type (for example Linux cooked capture from the `any` device, or raw IP from a tunnel interface) | Not decoded. The reader takes the link type from the file object, which pcapng readers do not expose, and falls back to Ethernet, so every frame fails to decode. Convert to classic pcap first |
 | Classic pcap with nanosecond timestamps (`tcpdump --time-stamp-precision=nano`) | Accepted by the upload check and the reader, but timestamps are read incorrectly: the nanosecond field is treated as microseconds, which distorts timing and ordering. Capture with microsecond precision or convert first |
 
 To convert a pcapng or nanosecond pcap file to a microsecond classic pcap with Wireshark's `editcap`:

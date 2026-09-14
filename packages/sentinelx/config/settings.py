@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+from dotenv import dotenv_values
 from pydantic import (
     BaseModel,
     Field,
@@ -25,7 +26,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from dotenv import dotenv_values
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -378,15 +378,21 @@ class ResponseSettings(BaseModel):
 
     @model_validator(mode="after")
     def _guard_prevention(self) -> ResponseSettings:
-        """A live firewall backend is required before prevention can do anything."""
+        """A real firewall backend is required before responses can be applied.
+
+        ``automatic`` and ``manual_approval`` both apply actions once dry run is off.
+        With no backend they could only fail, so refuse the configuration up front.
+        (``detect_only`` never applies engine decisions; a manual block there still
+        fails loudly at the ``null`` backend rather than pretending to succeed.)
+        """
         if (
-            self.mode is ResponseMode.AUTOMATIC
+            self.mode in (ResponseMode.AUTOMATIC, ResponseMode.MANUAL_APPROVAL)
             and not self.dry_run
             and self.firewall_backend == "null"
         ):
             raise ValueError(
-                "RESPONSE_MODE=automatic with DRY_RUN=false requires a real "
-                "FIREWALL_BACKEND (nftables or iptables), not 'null'"
+                f"RESPONSE_MODE={self.mode.value} with DRY_RUN=false requires a real "
+                "FIREWALL_BACKEND for this host, not 'null'"
             )
         return self
 

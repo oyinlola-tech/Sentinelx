@@ -135,17 +135,14 @@ class ResponseEngine:
         self.decisions: list[ResponseDecision] = []
         self._reaper: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._firewall_ready = False
 
     # ------------------------------------------------------------- lifecycle
 
     async def start(self) -> None:
         """Prepare the firewall (only when it will be used) and start the expiry reaper."""
         if self.settings.prevention_active or self.settings.mode is ResponseMode.MANUAL_APPROVAL:
-            try:
-                await self.firewall.setup()
-            except FirewallError as exc:
-                log.error("firewall_setup_failed", backend=self.firewall.backend, error=str(exc))
-                raise
+            await self._ensure_firewall_ready()
         try:
             for entry in await self.firewall.list_blocked():
                 self._blocks[entry.network] = entry
@@ -210,7 +207,10 @@ class ResponseEngine:
             return decisions
 
         duration = (
-            self.settings.default_block_seconds
+            min(
+                detection.recommended_duration_seconds or self.settings.default_block_seconds,
+                self.settings.max_block_seconds,
+            )
             if action in (ActionType.TEMPORARY_BLOCK, ActionType.RATE_LIMIT)
             else None
         )
@@ -234,7 +234,7 @@ class ResponseEngine:
             return []
         decisions = []
         for source in sorted(incident.affected_sources):
-            if source in self._blocks:
+            if self._block_key(source) in self._blocks:
                 continue
             reason = f"incident '{incident.title}' risk {incident.risk.score:.0f}/100"
             decisions.append(
@@ -273,7 +273,10 @@ class ResponseEngine:
             detection_id=detection_id,
             incident_id=incident_id,
         )
-        if target in self._blocks and action in (ActionType.BLOCK_IP, ActionType.TEMPORARY_BLOCK):
+        if self._block_key(target) in self._blocks and action in (
+            ActionType.BLOCK_IP,
+            ActionType.TEMPORARY_BLOCK,
+        ):
             return await self._finalise(
                 replace(base, dry_run=False, reason=f"{reason}; already blocked"),
                 source="engine",
@@ -404,8 +407,32 @@ class ResponseEngine:
             )
         return await self._finalise(replace(decision, executed=result), source=source, actor=actor)
 
+    async def _ensure_firewall_ready(self) -> None:
+        """Create the firewall table/chain once, the first time it is needed.
+
+        Prevention can be enabled at runtime, and administrators can block manually in
+        any mode, so setup cannot happen only at start-up.
+        """
+        if self._firewall_ready:
+            return
+        try:
+            await self.firewall.setup()
+        except FirewallError as exc:
+            log.error("firewall_setup_failed", backend=self.firewall.backend, error=str(exc))
+            raise
+        self._firewall_ready = True
+
+    @staticmethod
+    def _block_key(target: str) -> str:
+        """Registry key for a target: its canonical network (``1.2.3.4`` -> ``1.2.3.4/32``)."""
+        try:
+            return str(parse_network(target))
+        except ValueError:
+            return target
+
     async def _apply(self, decision: ResponseDecision) -> bool:
         action = decision.action
+        await self._ensure_firewall_ready()
         if action in (ActionType.BLOCK_IP, ActionType.TEMPORARY_BLOCK, ActionType.QUARANTINE):
             network = self.guard.check(decision.target)
             entry = await self.firewall.block(
