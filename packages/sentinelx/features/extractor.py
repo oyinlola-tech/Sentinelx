@@ -235,6 +235,7 @@ class FeatureExtractor:
                 first_seen=now,
                 last_seen=now,
                 durations=self._durations,
+                scan_window=self.settings.port_scan_window_seconds,
                 dns_long_label=self.settings.dns_long_label_length,
                 dns_high_entropy=self.settings.dns_high_entropy_threshold,
             )

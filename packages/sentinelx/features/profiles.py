@@ -129,6 +129,9 @@ class SourceProfile:
     durations: tuple[float, ...] = ()
     """Every detector window, registered for O(1) sub-window counts."""
 
+    scan_window: float = 15.0
+    """Duration of the scan-detection windows (``port_scan_window_seconds``)."""
+
     dns_long_label: int = 52
     dns_high_entropy: float = 3.8
 
@@ -137,6 +140,9 @@ class SourceProfile:
     dst_ports: UniqueWindow[str] = field(init=False)
     dst_ips: UniqueWindow[str] = field(init=False)
     udp_ports: UniqueWindow[str] = field(init=False)
+    scan_ports: UniqueWindow[str] = field(init=False)
+    """TCP destination ports within the scan window only - what the scan detectors test."""
+    scan_hosts: UniqueWindow[str] = field(init=False)
     syn_packets: TimeSeriesCounter = field(init=False)
     syn_ack_received: TimeSeriesCounter = field(init=False)
     rst_received: TimeSeriesCounter = field(init=False)
@@ -164,7 +170,12 @@ class SourceProfile:
         self.packet_times = TimeSeriesCounter(durations)
         self.dst_ports = UniqueWindow(window, max_keys=1)
         self.dst_ips = UniqueWindow(window, max_keys=1)
-        self.udp_ports = UniqueWindow(window, max_keys=1)
+        # Scan windows are separate structures sized to the configured scan window,
+        # so port_scan_window_seconds is honoured exactly (it was once silently
+        # widened to the longest detector window) while every lookup stays O(1).
+        self.udp_ports = UniqueWindow(self.scan_window, max_keys=1)
+        self.scan_ports = UniqueWindow(self.scan_window, max_keys=1)
+        self.scan_hosts = UniqueWindow(self.scan_window, max_keys=1)
         self.syn_packets = TimeSeriesCounter(durations)
         self.syn_ack_received = TimeSeriesCounter(durations)
         self.rst_received = TimeSeriesCounter(durations)
@@ -192,9 +203,12 @@ class SourceProfile:
 
         if packet.dst_ip:
             self.dst_ips.add(self.source_ip, packet.dst_ip, timestamp)
+            if packet.protocol is Protocol.TCP:
+                self.scan_hosts.add(self.source_ip, packet.dst_ip, timestamp)
 
         if packet.protocol is Protocol.TCP and packet.dst_port is not None:
             self.dst_ports.add(self.source_ip, packet.dst_port, timestamp)
+            self.scan_ports.add(self.source_ip, packet.dst_port, timestamp)
             flags = packet.tcp_flags
             if flags is not None and flags.is_syn_only:
                 self.syn_packets.add(timestamp)
@@ -266,11 +280,16 @@ class SourceProfile:
         """True when nothing remains in any window - the profile can be evicted."""
         return not (self.packets or self.icmp_packets or self.dns_queries)
 
-    def syn_ratio(self) -> float:
+    def syn_ratio(self, window: float | None = None, now: float | None = None) -> float:
         """Fraction of this source's packets that are bare SYNs.
 
-        Near 1.0 means the source almost never completes a connection.
+        Near 1.0 means the source almost never completes a connection. With
+        ``window`` the ratio is computed over that trailing window (O(1) for
+        registered detector windows), matching the window the caller counts ports in.
         """
+        if window is not None and now is not None:
+            total = self.packet_times.count(window, now)
+            return self.syn_packets.count(window, now) / total if total else 0.0
         total = len(self.packets)
         return len(self.syn_packets) / total if total else 0.0
 

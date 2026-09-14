@@ -335,3 +335,10 @@ class TestDocumentedEvasions:
 
     def test_low_rate_brute_force_evades_threshold(self, run_detection: Run) -> None:
         assert not {"ssh_brute_force", "auth_brute_force"} & detectors_fired(run_detection(get_scenario("low_rate_brute_force").frames))
+
+    def test_port_scan_window_setting_is_honoured(self, run_detection: Run) -> None:
+        """Regression: the scan window was once silently the longest detector window."""
+        frames = get_scenario("slow_port_scan").frames
+        assert "tcp_port_scan" not in detectors_fired(run_detection(frames, DetectionSettings(port_scan_window_seconds=15)))
+        wide = DetectionSettings(port_scan_window_seconds=90, brute_force_window_seconds=90)
+        assert "tcp_port_scan" in detectors_fired(run_detection(frames, wide))

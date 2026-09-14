@@ -49,29 +49,30 @@ class TcpPortScanDetector(Detector):
         now = context.now
         settings = self.settings
 
-        unique_ports = profile.dst_ports.unique_count(profile.source_ip, now)
+        window = settings.port_scan_window_seconds
+        unique_ports = profile.scan_ports.unique_count(profile.source_ip, now)
         if unique_ports < settings.port_scan_unique_ports:
             return None
 
-        syn_ratio = profile.syn_ratio()
+        syn_ratio = profile.syn_ratio(window, now)
         if syn_ratio < settings.port_scan_min_syn_ratio:
             # High port count but handshakes are completing: a busy legitimate
             # client, not a scan. This single check removes most false positives.
             return None
 
-        unique_hosts = profile.dst_ips.unique_count(profile.source_ip, now)
+        unique_hosts = profile.scan_hosts.unique_count(profile.source_ip, now)
         # A source spread across many hosts is a sweep, which HorizontalScanDetector
         # reports with better-fitting evidence. Deferring avoids double-reporting
         # the same behaviour under two names.
         if unique_hosts > 1 and unique_ports / unique_hosts < 4:
             return None
 
-        span = max(profile.dst_ports.span(profile.source_ip), 0.001)
+        span = max(profile.scan_ports.span(profile.source_ip), 0.001)
         syn_ack_ratio = profile.syn_ack_ratio()
         refusal_ratio = profile.refusal_ratio()
         # Probe the small sensitive-port set against the window, not the reverse:
         # O(13) per SYN rather than O(distinct ports) during a large scan.
-        sensitive_hit = sorted(port for port in SENSITIVE_PORTS if profile.dst_ports.contains(profile.source_ip, port))
+        sensitive_hit = sorted(port for port in SENSITIVE_PORTS if profile.scan_ports.contains(profile.source_ip, port))
 
         confidence = self.scaled_confidence(
             unique_ports, settings.port_scan_unique_ports, floor=0.6, ceiling=0.97, saturation=4.0
@@ -192,21 +193,22 @@ class HorizontalScanDetector(Detector):
         now = context.now
         settings = self.settings
 
-        unique_hosts = profile.dst_ips.unique_count(profile.source_ip, now)
+        window = settings.port_scan_window_seconds
+        unique_hosts = profile.scan_hosts.unique_count(profile.source_ip, now)
         if unique_hosts < settings.horizontal_scan_unique_hosts:
             return None
 
-        unique_ports = profile.dst_ports.unique_count(profile.source_ip, now)
+        unique_ports = profile.scan_ports.unique_count(profile.source_ip, now)
         # The defining ratio: many hosts, few ports. Otherwise it is a vertical
         # scan (or a general sweep) that another detector describes better.
         if unique_ports > max(4, unique_hosts // 8):
             return None
 
-        syn_ratio = profile.syn_ratio()
+        syn_ratio = profile.syn_ratio(window, now)
         if syn_ratio < settings.port_scan_min_syn_ratio:
             return None
 
-        span = max(profile.dst_ips.span(profile.source_ip), 0.001)
+        span = max(profile.scan_hosts.span(profile.source_ip), 0.001)
         port = context.packet.dst_port
         service = service_name(port) if port else None
         severity = Severity.CRITICAL if port and port in SENSITIVE_PORTS else Severity.HIGH
