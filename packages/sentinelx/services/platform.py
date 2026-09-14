@@ -63,8 +63,18 @@ class Platform:
         self._sampler = ProcessSampler()
         self.started = False
 
-    async def start(self, *, create_schema: bool | None = None, persist: bool = True) -> None:
-        """Start everything. Order matters and is commented where it does."""
+    async def start(
+        self, *, create_schema: bool | None = None, persist: bool = True, background: bool = True, bootstrap: bool = True
+    ) -> None:
+        """Start everything. Order matters and is commented where it does.
+
+        Args:
+            create_schema: see :meth:`Database.connect`.
+            persist: write pipeline events to the database.
+            background: run the health publisher and retention loops. Short-lived
+                CLI commands turn this off.
+            bootstrap: create the first administrator if no users exist.
+        """
         await self.database.connect(create_schema=create_schema)
         await self.state.connect()
         # Overrides are applied before the pipeline exists, so components that parse
@@ -92,10 +102,12 @@ class Platform:
         self.sensor = SensorService(self.settings, self.pipeline, self.bus)
         self.replay = ReplayService(self.settings, self.database, self.bus, self.rules, self.audit)
         self.queries = QueryService(self.database, self.pipeline)
-        self.bootstrap_password = await self.auth.ensure_bootstrap_admin()
+        if bootstrap:
+            self.bootstrap_password = await self.auth.ensure_bootstrap_admin()
 
-        self._background.append(asyncio.create_task(self._health_loop(), name="health"))
-        self._background.append(asyncio.create_task(self._retention_loop(), name="retention"))
+        if background:
+            self._background.append(asyncio.create_task(self._health_loop(), name="health"))
+            self._background.append(asyncio.create_task(self._retention_loop(), name="retention"))
         self.started = True
         log.info("platform_started", version=__version__, rules=active, safety=self.settings.safety_banner(),
                  database=self.database.dialect, redis_degraded=self.state.degraded)

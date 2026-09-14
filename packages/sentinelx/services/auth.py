@@ -223,38 +223,51 @@ class AuthService:
             raise AuthError("too many login attempts; try again later", status=429, retry_after=retry_after)
 
         now = datetime.now(UTC)
+        # Failures are *decided* inside the transaction but *raised* after it
+        # commits. Raising inside `database.session()` rolls the transaction back,
+        # which silently discarded the failed-login counter and meant lockout never
+        # engaged. tests/api/test_api.py::test_account_locks_after_repeated_failures
+        # guards this.
+        failure: AuthError | None = None
+        pair: TokenPair | None = None
         async with self.database.session() as session:
             users = UserRepository(session)
             user = await users.by_username(username.strip()[:64])
+            locked_until = user.locked_until if user is not None else None
+            if locked_until is not None and locked_until.tzinfo is None:
+                locked_until = locked_until.replace(tzinfo=UTC)
+
             if user is None:
                 self._verify(_DUMMY_HASH, password)  # equalise timing
                 log.info("login_failed", username=username[:64], reason="unknown_user", client_ip=client_ip)
-                raise AuthError(_GENERIC_FAILURE)
-
-            locked_until = user.locked_until
-            if locked_until is not None and locked_until.tzinfo is None:
-                locked_until = locked_until.replace(tzinfo=UTC)
-            if locked_until is not None and locked_until > now:
+                failure = AuthError(_GENERIC_FAILURE)
+            elif locked_until is not None and locked_until > now:
                 self._verify(_DUMMY_HASH, password)
-                raise AuthError("account temporarily locked after repeated failures", status=423,
-                                retry_after=(locked_until - now).total_seconds())
-
-            if not user.is_active or not self._verify(user.password_hash, password):
+                failure = AuthError(
+                    "account temporarily locked after repeated failures", status=423,
+                    retry_after=(locked_until - now).total_seconds(),
+                )
+            elif not user.is_active or not self._verify(user.password_hash, password):
                 user.failed_logins += 1
                 if user.failed_logins >= self.settings.lockout_threshold:
                     user.locked_until = now + timedelta(seconds=self.settings.lockout_seconds)
                     user.failed_logins = 0
                     log.warning("account_locked", username=user.username, client_ip=client_ip)
                 log.info("login_failed", username=user.username, reason="bad_credentials", client_ip=client_ip)
-                raise AuthError(_GENERIC_FAILURE)
-
-            if _hasher.check_needs_rehash(user.password_hash):
-                user.password_hash = self.hash_password(password)
-            user.failed_logins = 0
-            user.locked_until = None
-            user.last_login_at = now
-            principal = Principal(user.id, user.username, UserRole(user.role), must_change_password=user.must_change_password)
-            pair = await self._issue(users, principal)
+                failure = AuthError(_GENERIC_FAILURE)
+            else:
+                if _hasher.check_needs_rehash(user.password_hash):
+                    user.password_hash = self.hash_password(password)
+                user.failed_logins = 0
+                user.locked_until = None
+                user.last_login_at = now
+                principal = Principal(user.id, user.username, UserRole(user.role), must_change_password=user.must_change_password)
+                pair = await self._issue(users, principal)
+        if failure is not None:
+            raise failure
+        if pair is None:  # unreachable: every branch sets failure or pair
+            raise AuthError(_GENERIC_FAILURE)
+        principal = pair.principal
         await self.state.reset("login", client_ip)
         log.info("login_succeeded", username=principal.username, role=principal.role.value, client_ip=client_ip)
         return pair
@@ -311,20 +324,26 @@ class AuthService:
 
     async def refresh(self, refresh_token: str) -> TokenPair:
         claims = self._decode(refresh_token, "refresh")
+        reuse_detected = False
         async with self.database.session() as session:
             users = UserRepository(session)
             stored = await users.refresh_token(str(claims["jti"]))
             user = await users.get(int(claims["sub"]))
             if stored is None or user is None or not user.is_active:
-                raise AuthError("invalid token")
+                raise AuthError("invalid token")  # nothing to persist; rollback is harmless
             if stored.revoked_at is not None:
                 # A rotated token came back: someone else holds a copy. Burn them all.
+                # The revocation must commit, so the error is raised after the block.
                 await users.revoke_tokens(user.id)
                 log.warning("refresh_token_reuse_detected", username=user.username)
-                raise AuthError("invalid token")
-            stored.revoked_at = datetime.now(UTC)
-            principal = Principal(user.id, user.username, UserRole(user.role), must_change_password=user.must_change_password)
-            return await self._issue(users, principal)
+                reuse_detected = True
+            else:
+                stored.revoked_at = datetime.now(UTC)
+                principal = Principal(user.id, user.username, UserRole(user.role), must_change_password=user.must_change_password)
+                pair = await self._issue(users, principal)
+        if reuse_detected:
+            raise AuthError("invalid token")
+        return pair
 
     async def logout(self, principal: Principal) -> None:
         async with self.database.session() as session:
