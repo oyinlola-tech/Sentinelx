@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import useSWR from "swr";
 import { ThreatTape } from "@/components/charts/charts";
 import { CommandMenu } from "@/components/shell/command-menu";
@@ -27,6 +27,7 @@ import { ConsoleFooter } from "@/components/shell/footer";
 import { query } from "@/lib/api";
 import { EventsProvider, useEvents, type StreamState } from "@/lib/events";
 import { useSession } from "@/lib/session";
+import { useNow } from "@/lib/use-now";
 import type { Detection, Overview, Page, Severity } from "@/lib/types";
 
 const NAV: { href: string; label: string; icon: ReactNode; group: string; hint: string; badge?: "incidents" | "approvals" }[] = [
@@ -60,9 +61,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function Chrome({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
-  useEffect(() => setMenuOpen(false), [pathname]);
   return (
     <div className="flex min-h-dvh">
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-iris focus:px-3 focus:py-1.5 focus:text-ground">
@@ -114,6 +113,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
                       <Link
                         href={item.href}
                         aria-current={active ? "page" : undefined}
+                        onClick={onClose}
                         className={`flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors [&_svg]:size-4 ${active ? "bg-raised text-frost shadow-[inset_2px_0_0_var(--color-iris)]" : "text-mist hover:bg-raised hover:text-frost"}`}
                       >
                         <span aria-hidden className={active ? "text-iris" : ""}>{item.icon}</span>
@@ -163,7 +163,8 @@ export function Wordmark() {
 
 function TopBar({ onMenu }: { onMenu: () => void }) {
   const { state, recent } = useEvents();
-  const since = useMemo(() => new Date(Date.now() - 3_600_000).toISOString(), []);
+  const now = useNow(60_000);
+  const since = new Date(now - 3_600_000).toISOString();
   const { data } = useSWR<Page<Detection>>(`/detections${query({ since, limit: 500 })}`, { refreshInterval: 60_000 });
   const { data: overview } = useSWR<{ safety: string }>("/stats/overview", { refreshInterval: 30_000 });
 

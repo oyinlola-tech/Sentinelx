@@ -21,32 +21,37 @@ const DURATIONS = [
  * verdict and says plainly whether DRY_RUN will stop the change from being applied,
  * before the operator commits.
  */
-export function BlockDialog({ open, onClose, initialTarget = "", initialReason = "", onDone }: { open: boolean; onClose: () => void; initialTarget?: string; initialReason?: string; onDone?: () => void }) {
+export function BlockDialog(props: { open: boolean; onClose: () => void; initialTarget?: string; initialReason?: string; onDone?: () => void }) {
+  const { open, onClose } = props;
+  // The form mounts only while open, so each opening starts from the latest
+  // initial values without copying props into state from an effect.
+  return (
+    <Dialog open={open} onClose={onClose} title="Block or rate limit a source">
+      {open && <BlockForm {...props} />}
+    </Dialog>
+  );
+}
+
+function BlockForm({ onClose, initialTarget = "", initialReason = "", onDone }: { onClose: () => void; initialTarget?: string; initialReason?: string; onDone?: () => void }) {
   const toast = useToast();
   const [target, setTarget] = useState(initialTarget);
   const [reason, setReason] = useState(initialReason);
   const [duration, setDuration] = useState(900);
   const [rateLimit, setRateLimit] = useState(false);
-  const [report, setReport] = useState<SafetyReport | null>(null);
+  const [checked, setChecked] = useState<SafetyReport | null>(null);
   const [busy, setBusy] = useState(false);
+  const trimmed = target.trim();
+  const report = checked && checked.target === trimmed ? checked : null;
 
   useEffect(() => {
-    if (open) {
-      setTarget(initialTarget);
-      setReason(initialReason);
-    }
-  }, [open, initialTarget, initialReason]);
-
-  useEffect(() => {
-    if (!open || target.trim().length < 2) {
-      setReport(null);
-      return;
-    }
+    if (trimmed.length < 2) return;
     const handle = setTimeout(() => {
-      api<SafetyReport>("/firewall/check", { method: "POST", json: { target: target.trim() } }).then(setReport).catch(() => setReport(null));
+      api<SafetyReport>("/firewall/check", { method: "POST", json: { target: trimmed } })
+        .then((result) => setChecked({ ...result, target: trimmed }))
+        .catch(() => setChecked(null));
     }, 250);
     return () => clearTimeout(handle);
-  }, [open, target]);
+  }, [trimmed]);
 
   async function submit() {
     setBusy(true);
@@ -69,19 +74,7 @@ export function BlockDialog({ open, onClose, initialTarget = "", initialReason =
 
   const canSubmit = reason.trim().length >= 3 && report?.allowed === true;
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      title={rateLimit ? "Rate limit a source" : "Block a source"}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="danger" loading={busy} disabled={!canSubmit} onClick={() => void submit()}>
-            {report?.dry_run ? "Record simulated block" : rateLimit ? "Apply rate limit" : "Block source"}
-          </Button>
-        </>
-      }
-    >
+    <>
       <div className="flex flex-col gap-4">
         <Field label="Address or network" htmlFor="block-target" hint="A single address, or a small CIDR prefix">
           <Input id="block-target" value={target} onChange={(event) => setTarget(event.target.value)} className="font-mono" placeholder="203.0.113.45" maxLength={64} />
@@ -112,6 +105,12 @@ export function BlockDialog({ open, onClose, initialTarget = "", initialReason =
           </p>
         )}
       </div>
-    </Dialog>
+      <div className="mt-5 flex justify-end gap-2 border-t border-line pt-3">
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="danger" loading={busy} disabled={!canSubmit} onClick={() => void submit()}>
+          {report?.dry_run ? "Record simulated block" : rateLimit ? "Apply rate limit" : "Block source"}
+        </Button>
+      </div>
+    </>
   );
 }

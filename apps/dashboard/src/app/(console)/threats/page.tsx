@@ -3,7 +3,7 @@
 import { Search } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useState } from "react";
 import useSWR from "swr";
 import { PageHeader } from "@/components/shell/page-header";
 import { DetectionTable } from "@/components/views/detection-table";
@@ -11,6 +11,7 @@ import { EmptyState, ErrorState, Input, Pagination, Panel, Select, TableSkeleton
 import { Mono, RiskScore, SeverityBadge } from "@/components/ui/security";
 import { query } from "@/lib/api";
 import { useEventRefresh } from "@/lib/events";
+import { useNow } from "@/lib/use-now";
 import { SEVERITIES, ago, humanise } from "@/lib/format";
 import type { Detection, Page, Severity, Threat } from "@/lib/types";
 
@@ -102,7 +103,8 @@ function DetectionView({ hours, initialSource }: { hours: number; initialSource:
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
-  const since = useMemo(() => new Date(Date.now() - hours * 3_600_000).toISOString(), [hours]);
+  const now = useNow(60_000);
+  const since = new Date(now - hours * 3_600_000).toISOString();
   const key = `/detections${query({ since, source_ip: source.trim() || null, severity: severity || null, status: status || null, q: search || null, limit: 50, offset })}`;
   const { data, error, mutate } = useSWR<Page<Detection>>(key, { refreshInterval: 30_000 });
   useEventRefresh(["detection.created"], () => void mutate(), 3000);

@@ -3,7 +3,7 @@
 import { ArrowLeft, Ban } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import useSWR from "swr";
 import { PageHeader } from "@/components/shell/page-header";
 import { BlockDialog } from "@/components/views/block-dialog";
@@ -27,9 +27,7 @@ export default function IncidentPage() {
   const { data, error, mutate } = useSWR<Incident>(`/incidents/${id}`);
   useEventRefresh(["incident.updated", "severity.changed", "response.decided", "ip.blocked"], () => void mutate());
   const [blockTarget, setBlockTarget] = useState<string | null>(null);
-  const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
-  useEffect(() => setNotes(data?.notes ?? ""), [data?.notes]);
 
   if (error instanceof ApiError && error.status === 404) return <div className="panel"><ErrorState error={new Error("This incident no longer exists.")} /></div>;
   if (error) return <div className="panel"><ErrorState error={error} onRetry={() => void mutate()} /></div>;
@@ -139,18 +137,28 @@ export default function IncidentPage() {
             />
           </Panel>
           <Panel title="Analyst notes">
-            <Field label="Notes" htmlFor="notes" hint="Visible to everyone with access to this incident">
-              <Textarea id="notes" rows={5} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!can("analyst")} maxLength={10_000} className="font-sans text-sm" />
-            </Field>
-            {can("analyst") && (
-              <div className="mt-2 flex justify-end">
-                <Button size="sm" variant="secondary" loading={saving} disabled={notes === (data.notes ?? "")} onClick={() => void update({ notes }, "Notes saved")}>Save notes</Button>
-              </div>
-            )}
+            {/* Keyed by the saved notes: a fresh editor mounts whenever the stored value changes. */}
+            <NotesEditor key={`${data.incident_id}:${data.notes ?? ""}`} initial={data.notes ?? ""} editable={can("analyst")} saving={saving} onSave={(notes) => void update({ notes }, "Notes saved")} />
           </Panel>
         </div>
       </div>
       <BlockDialog open={blockTarget !== null} onClose={() => setBlockTarget(null)} initialTarget={blockTarget ?? ""} initialReason={`Incident: ${data.title}`} onDone={() => void mutate()} />
+    </>
+  );
+}
+
+function NotesEditor({ initial, editable, saving, onSave }: { initial: string; editable: boolean; saving: boolean; onSave: (notes: string) => void }) {
+  const [notes, setNotes] = useState(initial);
+  return (
+    <>
+      <Field label="Notes" htmlFor="notes" hint="Visible to everyone with access to this incident">
+        <Textarea id="notes" rows={5} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!editable} maxLength={10_000} className="font-sans text-sm" />
+      </Field>
+      {editable && (
+        <div className="mt-2 flex justify-end">
+          <Button size="sm" variant="secondary" loading={saving} disabled={notes === initial} onClick={() => onSave(notes)}>Save notes</Button>
+        </div>
+      )}
     </>
   );
 }

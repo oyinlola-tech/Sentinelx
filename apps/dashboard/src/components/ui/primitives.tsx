@@ -85,7 +85,8 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
   return <textarea ref={ref} className={`py-2 font-mono text-xs leading-relaxed ${inputClass} ${className}`} spellCheck={false} {...rest} />;
 });
 
-export function Panel({ title, eyebrow, actions, children, className = "", bodyClassName = "p-4" }: {
+export function Panel({ title, eyebrow, actions, children, className = "", bodyClassName = "p-4", id }: {
+  id?: string;
   title?: ReactNode;
   eyebrow?: string;
   actions?: ReactNode;
@@ -94,7 +95,7 @@ export function Panel({ title, eyebrow, actions, children, className = "", bodyC
   bodyClassName?: string;
 }) {
   return (
-    <section className={`panel flex min-w-0 flex-col ${className}`}>
+    <section id={id} className={`panel flex min-w-0 scroll-mt-20 flex-col ${className}`}>
       {(title || actions || eyebrow) && (
         <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5">
           <div className="min-w-0">

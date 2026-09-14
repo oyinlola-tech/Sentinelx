@@ -2,7 +2,7 @@
 
 import { CornerDownLeft, Search } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { Detection, Incident } from "@/lib/types";
 
@@ -22,51 +22,60 @@ export function CommandMenu({ pages }: { pages: CommandItem[] }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [active, setActive] = useState(0);
-  const [lookup, setLookup] = useState<CommandItem | null>(null);
+  const [lookupResult, setLookupResult] = useState<{ query: string; item: CommandItem } | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
+
+  // Reset in the handler that opens the menu rather than in an effect reacting to it.
+  const openMenu = useCallback(() => {
+    setText("");
+    setActive(0);
+    setLookupResult(null);
+    setOpen(true);
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setOpen((current) => !current);
+        openMenu();
       }
     };
-    const onOpen = () => setOpen(true);
+    const onOpen = () => openMenu();
     window.addEventListener("keydown", onKey);
     window.addEventListener("sentinelx:command", onOpen);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("sentinelx:command", onOpen);
     };
-  }, []);
+  }, [openMenu]);
 
   useEffect(() => {
     const element = dialog.current;
     if (!element) return;
-    if (open && !element.open) {
-      element.showModal();
-      setText("");
-      setActive(0);
-    }
+    if (open && !element.open) element.showModal();
     if (!open && element.open) element.close();
   }, [open]);
 
   const value = text.trim();
+  // Results are tagged with the id they answer, so a stale lookup is simply ignored
+  // instead of being cleared from inside an effect.
+  const lookup = lookupResult?.query === value ? lookupResult.item : null;
   useEffect(() => {
-    setLookup(null);
     if (!HEX_ID.test(value)) return;
     let cancelled = false;
+    const settle = (item: CommandItem) => {
+      if (!cancelled) setLookupResult({ query: value, item });
+    };
     (async () => {
       try {
         const detection = await api<Detection>(`/detections/${value}`);
-        if (!cancelled) setLookup({ id: "lookup", label: detection.title, hint: `Detection from ${detection.source_ip}`, href: `/detections/${value}` });
+        settle({ id: "lookup", label: detection.title, hint: `Detection from ${detection.source_ip}`, href: `/detections/${value}` });
       } catch {
         try {
           const incident = await api<Incident>(`/incidents/${value}`);
-          if (!cancelled) setLookup({ id: "lookup", label: incident.title, hint: "Incident", href: `/incidents/${value}` });
+          settle({ id: "lookup", label: incident.title, hint: "Incident", href: `/incidents/${value}` });
         } catch {
-          if (!cancelled) setLookup({ id: "lookup", label: "No detection or incident with that id", hint: "Retention may have removed it", href: "" });
+          settle({ id: "lookup", label: "No detection or incident with that id", hint: "Retention may have removed it", href: "" });
         }
       }
     })();
