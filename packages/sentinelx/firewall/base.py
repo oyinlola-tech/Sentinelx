@@ -112,7 +112,7 @@ class CommandRunner:
         for arg in args:
             if not isinstance(arg, str):  # defensive: catches programming errors early
                 raise TypeError(f"firewall argument must be str, got {type(arg).__name__}")
-            if "\x00" in arg or "\n" in arg:
+            if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in arg):
                 raise FirewallError("refusing firewall argument containing control characters")
         argv = (*self._prefix, self.binary, *args)
         started = time.perf_counter()
@@ -192,7 +192,7 @@ class FirewallAdapter(abc.ABC):
 
     @abc.abstractmethod
     async def teardown(self) -> None:
-        """Remove everything this adapter created. Used by ``sentinelx firewall reset``."""
+        """Remove everything this adapter created (its own table or chain, nothing else)."""
 
     async def block_ip(self, network: IPNetworkT, comment: str = "") -> BlockEntry:
         return await self.block(network, comment=comment)

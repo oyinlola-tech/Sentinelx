@@ -2,8 +2,10 @@
 
 SentinelX owns one chain, ``SENTINELX``, jumped to from ``INPUT`` and ``FORWARD``.
 Each block is a ``-s <net> -j DROP`` rule inside it.  iptables has no per-rule
-expiry, so temporary blocks are expired by the response engine's reaper; the
-adapter records the deadline so :meth:`list_blocked` can report it.
+expiry, so a temporary block's deadline is written into the rule's comment
+(``sentinelx:exp=<unix seconds>``). :meth:`list_blocked` reads it back, so the
+response engine's reaper still removes the rule after a SentinelX restart. Expiry
+only happens while a SentinelX server is running; nftables expires in the kernel.
 
 Prefer nftables where available: set-based matching scales far better, and kernel
 timeouts survive a SentinelX crash.
@@ -12,6 +14,7 @@ timeouts survive a SentinelX crash.
 from __future__ import annotations
 
 import hashlib
+import shlex
 from datetime import UTC, datetime, timedelta
 
 from sentinelx.common.errors import FirewallError
@@ -25,6 +28,23 @@ log = get_logger(__name__)
 
 CHAIN = "SENTINELX"
 _COMMENT = "sentinelx"
+_EXPIRY_PREFIX = "sentinelx:exp="
+
+
+def _comment_for(duration: int | None) -> tuple[str, datetime | None]:
+    if not duration:
+        return _COMMENT, None
+    expires = datetime.now(UTC) + timedelta(seconds=duration)
+    return f"{_EXPIRY_PREFIX}{int(expires.timestamp())}", expires
+
+
+def _expiry_from(comment: str) -> datetime | None:
+    if not comment.startswith(_EXPIRY_PREFIX):
+        return None
+    try:
+        return datetime.fromtimestamp(int(comment[len(_EXPIRY_PREFIX) :]), UTC)
+    except ValueError:
+        return None
 
 
 class IptablesAdapter(FirewallAdapter):
@@ -66,10 +86,10 @@ class IptablesAdapter(FirewallAdapter):
         log.info("iptables_ready", chain=CHAIN)
 
     @staticmethod
-    def _drop_rule(network: IPNetworkT) -> tuple[str, ...]:
-        return ("-s", str(network), "-m", "comment", "--comment", _COMMENT, "-j", "DROP")
+    def _drop_rule(network: IPNetworkT, comment: str = _COMMENT) -> tuple[str, ...]:
+        return ("-s", str(network), "-m", "comment", "--comment", comment, "-j", "DROP")
 
-    def _limit_rule(self, network: IPNetworkT) -> tuple[str, ...]:
+    def _limit_rule(self, network: IPNetworkT, comment: str = _COMMENT) -> tuple[str, ...]:
         # hashlimit names are limited to 15 chars; derive a stable one per network.
         name = "sx" + hashlib.sha1(str(network).encode(), usedforsecurity=False).hexdigest()[:12]
         return (
@@ -86,7 +106,7 @@ class IptablesAdapter(FirewallAdapter):
             "-m",
             "comment",
             "--comment",
-            _COMMENT,
+            comment,
             "-j",
             "DROP",
         )
@@ -95,20 +115,16 @@ class IptablesAdapter(FirewallAdapter):
         self, network: IPNetworkT, *, duration: int | None = None, comment: str = ""
     ) -> BlockEntry:
         runner = self._runner(network)
-        rule = self._drop_rule(network)
-        exists = await runner.run("-w", "-C", CHAIN, *rule, check=False)
-        if not exists.ok:
-            try:
-                await runner.run("-w", "-I", CHAIN, "1", *rule)
-            except FirewallError:
-                self._record("block", self.backend, False)
-                raise
+        tag, expires = _comment_for(duration)
+        # Replace any existing rule for this network so a new duration takes effect.
+        await self._delete_rules(runner, network)
+        try:
+            await runner.run("-w", "-I", CHAIN, "1", *self._drop_rule(network, tag))
+        except FirewallError:
+            self._record("block", self.backend, False)
+            raise
         self._record("block", self.backend, True)
-        entry = BlockEntry(
-            network=str(network),
-            expires_at=datetime.now(UTC) + timedelta(seconds=duration) if duration else None,
-            comment=comment,
-        )
+        entry = BlockEntry(network=str(network), expires_at=expires, comment=comment)
         self._meta[str(network)] = entry
         return entry
 
@@ -116,14 +132,17 @@ class IptablesAdapter(FirewallAdapter):
         self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None
     ) -> BlockEntry:
         runner = self._runner(network)
-        rule = self._limit_rule(network)
-        exists = await runner.run("-w", "-C", CHAIN, *rule, check=False)
-        if not exists.ok:
-            await runner.run("-w", "-A", CHAIN, *rule)
+        tag, expires = _comment_for(duration)
+        await self._delete_rules(runner, network)
+        try:
+            await runner.run("-w", "-A", CHAIN, *self._limit_rule(network, tag))
+        except FirewallError:
+            self._record("rate_limit", self.backend, False)
+            raise
         self._record("rate_limit", self.backend, True)
         entry = BlockEntry(
             network=str(network),
-            expires_at=datetime.now(UTC) + timedelta(seconds=duration) if duration else None,
+            expires_at=expires,
             comment=f"rate limit {self.rate_limit_pps}/s",
             rate_limited=True,
         )
@@ -131,33 +150,48 @@ class IptablesAdapter(FirewallAdapter):
         return entry
 
     async def unblock(self, network: IPNetworkT) -> bool:
-        runner = self._runner(network)
-        removed = False
-        for rule in (self._drop_rule(network), self._limit_rule(network)):
-            # Delete every copy; -D removes one at a time.
-            for _ in range(16):
-                result = await runner.run("-w", "-D", CHAIN, *rule, check=False)
-                if not result.ok:
-                    break
-                removed = True
+        removed = await self._delete_rules(self._runner(network), network)
         self._meta.pop(str(network), None)
         self._record("unblock", self.backend, removed)
+        return removed
+
+    async def _rules(self, runner: CommandRunner) -> list[list[str]]:
+        """Rules in our chain as argv token lists (``-A SENTINELX -s ...``)."""
+        result = await runner.run("-w", "-S", CHAIN, check=False)
+        if not result.ok:
+            return []
+        rules = []
+        for line in result.stdout.splitlines():
+            try:
+                parts = shlex.split(line)
+            except ValueError:
+                continue
+            if len(parts) >= 4 and parts[0] == "-A" and parts[1] == CHAIN and "-s" in parts:
+                rules.append(parts)
+        return rules
+
+    async def _delete_rules(self, runner: CommandRunner, network: IPNetworkT) -> bool:
+        """Delete every rule in our chain for ``network``, whatever its comment."""
+        removed = False
+        for parts in await self._rules(runner):
+            if parts[parts.index("-s") + 1] != str(network):
+                continue
+            result = await runner.run("-w", "-D", *parts[1:], check=False)
+            removed = removed or result.ok
         return removed
 
     async def list_blocked(self) -> list[BlockEntry]:
         entries: dict[str, BlockEntry] = {}
         for runner in (r for r in (self._v4, self._v6) if r is not None):
-            result = await runner.run("-w", "-S", CHAIN, check=False)
-            if not result.ok:
-                continue
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if len(parts) < 4 or parts[0] != "-A" or "-s" not in parts:
-                    continue
+            for parts in await self._rules(runner):
                 network = parts[parts.index("-s") + 1]
-                limited = "hashlimit" in parts
-                entries[network] = self._meta.get(network) or BlockEntry(
-                    network=network, rate_limited=limited
+                comment = parts[parts.index("--comment") + 1] if "--comment" in parts else ""
+                known = self._meta.get(network)
+                entries[network] = BlockEntry(
+                    network=network,
+                    expires_at=_expiry_from(comment),
+                    comment=known.comment if known else "",
+                    rate_limited="hashlimit" in parts,
                 )
         return list(entries.values())
 
