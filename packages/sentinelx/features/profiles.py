@@ -30,8 +30,27 @@ class FlowState:
     """
 
     key: FlowKey
+    """Canonical (direction-independent) key, so both halves share one state."""
+
     first_seen: float
     last_seen: float
+
+    initiator_ip: str = ""
+    """Who opened the conversation.
+
+    Tracked separately because :attr:`key` is canonicalised and therefore does not
+    preserve direction. Seeded from the first packet seen and corrected when a
+    bare SYN arrives, since the SYN sender is definitively the initiator.
+    """
+
+    initiator_port: int = 0
+    responder_ip: str = ""
+    responder_port: int = 0
+    """The service port - what the initiator was trying to reach."""
+
+    direction_confirmed: bool = False
+    """True once a SYN fixed the direction, rather than it being inferred."""
+
     packets: int = 0
     bytes_total: int = 0
     payload_bytes: int = 0
@@ -40,6 +59,8 @@ class FlowState:
     ack_seen: bool = False
     fin_seen: bool = False
     rst_seen: bool = False
+    short_session_recorded: bool = False
+    """Guards against counting one teardown twice (FIN followed by RST)."""
 
     @property
     def duration(self) -> float:

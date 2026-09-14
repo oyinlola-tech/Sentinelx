@@ -101,10 +101,19 @@ class FeatureContext:
     flow: FlowState
     stats: GlobalStats
     now: float
+    profiles: dict[str, SourceProfile]
+    """Every tracked profile. Needed when the packet's sender is not the party a
+    detector cares about - e.g. a server's RST closing an attacker's session."""
 
     #: Populated lazily by :meth:`features` - built at most once per packet even
     #: when several detectors ask for it.
     _features: dict[str, Any] | None = None
+
+    def profile_of(self, ip: str) -> SourceProfile | None:
+        """The profile for any tracked address, not only this packet's sender."""
+        if ip == self.profile.source_ip:
+            return self.profile
+        return self.profiles.get(ip)
 
     def features(self) -> dict[str, Any]:
         """The flattened feature vector for this source, at this instant."""
@@ -181,16 +190,31 @@ class FeatureExtractor:
 
         # A completed-then-quickly-reset session is the brute-force signal; it can
         # only be recognised at teardown, which is here.
-        if flow.short_lived and packet.tcp_flags is not None and (packet.tcp_flags.rst or packet.tcp_flags.fin):
-            originator = self.profiles.get(flow.key.src_ip)
-            if originator is not None and flow.key.dst_port:
-                originator.record_short_session(now, flow.key.dst_port)
+        if (
+            flow.short_lived
+            and not flow.short_session_recorded
+            and packet.tcp_flags is not None
+            and (packet.tcp_flags.rst or packet.tcp_flags.fin)
+        ):
+            originator = self.profiles.get(flow.initiator_ip)
+            if originator is not None and flow.responder_port:
+                originator.record_short_session(now, flow.responder_port)
+                # Record once per flow: a teardown is often FIN then RST, and
+                # counting both would double every brute-force attempt.
+                flow.short_session_recorded = True
 
         self._packets_since_sweep += 1
         if self._packets_since_sweep >= _SWEEP_INTERVAL:
             self._sweep(now)
 
-        return FeatureContext(packet=packet, profile=profile, flow=flow, stats=self.stats, now=now)
+        return FeatureContext(
+            packet=packet,
+            profile=profile,
+            flow=flow,
+            stats=self.stats,
+            now=now,
+            profiles=self.profiles,
+        )
 
     def _profile_for(self, source_ip: str, now: float) -> SourceProfile:
         profile = self.profiles.get(source_ip)
@@ -213,7 +237,15 @@ class FeatureExtractor:
         if flow is None:
             if len(self.flows) >= self.max_flows:
                 self._evict_flows(now)
-            flow = FlowState(key=key, first_seen=now, last_seen=now)
+            flow = FlowState(
+                key=key,
+                first_seen=now,
+                last_seen=now,
+                initiator_ip=packet.src_ip,
+                initiator_port=packet.src_port or 0,
+                responder_ip=packet.dst_ip,
+                responder_port=packet.dst_port or 0,
+            )
             self.flows[key] = flow
         return flow
 
@@ -228,6 +260,21 @@ class FeatureExtractor:
             return
         if flags.is_syn_only:
             flow.syn_seen = True
+            if not flow.direction_confirmed:
+                # The SYN sender is the initiator, whatever the first packet we
+                # happened to observe suggested.
+                flow.initiator_ip = packet.src_ip
+                flow.initiator_port = packet.src_port or 0
+                flow.responder_ip = packet.dst_ip
+                flow.responder_port = packet.dst_port or 0
+                flow.direction_confirmed = True
+        elif flags.is_syn_ack and not flow.direction_confirmed:
+            # We joined mid-handshake: the SYN-ACK sender is the responder.
+            flow.initiator_ip = packet.dst_ip
+            flow.initiator_port = packet.dst_port or 0
+            flow.responder_ip = packet.src_ip
+            flow.responder_port = packet.src_port or 0
+            flow.direction_confirmed = True
         elif flags.is_syn_ack:
             flow.syn_ack_seen = True
         elif flags.ack and not (flags.fin or flags.rst):
