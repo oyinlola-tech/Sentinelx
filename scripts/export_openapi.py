@@ -27,7 +27,10 @@ def main() -> int:
     schema = create_app(settings).openapi()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"wrote {target.relative_to(ROOT)} ({len(schema['paths'])} paths)")
+    shown = target.resolve()
+    if shown.is_relative_to(ROOT):
+        shown = shown.relative_to(ROOT)
+    print(f"wrote {shown} ({len(schema['paths'])} paths)")
     return 0
 
 

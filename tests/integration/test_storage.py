@@ -1,7 +1,7 @@
 """Storage tests.
 
 Run against SQLite always. Set SENTINELX_TEST_POSTGRES_URL / SENTINELX_TEST_REDIS_URL
-(``make test-integration`` does this with docker compose) to run the same tests
+(``make test-integration`` starts throwaway containers for this) to run the same tests
 against real PostgreSQL and Redis.
 """
 
