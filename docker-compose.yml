@@ -1,0 +1,138 @@
+# SentinelX stack: PostgreSQL, Redis, database migration, API, dashboard.
+#
+#   cp .env.example .env    # then set the secrets it marks as required
+#   docker compose up -d --build
+#
+# NETWORKING - read before expecting live capture:
+# Containers on a bridge network see only their own traffic, never the host's.
+# The default stack therefore runs detection on PCAP replay, and on traffic you send
+# to the stack itself. For live capture of host traffic, run the `capture` profile,
+# which starts `sensor` on the HOST network with CAP_NET_RAW (and CAP_NET_ADMIN, used
+# only if you enable a firewall backend). Linux only. See docs/deployment.md.
+#
+#   docker compose --profile capture up -d --build
+
+name: sentinelx
+
+x-api-env: &api-env
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-sentinelx}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-sentinelx}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ characters) in .env}
+  API__BOOTSTRAP_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+  API__METRICS_TOKEN: ${METRICS_TOKEN:-}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  DETECTION_MODE: ${DETECTION_MODE:-balanced}
+  RESPONSE_MODE: ${RESPONSE_MODE:-detect_only}
+  DRY_RUN: ${DRY_RUN:-true}
+  FIREWALL_BACKEND: ${FIREWALL_BACKEND:-null}
+  CAPTURE_INTERFACE: ${CAPTURE_INTERFACE:-any}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  RETENTION_DAYS: ${RETENTION_DAYS:-30}
+  SENSOR_NAME: ${SENSOR_NAME:-sentinelx}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinelx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinelx}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Redis holds only rate-limit counters, tickets and caches: nothing to persist.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [backend]
+
+  migrate:
+    build: { context: ., dockerfile: docker/Dockerfile.api }
+    image: sentinelx-api:local
+    command: ["sentinelx", "db", "upgrade"]
+    environment: *api-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [backend]
+
+  api:
+    image: sentinelx-api:local
+    restart: unless-stopped
+    environment: *api-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    ports:
+      # Bound to loopback: put a TLS-terminating reverse proxy in front for remote access.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - pcaps:/data/pcaps
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [backend, frontend]
+
+  dashboard:
+    build: { context: ., dockerfile: docker/Dockerfile.dashboard }
+    image: sentinelx-dashboard:local
+    restart: unless-stopped
+    environment:
+      SENTINELX_API_URL: http://api:8000
+      SENTINELX_PUBLIC_WS_URL: ${PUBLIC_WS_URL:-ws://localhost:8000}
+    depends_on:
+      api: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [frontend]
+
+  # Live capture of host traffic. Replaces `api`: same image, host network, packet
+  # capabilities. Start with: docker compose --profile capture up -d
+  sensor:
+    profiles: [capture]
+    image: sentinelx-api:local
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      <<: *api-env
+      # Host networking cannot resolve compose service names; published ports are used instead.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sentinelx}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-5433}/${POSTGRES_DB:-sentinelx}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_HOST_PORT:-6380}/0
+      API_HOST: 127.0.0.1
+    command: ["sentinelx", "start", "--capture"]
+    cap_drop: [ALL]
+    cap_add: [NET_RAW, NET_ADMIN]
+    security_opt: ["no-new-privileges:false"]  # file capabilities on python require exec privilege gain
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    volumes:
+      - pcaps:/data/pcaps
+
+volumes:
+  postgres-data:
+  pcaps:
+
+networks:
+  backend:
+  frontend:

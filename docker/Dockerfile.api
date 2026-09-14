@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1.7
+# SentinelX API + detection pipeline.
+
+FROM python:3.12-slim-bookworm AS build
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /src
+COPY pyproject.toml README.md ./
+COPY packages ./packages
+RUN pip wheel --wheel-dir /wheels .
+
+FROM python:3.12-slim-bookworm AS runtime
+LABEL org.opencontainers.image.title="sentinelx-api" \
+      org.opencontainers.image.description="SentinelX network intrusion detection and prevention API" \
+      org.opencontainers.image.licenses="Apache-2.0"
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
+    RULES_DIRECTORY=/app/rules PCAP_DIRECTORY=/data/pcaps API_HOST=0.0.0.0 API_PORT=8000 LOG_FORMAT=json
+
+# libpcap: BPF filter compilation. nftables/iptables: firewall adapters (only used when
+# FIREWALL_BACKEND is set and the container has CAP_NET_ADMIN). tini: signal handling.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libpcap0.8 nftables iptables libcap2-bin tini \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /wheels /wheels
+RUN pip install /wheels/*.whl && rm -rf /wheels
+
+# Live capture and firewall changes need CAP_NET_RAW / CAP_NET_ADMIN. File capabilities on
+# the interpreter let the non-root user use them - but only when the container is started
+# with `cap_add` (the `capture` compose profile). Without cap_add they are inert.
+RUN setcap cap_net_raw,cap_net_admin+eip "$(readlink -f "$(command -v python3)")"
+
+RUN groupadd --system --gid 10001 sentinelx \
+ && useradd --system --uid 10001 --gid sentinelx --home-dir /app --shell /usr/sbin/nologin sentinelx \
+ && mkdir -p /app /data/pcaps /data/models && chown -R sentinelx:sentinelx /app /data
+WORKDIR /app
+COPY --chown=sentinelx:sentinelx rules ./rules
+USER sentinelx
+
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/system/health', timeout=4).status == 200 else 1)"
+ENTRYPOINT ["tini", "--"]
+CMD ["sentinelx", "start"]
