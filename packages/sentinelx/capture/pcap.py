@@ -84,7 +84,7 @@ def _frame_timestamp(metadata: Any, index: int) -> float:
     tslow = getattr(metadata, "tslow", None)
     if tshigh is not None and tslow is not None:
         resolution = getattr(metadata, "tsresol", 1_000_000) or 1_000_000
-        return ((tshigh << 32) | tslow) / float(resolution)
+        return float((int(tshigh) << 32) | int(tslow)) / float(resolution)
 
     return float(index) * 0.001
 

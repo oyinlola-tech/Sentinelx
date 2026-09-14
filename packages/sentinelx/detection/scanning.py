@@ -71,7 +71,7 @@ class TcpPortScanDetector(Detector):
         refusal_ratio = profile.refusal_ratio()
         ports_touched = profile.dst_ports.unique_values(profile.source_ip, now)
         sensitive_hit = sorted(
-            {int(port) for port in ports_touched if int(port) in SENSITIVE_PORTS}
+            port for port in ports_touched if isinstance(port, int) and port in SENSITIVE_PORTS
         )
 
         confidence = self.scaled_confidence(

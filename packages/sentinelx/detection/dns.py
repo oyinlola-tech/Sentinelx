@@ -47,8 +47,10 @@ class DnsAnomalyDetector(Detector):
 
     def _tunnelling(self, context: FeatureContext, dns: dict[str, object]) -> Detection | None:
         settings = self.settings
-        label_length = int(dns.get("max_label_length") or 0)
-        entropy = float(dns.get("name_entropy") or 0.0)  # type: ignore[arg-type]
+        raw_length = dns.get("max_label_length")
+        raw_entropy = dns.get("name_entropy")
+        label_length = raw_length if isinstance(raw_length, int) else 0
+        entropy = float(raw_entropy) if isinstance(raw_entropy, (int, float)) else 0.0
         if (
             label_length < settings.dns_long_label_length
             and entropy < settings.dns_high_entropy_threshold

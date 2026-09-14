@@ -170,7 +170,9 @@ class CorrelationEngine:
         distinct = {d.detector for d, _ in pending}
         # An incident needs corroboration: either several distinct detectors, or
         # a single detection severe enough to warrant one on its own.
-        standalone = risk.score >= 90 and detection.severity is Severity.CRITICAL
+        standalone = (
+            risk.score >= self.settings.standalone_risk_threshold and detection.severity is Severity.CRITICAL
+        )
         if len(distinct) < self.settings.min_detections and not standalone:
             return None
 

@@ -56,6 +56,13 @@ class SlidingWindow[T]:
     def timestamps(self) -> Iterator[float]:
         return (ts for ts, _ in self._entries)
 
+    def count_since(self, cutoff: float) -> int:
+        """Entries with timestamp >= ``cutoff``. Lets a caller narrow the window."""
+        return sum(1 for ts, _ in self._entries if ts >= cutoff)
+
+    def items_since(self, cutoff: float) -> Iterator[T]:
+        return (item for ts, item in self._entries if ts >= cutoff)
+
     def span(self) -> float:
         """Seconds between the oldest and newest retained entry."""
         if len(self._entries) < 2:
@@ -186,6 +193,11 @@ class UniqueWindow[K: Hashable]:
             return set()
         window.expire(now)
         return set(window.items())
+
+    def unique_since(self, key: K, cutoff: float) -> int:
+        """Distinct values for ``key`` observed at or after ``cutoff``."""
+        window = self._windows.get(key)
+        return len(set(window.items_since(cutoff))) if window else 0
 
     def total_count(self, key: K, now: float) -> int:
         """Total observations (not distinct) for ``key``."""

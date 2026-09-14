@@ -52,7 +52,7 @@ _SIOCGIFADDR = 0x8915  # ioctl: read an interface's IPv4 address
 _SYS_NET = Path("/sys/class/net")
 
 
-def _sysfs_reader(directory: Path) -> Callable[[str, str], str]:
+def _sysfs_reader(directory: Path) -> Callable[..., str]:
     """Return a reader for files under one ``/sys/class/net`` entry.
 
     Missing attributes are normal (a loopback device has no MAC), so absence
@@ -358,7 +358,7 @@ class LiveCapture(PacketCapture):
             except TimeoutError:
                 continue
             except OSError as exc:
-                if not self.running:
+                if self._stop_requested():  # stop() may have closed the socket mid-read
                     break
                 self.stats.errors += 1
                 log.warning("capture_read_error", error=str(exc))
@@ -378,6 +378,15 @@ class LiveCapture(PacketCapture):
             poll_counter += 1
             if poll_counter % 512 == 0:
                 self._update_kernel_drops(sock)
+
+    def _stop_requested(self) -> bool:
+        """Re-read the running flag after an await.
+
+        A method rather than an inline ``not self.running`` so the type checker does
+        not narrow the flag from the enclosing ``while`` - another task can call
+        :meth:`stop` while this one is suspended.
+        """
+        return not self._running
 
     @staticmethod
     def _recv(sock: socket.socket, size: int) -> tuple[bytes, Any] | None:

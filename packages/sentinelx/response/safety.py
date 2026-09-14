@@ -102,6 +102,10 @@ class SafetyGuard:
         Raises:
             SafetyViolationError: naming the precise rule that refused it.
         """
+        if not target or target != target.strip() or any(not ch.isprintable() or ch.isspace() for ch in target):
+            # Reject rather than normalise: the raw target is written to the audit
+            # log, and embedded newlines there would allow forged log entries.
+            self._refuse(repr(target), "invalid_address", "target contains whitespace or control characters")
         try:
             network = parse_network(target, strict=False)
         except ValueError as exc:

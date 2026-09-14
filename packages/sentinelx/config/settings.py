@@ -256,6 +256,11 @@ class CorrelationSettings(BaseModel):
         description="How long an incident stays open for new, related detections.",
     )
     min_detections: int = Field(default=2, ge=1)
+    standalone_risk_threshold: Percent = Field(
+        default=85.0,
+        description="A single critical detection at or above this risk opens an incident "
+        "without waiting for corroboration.",
+    )
     max_open_incidents: int = Field(default=1000, ge=1)
     group_by_source: bool = True
     group_by_destination: bool = False
