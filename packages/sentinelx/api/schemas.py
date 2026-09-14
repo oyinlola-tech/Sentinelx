@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sentinelx.common.enums import IncidentStatus, UserRole
 
 __all__ = [
+    "AllowlistRequest",
     "BlockRequest",
     "ChangePasswordRequest",
     "ConfigUpdateRequest",
@@ -24,12 +25,14 @@ __all__ = [
     "IncidentUpdateRequest",
     "LoginRequest",
     "Message",
+    "PasswordResetRequest",
     "RejectRequest",
     "ReplayRequest",
     "RuleDefinitionRequest",
     "RuleEnabledRequest",
     "RuleTestRequest",
     "SafetyCheckRequest",
+    "ScenarioRequest",
     "SensorStartRequest",
     "TokenResponse",
     "UnblockRequest",
@@ -67,7 +70,7 @@ class TokenResponse(BaseModel):
     refresh_token: str | None = Field(
         default=None, description="Returned only to non-browser clients; browsers receive an httpOnly cookie."
     )
-    token_type: Literal["bearer"] = "bearer"
+    token_type: Literal["bearer"] = "bearer"  # noqa: S105 - OAuth2 token type name, not a secret
     expires_at: str
     user: UserResponse
     csrf_token: str | None = None
