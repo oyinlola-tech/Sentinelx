@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ from sentinelx.storage.audit import AuditService
 from sentinelx.storage.database import Database
 from sentinelx.storage.persister import EventPersister
 from sentinelx.storage.redis_state import SharedState
-from sentinelx.storage.repositories import RetentionRepository
+from sentinelx.storage.repositories import BlockRepository, RetentionRepository
 from sentinelx.telemetry.logging import get_logger
 from sentinelx.telemetry.metrics import ProcessSampler, metrics
 from sentinelx.threat_intel import LocalAllowlistProvider, LocalDenylistProvider, ThreatIntelService
@@ -104,7 +105,9 @@ class Platform:
         self.rules.attach(self.pipeline.detection)
         active = await self.rules.apply()
 
-        await self.pipeline.start()
+        known_expiries = await self._recorded_block_expiries()
+        await self.pipeline.start(known_expiries)
+        await self._reconcile_block_records()
         if persist:
             self.persister = EventPersister(self.database, self.bus, self.settings)
             await self.persister.start()
@@ -225,6 +228,36 @@ class Platform:
         return purged
 
     # ------------------------------------------------------------------ status
+
+    async def _recorded_block_expiries(self) -> dict[str, datetime]:
+        """Expiry deadlines of blocks recorded as active, keyed by network."""
+        async with self.database.session() as session:
+            records = await BlockRepository(session).active()
+        expiries: dict[str, datetime] = {}
+        for record in records:
+            if record.expires_at is not None:
+                expires = record.expires_at
+                expiries[record.network] = (
+                    expires if expires.tzinfo else expires.replace(tzinfo=UTC)
+                )
+        return expiries
+
+    async def _reconcile_block_records(self) -> None:
+        """Mark recorded blocks inactive when the firewall no longer enforces them.
+
+        A block can end while SentinelX is stopped (nftables expires elements in the
+        kernel, an operator flushes the table); the history must not keep showing it.
+        """
+        if self.pipeline is None:
+            return
+        enforced = {entry.network for entry in await self.pipeline.response.blocked()}
+        async with self.database.session() as session:
+            repository = BlockRepository(session)
+            for record in await repository.active():
+                if record.network not in enforced:
+                    await repository.deactivate(
+                        record.network, removal_reason="no longer present in the firewall"
+                    )
 
     async def health(self) -> dict[str, Any]:
         process = self._sampler.sample()

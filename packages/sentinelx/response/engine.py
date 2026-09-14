@@ -139,12 +139,21 @@ class ResponseEngine:
 
     # ------------------------------------------------------------- lifecycle
 
-    async def start(self) -> None:
-        """Prepare the firewall (only when it will be used) and start the expiry reaper."""
+    async def start(self, known_expiries: dict[str, datetime] | None = None) -> None:
+        """Prepare the firewall (only when it will be used) and start the expiry reaper.
+
+        Args:
+            known_expiries: expiry times recorded before a restart, by network. Backends
+                that cannot store an expiry themselves (pf, Windows Firewall) report
+                blocks without one; this restores the deadline so they still expire.
+        """
         if self.settings.prevention_active or self.settings.mode is ResponseMode.MANUAL_APPROVAL:
             await self._ensure_firewall_ready()
+        known = known_expiries or {}
         try:
             for entry in await self.firewall.list_blocked():
+                if entry.expires_at is None and entry.network in known:
+                    entry = replace(entry, expires_at=known[entry.network])
                 self._blocks[entry.network] = entry
         except FirewallError as exc:
             log.warning("firewall_list_failed", error=str(exc))
@@ -585,37 +594,67 @@ class ResponseEngine:
     # --------------------------------------------------------------- expiry
 
     async def _reap_expired(self) -> None:
-        """Remove temporary blocks whose time is up.
-
-        nftables expires elements in the kernel on its own; this loop keeps our
-        registry in step and enforces expiry for backends that cannot (iptables).
-        """
+        """Remove temporary blocks whose time is up, every few seconds."""
         while True:
             await asyncio.sleep(5)
-            now = datetime.now(UTC)
-            expired = [e for e in self._blocks.values() if e.expires_at and e.expires_at <= now]
-            for entry in expired:
+            try:
+                await self.expire_due()
+            except Exception:  # the reaper must survive anything and keep running
+                log.exception("expiry_reaper_failed")
+
+    async def expire_due(self) -> int:
+        """Unblock every temporary block whose expiry has passed. Returns how many.
+
+        nftables also expires elements in the kernel; this keeps the registry in step
+        and enforces expiry for backends that cannot (iptables, pf, Windows Firewall).
+
+        Runs under the same lock as blocking, and re-checks each entry after taking it,
+        so a block an administrator placed while this was pending is never removed. A
+        failed unblock keeps the entry (so it is retried) and is audited as failed; it
+        is never reported as done.
+        """
+        now = datetime.now(UTC)
+        due = [e for e in self._blocks.values() if e.expires_at and e.expires_at <= now]
+        expired = 0
+        for entry in due:
+            async with self._lock:
+                if self._blocks.get(entry.network) is not entry:
+                    continue  # replaced or removed while waiting for the lock
                 try:
                     await self.firewall.unblock(parse_network(entry.network))
-                except FirewallError as exc:
+                except (FirewallError, ValueError) as exc:
                     log.warning("expiry_unblock_failed", network=entry.network, error=str(exc))
+                    await self._audit_record(
+                        {
+                            "action": "UNBLOCK_IP",
+                            "actor": "system",
+                            "target": entry.network,
+                            "reason": "temporary block expired",
+                            "source": "engine",
+                            "outcome": "failed",
+                            "details": {"error": str(exc)[:500], "will_retry": True},
+                        }
+                    )
+                    continue
                 self._blocks.pop(entry.network, None)
                 metrics.blocked_addresses.set(len(self._blocks))
-                if self.bus:
-                    await self.bus.publish(
-                        EventType.IP_UNBLOCKED,
-                        {"network": entry.network, "reason": "temporary block expired"},
-                    )
-                await self._audit_record(
-                    {
-                        "action": "UNBLOCK_IP",
-                        "actor": "system",
-                        "target": entry.network,
-                        "reason": "temporary block expired",
-                        "source": "engine",
-                        "outcome": "executed",
-                    }
+            expired += 1
+            if self.bus:
+                await self.bus.publish(
+                    EventType.IP_UNBLOCKED,
+                    {"network": entry.network, "reason": "temporary block expired"},
                 )
+            await self._audit_record(
+                {
+                    "action": "UNBLOCK_IP",
+                    "actor": "system",
+                    "target": entry.network,
+                    "reason": "temporary block expired",
+                    "source": "engine",
+                    "outcome": "executed",
+                }
+            )
+        return expired
 
     # ---------------------------------------------------------------- views
 

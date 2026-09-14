@@ -116,13 +116,15 @@ class IptablesAdapter(FirewallAdapter):
     ) -> BlockEntry:
         runner = self._runner(network)
         tag, expires = _comment_for(duration)
-        # Replace any existing rule for this network so a new duration takes effect.
-        await self._delete_rules(runner, network)
+        previous = await self._rules_for(runner, network)
         try:
             await runner.run("-w", "-I", CHAIN, "1", *self._drop_rule(network, tag))
         except FirewallError:
             self._record("block", self.backend, False)
             raise
+        # Only now remove the rules it replaces, so the address is never unblocked in
+        # between and a failed insert leaves the old block in force.
+        await self._delete(runner, previous)
         self._record("block", self.backend, True)
         entry = BlockEntry(network=str(network), expires_at=expires, comment=comment)
         self._meta[str(network)] = entry
@@ -133,12 +135,13 @@ class IptablesAdapter(FirewallAdapter):
     ) -> BlockEntry:
         runner = self._runner(network)
         tag, expires = _comment_for(duration)
-        await self._delete_rules(runner, network)
+        previous = await self._rules_for(runner, network)
         try:
             await runner.run("-w", "-A", CHAIN, *self._limit_rule(network, tag))
         except FirewallError:
             self._record("rate_limit", self.backend, False)
             raise
+        await self._delete(runner, previous)
         self._record("rate_limit", self.backend, True)
         entry = BlockEntry(
             network=str(network),
@@ -176,15 +179,25 @@ class IptablesAdapter(FirewallAdapter):
                 rules.append(parts)
         return rules
 
+    async def _rules_for(self, runner: CommandRunner, network: IPNetworkT) -> list[list[str]]:
+        return [
+            parts
+            for parts in await self._rules(runner)
+            if parts[parts.index("-s") + 1] == str(network)
+        ]
+
+    @staticmethod
+    async def _delete(runner: CommandRunner, rules: list[list[str]]) -> None:
+        # Delete by rule specification, as printed by ``iptables -S``. Raises on
+        # permission errors rather than reporting a rule as gone.
+        for parts in rules:
+            await runner.run("-w", "-D", *parts[1:])
+
     async def _delete_rules(self, runner: CommandRunner, network: IPNetworkT) -> bool:
         """Delete every rule in our chain for ``network``, whatever its comment."""
-        removed = False
-        for parts in await self._rules(runner):
-            if parts[parts.index("-s") + 1] != str(network):
-                continue
-            await runner.run("-w", "-D", *parts[1:])  # raises on permission errors
-            removed = True
-        return removed
+        rules = await self._rules_for(runner, network)
+        await self._delete(runner, rules)
+        return bool(rules)
 
     async def list_blocked(self) -> list[BlockEntry]:
         entries: dict[str, BlockEntry] = {}

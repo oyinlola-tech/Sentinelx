@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -270,24 +271,50 @@ class TestNftablesAdapter:
         assert not any("policy drop" in line for line in joined)
         assert sum("flush chain" in line for line in joined) == 2
 
-    async def test_block_builds_argv_from_validated_address(self) -> None:
+    async def test_block_replaces_element_atomically_with_new_timeout(self) -> None:
         runner = FakeRunner()
         adapter = NftablesAdapter(runner=runner)  # type: ignore[arg-type]
         await adapter.block(parse_network("203.0.113.5"), duration=900)
-        assert runner.calls[-1] == (
-            "add",
-            "element",
-            "inet",
-            "sentinelx",
-            "blocklist_v4",
-            "{",
-            "203.0.113.5",
-            "timeout",
-            "900s",
-            "}",
-        )
+        call = runner.calls[-1]
+        # One nft invocation (one kernel transaction): add, delete, add-with-timeout.
+        statements = " ".join(call).split(" ; ")
+        assert statements == [
+            "add element inet sentinelx blocklist_v4 { 203.0.113.5 }",
+            "delete element inet sentinelx blocklist_v4 { 203.0.113.5 }",
+            "add element inet sentinelx blocklist_v4 { 203.0.113.5 timeout 900s }",
+        ]
         await adapter.block(parse_network("2001:db8::/64"))
-        assert runner.calls[-1][4] == "blocklist_v6" and "2001:db8::/64" in runner.calls[-1]
+        assert "blocklist_v6" in runner.calls[-1] and "2001:db8::/64" in runner.calls[-1]
+        assert "timeout" not in runner.calls[-1]
+
+    async def test_unblock_reports_failures_instead_of_not_blocked(self) -> None:
+        runner = FakeRunner()
+
+        async def denied(*args: str, check: bool = True) -> CommandResult:
+            return CommandResult(
+                argv=args, returncode=1, stdout="", stderr="Operation not permitted", duration=0.0
+            )
+
+        runner.run = denied  # type: ignore[method-assign]
+        with pytest.raises(FirewallError, match="not permitted"):
+            await NftablesAdapter(runner=runner).unblock(parse_network("203.0.113.5"))  # type: ignore[arg-type]
+        with pytest.raises(FirewallError, match="not permitted"):
+            await NftablesAdapter(runner=runner).list_blocked()  # type: ignore[arg-type]
+
+    async def test_unblock_of_absent_element_is_false_not_error(self) -> None:
+        runner = FakeRunner()
+
+        async def missing(*args: str, check: bool = True) -> CommandResult:
+            return CommandResult(
+                argv=args,
+                returncode=1,
+                stdout="",
+                stderr="Error: Could not process rule: No such file or directory",
+                duration=0.0,
+            )
+
+        runner.run = missing  # type: ignore[method-assign]
+        assert await NftablesAdapter(runner=runner).unblock(parse_network("203.0.113.5")) is False  # type: ignore[arg-type]
 
     def test_rejects_unsafe_table_names(self) -> None:
         with pytest.raises(FirewallError):
@@ -373,3 +400,88 @@ class TestWebhookSafety:
 
         shown = webhook_display("https://u:pw@hooks.example.com:8443/T0/B0/SECRET?sig=1")
         assert shown == "https://hooks.example.com:8443/…"
+
+
+class TestExpiryAndFailures:
+    async def test_expired_temporary_block_is_removed_and_audited(self) -> None:
+        engine, firewall, audit, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=False)
+        await engine.manual_action(
+            ActionType.TEMPORARY_BLOCK, "203.0.113.7", actor="admin", reason="r", duration=30
+        )
+        entry = (await engine.blocked())[0]
+        engine._blocks[entry.network] = replace(entry, expires_at=datetime.now(UTC))
+        assert await engine.expire_due() == 1
+        assert await engine.blocked() == []
+        assert firewall.operations[-1] == ("unblock", "203.0.113.7/32")
+        assert audit[-1]["outcome"] == "executed" and audit[-1]["action"] == "UNBLOCK_IP"
+
+    async def test_failed_expiry_keeps_the_block_and_audits_failure(self) -> None:
+        engine, firewall, audit, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=False)
+        await engine.manual_action(
+            ActionType.TEMPORARY_BLOCK, "203.0.113.8", actor="admin", reason="r", duration=30
+        )
+        entry = (await engine.blocked())[0]
+        engine._blocks[entry.network] = replace(entry, expires_at=datetime.now(UTC))
+
+        async def denied(network: object) -> bool:
+            raise FirewallError("nft: Operation not permitted")
+
+        firewall.unblock = denied  # type: ignore[method-assign]
+        assert await engine.expire_due() == 0
+        assert [e.network for e in await engine.blocked()] == ["203.0.113.8/32"]
+        assert audit[-1]["outcome"] == "failed" and audit[-1]["details"]["will_retry"]  # type: ignore[index]
+
+    async def test_null_backend_never_reports_a_block_as_executed(self) -> None:
+        from sentinelx.firewall import NullFirewall
+
+        settings = ResponseSettings(mode=ResponseMode.DETECT_ONLY, dry_run=False)
+        engine = ResponseEngine(
+            settings, NullFirewall(), scoring=ScoringSettings(), guard=guard(settings)
+        )
+        decision = await engine.manual_action(
+            ActionType.BLOCK_IP, "203.0.113.9", actor="admin", reason="r"
+        )
+        assert decision.outcome == "failed" and "FIREWALL_BACKEND=null" in (decision.error or "")
+
+    def test_manual_approval_without_dry_run_needs_a_real_backend(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="FIREWALL_BACKEND"):
+            ResponseSettings(
+                mode=ResponseMode.MANUAL_APPROVAL, dry_run=False, firewall_backend="null"
+            )
+
+    async def test_duplicate_block_of_bare_address_is_recognised(self) -> None:
+        engine, firewall, _, _ = await engine_for(ResponseMode.AUTOMATIC, dry_run=False)
+        await engine.handle_detection(detection(), risk(99))
+        second = await engine.handle_detection(detection(), risk(99))
+        assert "already blocked" in next(
+            d.reason for d in second if d.action is ActionType.TEMPORARY_BLOCK
+        )
+        assert firewall.operations == [("block", "203.0.113.5/32")]
+
+    async def test_rule_duration_is_used_for_automatic_blocks(self) -> None:
+        engine, _, _, _ = await engine_for(ResponseMode.AUTOMATIC, dry_run=False)
+        ruled = replace(detection(), recommended_duration_seconds=3600)
+        decisions = await engine.handle_detection(ruled, risk(99))
+        block = next(d for d in decisions if d.action is ActionType.TEMPORARY_BLOCK)
+        assert block.duration_seconds == 3600
+
+
+class TestIptablesExpiry:
+    async def test_temporary_block_deadline_survives_a_restart(self) -> None:
+        v4 = FakeRunner()
+        adapter = IptablesAdapter(runner_v4=v4, runner_v6=FakeRunner())  # type: ignore[arg-type]
+        await adapter.block(parse_network("203.0.113.5"), duration=600)
+        inserted = v4.calls[-1]
+        comment = inserted[inserted.index("--comment") + 1]
+        assert comment.startswith("sentinelx:exp=")
+        # A fresh adapter (a restarted server) reads the deadline back from iptables.
+        restarted_runner = FakeRunner()
+        restarted_runner.stdout = (
+            f"-N SENTINELX\n-A SENTINELX -s 203.0.113.5/32 -m comment --comment {comment} -j DROP\n"
+        )
+        entries = await IptablesAdapter(
+            runner_v4=restarted_runner, runner_v6=FakeRunner()
+        ).list_blocked()  # type: ignore[arg-type]
+        assert entries[0].expires_at is not None and entries[0].temporary

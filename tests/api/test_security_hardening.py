@@ -171,3 +171,42 @@ class TestResourceExhaustion:
                 f"/replay/scenarios/{name}", headers=roles["analyst"], json={"params": params}
             )
             assert response.status_code == 422, (params, response.text)
+
+
+class TestPreventionSettings:
+    async def test_allowlist_can_be_extended_while_prevention_is_active(
+        self, platform: Platform, client: httpx.AsyncClient, admin: dict[str, str]
+    ) -> None:
+        platform.settings.response.firewall_backend = "nftables"
+        enabled = await client.patch(
+            "/config/response",
+            headers=admin,
+            json={
+                "changes": {"mode": "automatic", "dry_run": False},
+                "confirmation": "ENABLE PREVENTION",
+            },
+        )
+        assert enabled.status_code == 200, enabled.text
+        extended = await client.put(
+            "/firewall/allowlist", headers=admin, json={"networks": ["198.51.100.0/24"]}
+        )
+        assert extended.status_code == 200, extended.text
+        assert platform.settings.prevention_active
+
+    async def test_environment_safety_posture_beats_stored_override(
+        self, tmp_path: object, platform: Platform
+    ) -> None:
+        from sentinelx.config.settings import ResponseSettings
+        from sentinelx.services.config import ConfigService
+        from sentinelx.storage.repositories import SettingRepository
+
+        async with platform.database.session() as session:
+            await SettingRepository(session).set(
+                "response", {"mode": "automatic", "dry_run": False}, "admin"
+            )
+        # The environment explicitly asks for dry run: that must win on restart.
+        platform.settings.response = ResponseSettings(dry_run=True, firewall_backend="nftables")
+        service = ConfigService(platform.settings, platform.database, platform.audit, platform.bus)
+        await service.load_overrides()
+        assert platform.settings.response.dry_run is True
+        assert not platform.settings.prevention_active

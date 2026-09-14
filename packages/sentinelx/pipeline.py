@@ -205,9 +205,9 @@ class Pipeline:
 
     # ------------------------------------------------------------- lifecycle
 
-    async def start(self) -> None:
+    async def start(self, known_expiries: dict[str, datetime] | None = None) -> None:
         await self.bus.start()
-        await self.response.start()
+        await self.response.start(known_expiries)
         self.started_at = time.monotonic()
         log.info(
             "pipeline_started",

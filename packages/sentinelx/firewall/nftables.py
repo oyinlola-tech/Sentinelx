@@ -254,7 +254,17 @@ class NftablesAdapter(FirewallAdapter):
         final.append("}")
         try:
             await self._runner.run(
-                "add", *target, *element, ";", "delete", *target, *element, ";", "add", *target, *final
+                "add",
+                *target,
+                *element,
+                ";",
+                "delete",
+                *target,
+                *element,
+                ";",
+                "add",
+                *target,
+                *final,
             )
         except FirewallError:
             self._record(operation, self.backend, False)
