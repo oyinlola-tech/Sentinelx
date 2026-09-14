@@ -15,7 +15,15 @@ import math
 from collections import Counter, deque
 from collections.abc import Hashable, Iterator
 
-__all__ = ["CounterWindow", "DistinctWindow", "EwmaBaseline", "SlidingWindow", "TimeSeriesCounter", "UniqueWindow"]
+__all__ = [
+    "CounterWindow",
+    "DistinctWindow",
+    "EwmaBaseline",
+    "SizeWindow",
+    "SlidingWindow",
+    "TimeSeriesCounter",
+    "UniqueWindow",
+]
 
 
 class SlidingWindow[T]:
@@ -249,6 +257,52 @@ class CounterWindow[K: Hashable]:
                 del self._windows[key]
 
 
+class SizeWindow(SlidingWindow[int]):
+    """A sliding window of sizes with O(1) running mean and standard deviation.
+
+    Flood detectors look at size uniformity on every packet past their threshold;
+    recomputing statistics over the window each time was quadratic under a flood.
+    """
+
+    __slots__ = ("_sum", "_sum_squares")
+
+    def __init__(self, duration: float, max_entries: int = 100_000) -> None:
+        super().__init__(duration, max_entries)
+        self._sum = 0
+        self._sum_squares = 0
+
+    def add(self, timestamp: float, item: int) -> None:
+        self._entries.append((timestamp, item))
+        self._sum += item
+        self._sum_squares += item * item
+        self.expire(timestamp)
+        while len(self._entries) > self._max_entries:
+            self._drop(self._entries.popleft()[1])
+
+    def expire(self, now: float) -> None:
+        cutoff = now - self.duration
+        entries = self._entries
+        while entries and entries[0][0] < cutoff:
+            self._drop(entries.popleft()[1])
+
+    def _drop(self, item: int) -> None:
+        self._sum -= item
+        self._sum_squares -= item * item
+
+    @property
+    def mean(self) -> float:
+        return self._sum / len(self._entries) if self._entries else 0.0
+
+    @property
+    def stddev(self) -> float:
+        count = len(self._entries)
+        if count == 0:
+            return 0.0
+        mean = self._sum / count
+        # Integer sums keep this exact; max() guards float rounding below zero.
+        return math.sqrt(max(self._sum_squares / count - mean * mean, 0.0))
+
+
 class DistinctWindow[V: Hashable](SlidingWindow[V]):
     """A sliding window that also tracks how many *distinct* values it holds.
 
@@ -341,6 +395,11 @@ class UniqueWindow[K: Hashable]:
             return 0
         window.expire(now)
         return window.distinct
+
+    def contains(self, key: K, value: Hashable) -> bool:
+        """Whether ``key`` has touched ``value`` within the window. O(1)."""
+        window = self._windows.get(key)
+        return window is not None and window.count_of(value) > 0
 
     def unique_values(self, key: K, now: float) -> set[Hashable]:
         window = self._windows.get(key)

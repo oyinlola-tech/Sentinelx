@@ -15,7 +15,7 @@ from typing import Any
 
 from sentinelx.common.enums import Protocol
 from sentinelx.common.models import FlowKey, PacketEvent
-from sentinelx.common.windows import DistinctWindow, SlidingWindow, TimeSeriesCounter, UniqueWindow
+from sentinelx.common.windows import DistinctWindow, SizeWindow, TimeSeriesCounter, UniqueWindow
 
 __all__ = ["FlowState", "SourceProfile", "parent_domain"]
 
@@ -132,7 +132,7 @@ class SourceProfile:
     dns_long_label: int = 52
     dns_high_entropy: float = 3.8
 
-    packets: SlidingWindow[int] = field(init=False)
+    packets: SizeWindow = field(init=False)
     packet_times: TimeSeriesCounter = field(init=False)
     dst_ports: UniqueWindow[str] = field(init=False)
     dst_ips: UniqueWindow[str] = field(init=False)
@@ -160,7 +160,7 @@ class SourceProfile:
     def __post_init__(self) -> None:
         window = self.window_seconds
         durations = tuple({*self.durations, window})
-        self.packets = SlidingWindow(window)
+        self.packets = SizeWindow(window)
         self.packet_times = TimeSeriesCounter(durations)
         self.dst_ports = UniqueWindow(window, max_keys=1)
         self.dst_ips = UniqueWindow(window, max_keys=1)
@@ -291,23 +291,14 @@ class SourceProfile:
         return self.packets.rate()
 
     def packet_size_stats(self) -> dict[str, float]:
-        """Mean, min and max packet size in the window.
+        """Mean and standard deviation of packet size in the window. O(1).
 
         Floods are typically uniform in size; interactive traffic is not, so the
         spread is itself a signal.
         """
-        sizes = list(self.packets.items())
-        if not sizes:
-            return {"mean": 0.0, "min": 0.0, "max": 0.0, "stddev": 0.0}
-        count = len(sizes)
-        mean = sum(sizes) / count
-        variance = sum((size - mean) ** 2 for size in sizes) / count
-        return {
-            "mean": round(mean, 2),
-            "min": float(min(sizes)),
-            "max": float(max(sizes)),
-            "stddev": round(variance**0.5, 2),
-        }
+        if not self.packets:
+            return {"mean": 0.0, "stddev": 0.0}
+        return {"mean": round(self.packets.mean, 2), "stddev": round(self.packets.stddev, 2)}
 
     def protocol_distribution(self) -> dict[str, float]:
         total = sum(self.protocol_counts.values())
@@ -349,7 +340,6 @@ class SourceProfile:
             "http_unique_paths": self.http_requests.distinct,
             "packet_size_mean": sizes["mean"],
             "packet_size_stddev": sizes["stddev"],
-            "packet_size_max": sizes["max"],
             "protocol_distribution": self.protocol_distribution(),
             "total_packets": self.total_packets,
             "total_bytes": self.total_bytes,

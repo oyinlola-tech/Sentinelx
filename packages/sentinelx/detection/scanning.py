@@ -69,10 +69,9 @@ class TcpPortScanDetector(Detector):
         span = max(profile.dst_ports.span(profile.source_ip), 0.001)
         syn_ack_ratio = profile.syn_ack_ratio()
         refusal_ratio = profile.refusal_ratio()
-        ports_touched = profile.dst_ports.unique_values(profile.source_ip, now)
-        sensitive_hit = sorted(
-            port for port in ports_touched if isinstance(port, int) and port in SENSITIVE_PORTS
-        )
+        # Probe the small sensitive-port set against the window, not the reverse:
+        # O(13) per SYN rather than O(distinct ports) during a large scan.
+        sensitive_hit = sorted(port for port in SENSITIVE_PORTS if profile.dst_ports.contains(profile.source_ip, port))
 
         confidence = self.scaled_confidence(
             unique_ports, settings.port_scan_unique_ports, floor=0.6, ceiling=0.97, saturation=4.0
