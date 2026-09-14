@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import json
+import logging
+
+import pytest
+import structlog
+from pydantic import ValidationError
+
+from sentinelx.common.enums import DetectionMode, ResponseMode
+from sentinelx.config.settings import ResponseSettings, Settings, TelemetrySettings
+from sentinelx.telemetry.logging import configure_logging, get_logger, redact_secrets
+
+
+class TestSafetyDefaults:
+    def test_fresh_install_is_detection_only_and_dry_run(self) -> None:
+        settings = Settings()
+        assert settings.response.mode is ResponseMode.DETECT_ONLY
+        assert settings.response.dry_run is True
+        assert settings.prevention_active is False
+        assert settings.safety_banner().startswith("DETECTION ONLY")
+
+    def test_loopback_is_restored_to_allowlist_if_removed(self) -> None:
+        response = ResponseSettings(allowlist_networks=["10.0.0.0/8"])
+        assert "127.0.0.0/8" in response.allowlist_networks
+        assert "::1/128" in response.allowlist_networks
+
+    def test_automatic_enforcement_requires_real_firewall(self) -> None:
+        with pytest.raises(ValidationError, match="FIREWALL_BACKEND"):
+            ResponseSettings(mode=ResponseMode.AUTOMATIC, dry_run=False, firewall_backend="null")
+
+    def test_automatic_dry_run_with_null_backend_is_allowed(self) -> None:
+        response = ResponseSettings(mode=ResponseMode.AUTOMATIC, dry_run=True)
+        assert response.prevention_active is False
+
+
+class TestEnvironment:
+    def test_flat_aliases_map_to_nested_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DETECTION_MODE", "aggressive")
+        monkeypatch.setenv("DRY_RUN", "false")
+        monkeypatch.setenv("RESPONSE_MODE", "automatic")
+        monkeypatch.setenv("FIREWALL_BACKEND", "nftables")
+        monkeypatch.setenv("CORS_ORIGINS", "https://a.example,https://b.example")
+        settings = Settings()
+        assert settings.detection.mode is DetectionMode.AGGRESSIVE
+        assert settings.prevention_active is True
+        assert settings.api.cors_origins == ["https://a.example", "https://b.example"]
+
+    def test_nested_variable_overrides_threshold(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DETECTION__PORT_SCAN_UNIQUE_PORTS", "77")
+        assert Settings().detection.port_scan_unique_ports == 77
+
+    def test_invalid_network_lists_every_bad_entry(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            ResponseSettings(allowlist_networks=["10.0.0.0/8", "nope", "300.1.1.1"])
+        message = str(excinfo.value)
+        assert "nope" in message and "300.1.1.1" in message
+
+    def test_bpf_filter_rejects_shell_metacharacters(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(capture={"bpf_filter": "tcp; rm -rf /"})
+
+    def test_production_refuses_insecure_configuration(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            Settings(environment="production", api={"jwt_secret": "short", "cors_origins": ["*"]})
+        message = str(excinfo.value)
+        assert "JWT_SECRET" in message and "CORS" in message and "SQLite" in message
+
+    def test_development_generates_ephemeral_jwt_secret(self) -> None:
+        assert len(Settings().api.jwt_secret) >= 32
+
+
+class TestRedaction:
+    def test_sensitive_keys_are_redacted_recursively(self) -> None:
+        event = redact_secrets(None, "info", {"event": "x", "password": "p", "nested": {"api_key": "k", "ok": 1}})
+        assert event["password"] == "[redacted]"
+        assert event["nested"] == {"api_key": "[redacted]", "ok": 1}
+
+    def test_inline_credentials_are_scrubbed_from_text(self) -> None:
+        event = redact_secrets(None, "info", {"event": "x", "dsn": "postgresql://u:hunter2@db/x", "h": "Bearer abc.def"})
+        assert "hunter2" not in json.dumps(event)
+        assert "abc.def" not in json.dumps(event)
+
+    def test_configured_json_logger_never_emits_password(self, capsys: pytest.CaptureFixture[str]) -> None:
+        configure_logging(TelemetrySettings(log_format="json"))
+        get_logger("t").info("login", username="alice", password="hunter2")
+        captured = capsys.readouterr().err
+        assert "hunter2" not in captured and "alice" in captured
+        structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
