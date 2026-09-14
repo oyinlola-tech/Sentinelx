@@ -120,7 +120,9 @@ class BruteForceDetector(Detector):
         confidence = self.scaled_confidence(
             count, self.settings.brute_force_attempts, floor=0.6, ceiling=0.95, saturation=4.0
         )
-        severity = Severity.CRITICAL if count >= self.settings.brute_force_attempts * 4 else Severity.HIGH
+        severity = (
+            Severity.CRITICAL if count >= self.settings.brute_force_attempts * 4 else Severity.HIGH
+        )
 
         self.hits += 1
         detection = Detection(
@@ -128,7 +130,9 @@ class BruteForceDetector(Detector):
             category=self.category,
             severity=severity,
             confidence=confidence,
-            title=f"{service.upper()} brute force" if port == 22 else f"Brute force against {service}",
+            title=f"{service.upper()} brute force"
+            if port == 22
+            else f"Brute force against {service}",
             description=(
                 f"{attacker} opened {count} short-lived {service} sessions to "
                 f"{context.flow.responder_ip} in {span:.0f}s."
@@ -204,8 +208,12 @@ class SynFloodDetector(Detector):
             title="SYN flood",
             description=f"{context.packet.src_ip} sent {syns} SYNs in {span:.1f}s without completing handshakes.",
             evidence=evidence,
-            confidence=self.scaled_confidence(syns, self.settings.syn_flood_threshold, floor=0.65, ceiling=0.96),
-            severity=Severity.CRITICAL if syns >= self.settings.syn_flood_threshold * 4 else Severity.HIGH,
+            confidence=self.scaled_confidence(
+                syns, self.settings.syn_flood_threshold, floor=0.65, ceiling=0.96
+            ),
+            severity=Severity.CRITICAL
+            if syns >= self.settings.syn_flood_threshold * 4
+            else Severity.HIGH,
             recommended_action=ActionType.RATE_LIMIT,
             observation_window=round(span, 3),
             packet_count=len(profile.packets),
@@ -267,8 +275,12 @@ class ConnectionRateDetector(Detector):
             title="Abnormal connection rate",
             description=f"{context.packet.src_ip} opened {attempts} connections in {window:.0f}s.",
             evidence=evidence,
-            confidence=self.scaled_confidence(attempts, self.settings.connection_rate_threshold, floor=0.55, ceiling=0.9),
-            severity=Severity.HIGH if attempts >= self.settings.connection_rate_threshold * 3 else Severity.MEDIUM,
+            confidence=self.scaled_confidence(
+                attempts, self.settings.connection_rate_threshold, floor=0.55, ceiling=0.9
+            ),
+            severity=Severity.HIGH
+            if attempts >= self.settings.connection_rate_threshold * 3
+            else Severity.MEDIUM,
             recommended_action=ActionType.RATE_LIMIT,
             observation_window=window,
             packet_count=len(profile.packets),
@@ -336,8 +348,12 @@ class IcmpFloodDetector(Detector):
             title="ICMP flood",
             description=f"{packet.src_ip} sent {count} ICMP packets to {packet.dst_ip} in {window:.0f}s.",
             evidence=evidence,
-            confidence=self.scaled_confidence(count, self.settings.icmp_flood_threshold, floor=0.6, ceiling=0.95),
-            severity=Severity.HIGH if count >= self.settings.icmp_flood_threshold * 3 else Severity.MEDIUM,
+            confidence=self.scaled_confidence(
+                count, self.settings.icmp_flood_threshold, floor=0.6, ceiling=0.95
+            ),
+            severity=Severity.HIGH
+            if count >= self.settings.icmp_flood_threshold * 3
+            else Severity.MEDIUM,
             recommended_action=ActionType.RATE_LIMIT,
             observation_window=window,
             packet_count=len(profile.packets),
@@ -410,8 +426,12 @@ class HttpFloodDetector(Detector):
             title="HTTP request flood",
             description=f"{context.packet.src_ip} sent {count} HTTP requests in {window:.0f}s.",
             evidence=evidence,
-            confidence=self.scaled_confidence(count, self.settings.http_flood_threshold, floor=0.6, ceiling=0.94),
-            severity=Severity.HIGH if count >= self.settings.http_flood_threshold * 3 else Severity.MEDIUM,
+            confidence=self.scaled_confidence(
+                count, self.settings.http_flood_threshold, floor=0.6, ceiling=0.94
+            ),
+            severity=Severity.HIGH
+            if count >= self.settings.http_flood_threshold * 3
+            else Severity.MEDIUM,
             recommended_action=ActionType.RATE_LIMIT,
             observation_window=window,
             packet_count=len(profile.packets),

@@ -210,9 +210,7 @@ class HorizontalScanDetector(Detector):
         span = max(profile.dst_ips.span(profile.source_ip), 0.001)
         port = context.packet.dst_port
         service = service_name(port) if port else None
-        severity = (
-            Severity.CRITICAL if port and port in SENSITIVE_PORTS else Severity.HIGH
-        )
+        severity = Severity.CRITICAL if port and port in SENSITIVE_PORTS else Severity.HIGH
 
         evidence = [
             Evidence(
@@ -268,8 +266,11 @@ class HorizontalScanDetector(Detector):
             ),
             evidence=evidence,
             confidence=self.scaled_confidence(
-                unique_hosts, settings.horizontal_scan_unique_hosts,
-                floor=0.62, ceiling=0.96, saturation=4.0,
+                unique_hosts,
+                settings.horizontal_scan_unique_hosts,
+                floor=0.62,
+                ceiling=0.96,
+                saturation=4.0,
             ),
             severity=severity,
             recommended_action=ActionType.TEMPORARY_BLOCK,
@@ -351,8 +352,11 @@ class UdpScanDetector(Detector):
             ),
             evidence=evidence,
             confidence=self.scaled_confidence(
-                unique_ports, settings.udp_scan_unique_ports,
-                floor=0.55, ceiling=0.9, saturation=4.0,
+                unique_ports,
+                settings.udp_scan_unique_ports,
+                floor=0.55,
+                ceiling=0.9,
+                saturation=4.0,
             ),
             severity=Severity.MEDIUM,
             recommended_action=ActionType.ALERT,

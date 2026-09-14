@@ -20,6 +20,21 @@ from sentinelx.common.windows import SlidingWindow, UniqueWindow
 __all__ = ["FlowState", "SourceProfile"]
 
 
+def _is_service_reply(src_port: int | None, dst_port: int) -> bool:
+    """True when a UDP packet has the shape of a server answering a client.
+
+    A DNS or NTP server replies *from* its well-known port *to* whatever
+    ephemeral port each client used, so it naturally "contacts" hundreds of
+    distinct ports. Counting those towards UDP-scan detection flagged every
+    resolver on the network during testing.
+
+    Trade-off, documented in docs/detection-engine.md: a scanner that forges a
+    privileged source port (e.g. ``nmap -g 53``) against high ports is not
+    counted here. The TCP detectors and the anomaly layer still see it.
+    """
+    return src_port is not None and src_port < 1024 <= dst_port
+
+
 @dataclass(slots=True)
 class FlowState:
     """What we know about one conversation.
@@ -157,7 +172,8 @@ class SourceProfile:
                 self.syn_packets.add(timestamp, None)
                 self.connections_started.add(timestamp, None)
         elif packet.protocol is Protocol.UDP and packet.dst_port is not None:
-            self.udp_ports.add(self.source_ip, packet.dst_port, timestamp)
+            if not _is_service_reply(packet.src_port, packet.dst_port):
+                self.udp_ports.add(self.source_ip, packet.dst_port, timestamp)
             dns = packet.metadata.get("dns")
             if isinstance(dns, dict) and not dns.get("is_response"):
                 name = dns.get("query_name")
