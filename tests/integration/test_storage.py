@@ -155,6 +155,8 @@ async def test_detection_filters_and_like_escaping(database: Database) -> None:
         assert summary["false_positives"] == 1 and summary["false_positive_rate"] == 1.0
         timeline = await AnalyticsRepository(session).timeline(now - timedelta(days=1), 60, database.dialect)
         assert sum(bucket["total"] for bucket in timeline) == 3
+        # Zero-filled: one bucket per hour across the whole day, not just the busy ones.
+        assert 24 <= len(timeline) <= 26 and sum(1 for bucket in timeline if bucket["total"] == 0) >= 20
 
 
 async def test_audit_redacts_secrets_and_orders_newest_first(database: Database) -> None:

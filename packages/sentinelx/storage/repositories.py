@@ -541,7 +541,15 @@ class AnalyticsRepository:
                 moment = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=UTC)
                 raw.append((float(int(moment.timestamp() // bucket_seconds) * bucket_seconds), severity, 1))
 
-        buckets: dict[float, dict[str, Any]] = {}
+        # A complete, zero-filled series: an interval with no detections is a real
+        # observation ("nothing happened"), and omitting it makes one busy interval
+        # render as if it spanned the whole period.
+        first = int(since.timestamp() // bucket_seconds) * bucket_seconds
+        last = int(datetime.now(UTC).timestamp() // bucket_seconds) * bucket_seconds
+        buckets: dict[float, dict[str, Any]] = {
+            float(start): {"bucket_start": datetime.fromtimestamp(start, UTC).isoformat(), "total": 0}
+            for start in range(first, last + 1, bucket_seconds)
+        }
         for start, severity, count in raw:
             entry = buckets.setdefault(start, {"bucket_start": datetime.fromtimestamp(start, UTC).isoformat(), "total": 0})
             entry[severity] = entry.get(severity, 0) + count
