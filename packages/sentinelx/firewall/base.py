@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import contextlib
 import shutil
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,6 +34,8 @@ from sentinelx.telemetry.metrics import metrics
 __all__ = ["BlockEntry", "CommandResult", "CommandRunner", "FirewallAdapter"]
 
 log = get_logger(__name__)
+
+PLATFORM: str = sys.platform
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,28 +121,16 @@ class CommandRunner:
                 raise FirewallError("refusing firewall argument containing control characters")
         argv = (*self._prefix, self.binary, *args)
         started = time.perf_counter()
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
-                raise FirewallError(
-                    f"firewall command timed out after {self.timeout}s", command=" ".join(argv)
-                ) from None
-        except OSError as exc:
-            raise FirewallError(
-                f"could not execute firewall command: {exc}", command=" ".join(argv)
-            ) from exc
+        if PLATFORM == "win32":
+            # asyncio subprocesses need the Proactor event loop on Windows, and uvicorn
+            # uses the selector loop in some modes; a worker thread works with both.
+            returncode, stdout, stderr = await self._run_in_thread(argv)
+        else:
+            returncode, stdout, stderr = await self._run_async(argv)
 
         result = CommandResult(
             argv=argv,
-            returncode=process.returncode if process.returncode is not None else -1,
+            returncode=returncode,
             stdout=stdout.decode("utf-8", errors="replace"),
             stderr=stderr.decode("utf-8", errors="replace"),
             duration=time.perf_counter() - started,
@@ -155,6 +148,53 @@ class CommandRunner:
                 stderr=result.stderr,
             )
         return result
+
+    async def _run_async(self, argv: tuple[str, ...]) -> tuple[int, bytes, bytes]:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError as exc:
+            raise FirewallError(
+                f"could not execute firewall command: {exc}", command=" ".join(argv)
+            ) from exc
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            # Never leave a firewall command running unattended.
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise FirewallError(
+                f"firewall command timed out after {self.timeout}s", command=" ".join(argv)
+            ) from None
+        return (process.returncode if process.returncode is not None else -1), stdout, stderr
+
+    async def _run_in_thread(self, argv: tuple[str, ...]) -> tuple[int, bytes, bytes]:
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        def run() -> subprocess.CompletedProcess[bytes]:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                timeout=self.timeout,
+                check=False,
+                creationflags=creation_flags,
+            )
+
+        try:
+            completed = await asyncio.to_thread(run)
+        except subprocess.TimeoutExpired:
+            raise FirewallError(
+                f"firewall command timed out after {self.timeout}s", command=" ".join(argv)
+            ) from None
+        except OSError as exc:
+            raise FirewallError(
+                f"could not execute firewall command: {exc}", command=" ".join(argv)
+            ) from exc
+        return completed.returncode, completed.stdout, completed.stderr
 
 
 class FirewallAdapter(abc.ABC):

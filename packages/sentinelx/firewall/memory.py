@@ -17,7 +17,7 @@ from sentinelx.common.errors import FirewallError
 from sentinelx.common.netutils import IPNetworkT
 from sentinelx.firewall.base import BlockEntry, FirewallAdapter
 
-__all__ = ["MemoryFirewall", "NullFirewall"]
+__all__ = ["MemoryFirewall", "NullFirewall", "UnavailableFirewall"]
 
 
 class MemoryFirewall(FirewallAdapter):
@@ -91,6 +91,11 @@ class NullFirewall(FirewallAdapter):
         "enforced; set FIREWALL_BACKEND to a backend this host supports"
     )
 
+    def __init__(self, reason: str = "") -> None:
+        self.reason = reason
+        if reason:
+            self._REFUSAL = f"nothing can be enforced: {reason}"
+
     async def setup(self) -> None:
         return None
 
@@ -117,4 +122,27 @@ class NullFirewall(FirewallAdapter):
         return None
 
     async def health(self) -> dict[str, object]:
-        return {"backend": self.backend, "ok": True, "enforcing": False, "entries": 0}
+        return {
+            "backend": self.backend,
+            "ok": True,
+            "enforcing": False,
+            "entries": 0,
+            "reason": self.reason or None,
+        }
+
+
+class UnavailableFirewall(NullFirewall):
+    """A configured backend that cannot run on this host.
+
+    Keeps the platform running (detection does not depend on the firewall) while making
+    the problem impossible to miss: health reports it as failing, and every attempted
+    change fails with the reason.
+    """
+
+    def __init__(self, backend: str, reason: str) -> None:
+        super().__init__(reason)
+        self.backend = backend
+        self._REFUSAL = f"the {backend} firewall backend is unavailable: {reason}"
+
+    async def health(self) -> dict[str, object]:
+        return {"backend": self.backend, "ok": False, "enforcing": False, "error": self.reason}

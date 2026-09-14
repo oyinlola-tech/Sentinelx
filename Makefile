@@ -65,6 +65,12 @@ test-integration: ## Run tests against real PostgreSQL and Redis in throwaway co
 	SENTINELX_TEST_POSTGRES_URL=postgresql://sentinelx:sentinelx-test@127.0.0.1:55432/sentinelx_test \
 	SENTINELX_TEST_REDIS_URL=redis://127.0.0.1:56379/0 $(BIN)/python -m pytest
 
+.PHONY: test-kernel
+test-kernel: ## Real capture and firewall tests inside a private network namespace (Linux)
+	unshare -rn sh -c 'ip link set lo up && ip link add sx0 type dummy && \
+	  ip addr add 203.0.113.5/32 dev sx0 && ip addr add 203.0.113.6/32 dev sx0 && \
+	  ip link set sx0 up && $(BIN)/python -m pytest tests/kernel -p no:cacheprovider'
+
 .PHONY: coverage
 coverage: ## Test with a coverage report
 	$(BIN)/python -m pytest --cov --cov-report=term-missing

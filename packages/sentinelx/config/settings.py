@@ -333,10 +333,22 @@ class ResponseSettings(BaseModel):
         description="When true, response actions are decided, recorded and displayed, "
         "but never applied to the firewall.",
     )
-    firewall_backend: Literal["nftables", "iptables", "null"] = "null"
+    firewall_backend: Literal["null", "auto", "nftables", "iptables", "pf", "windows_firewall"] = (
+        Field(
+            default="null",
+            description="Where blocks are enforced. 'auto' picks nftables or iptables on "
+            "Linux, pf on macOS and Windows Firewall on Windows, if usable.",
+        )
+    )
     nft_table: str = Field(default="sentinelx", pattern=r"^[A-Za-z0-9_]{1,32}$")
     nft_set: str = Field(default="blocklist", pattern=r"^[A-Za-z0-9_]{1,32}$")
     nft_family: Literal["inet", "ip", "ip6"] = "inet"
+    pf_anchor: str = Field(
+        default="com.apple/sentinelx",
+        pattern=r"^[A-Za-z0-9_.]{1,32}(/[A-Za-z0-9_.]{1,32})?$",
+        description="pf anchor for SentinelX rules. The default is evaluated by the "
+        "stock macOS pf.conf; elsewhere add 'anchor \"sentinelx\"' to pf.conf.",
+    )
 
     default_block_seconds: int = Field(default=900, ge=30, le=86_400)
     max_block_seconds: int = Field(default=86_400, ge=60, le=30 * 86_400)
