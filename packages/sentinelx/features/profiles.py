@@ -15,9 +15,19 @@ from typing import Any
 
 from sentinelx.common.enums import Protocol
 from sentinelx.common.models import FlowKey, PacketEvent
-from sentinelx.common.windows import SlidingWindow, UniqueWindow
+from sentinelx.common.windows import DistinctWindow, SlidingWindow, TimeSeriesCounter, UniqueWindow
 
-__all__ = ["FlowState", "SourceProfile"]
+__all__ = ["FlowState", "SourceProfile", "parent_domain"]
+
+
+def parent_domain(name: str) -> str:
+    """Registrable-ish parent: the last two labels, or three for pairs like ``co.uk``."""
+    labels = [label for label in name.split(".") if label]
+    if len(labels) <= 2:
+        return ".".join(labels)
+    if len(labels[-2]) <= 3:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
 
 
 def _is_service_reply(src_port: int | None, dst_port: int) -> bool:
@@ -105,30 +115,42 @@ class FlowState:
 class SourceProfile:
     """Rolling behavioural profile of one source address.
 
-    All windows share the configured observation duration so that every feature
-    describes the same slice of time, which is what makes the evidence in a
-    detection internally consistent ("94 ports in 12 seconds" refers to one
-    window, not three different ones).
+    Every structure is sized to the longest detection window, so all features
+    describe the same slice of time and the evidence in a detection is internally
+    consistent ("94 ports in 12 seconds" refers to one window, not three).
+    Event series are :class:`TimeSeriesCounter` so that detectors asking about
+    shorter sub-windows get O(1) answers - see that class for why this matters.
     """
 
     source_ip: str
     window_seconds: float
     first_seen: float
     last_seen: float
+    durations: tuple[float, ...] = ()
+    """Every detector window, registered for O(1) sub-window counts."""
+
+    dns_long_label: int = 52
+    dns_high_entropy: float = 3.8
 
     packets: SlidingWindow[int] = field(init=False)
+    packet_times: TimeSeriesCounter = field(init=False)
     dst_ports: UniqueWindow[str] = field(init=False)
     dst_ips: UniqueWindow[str] = field(init=False)
-    syn_packets: SlidingWindow[None] = field(init=False)
-    syn_ack_received: SlidingWindow[None] = field(init=False)
-    rst_received: SlidingWindow[None] = field(init=False)
-    icmp_packets: SlidingWindow[None] = field(init=False)
     udp_ports: UniqueWindow[str] = field(init=False)
-    dns_queries: SlidingWindow[str] = field(init=False)
-    http_requests: SlidingWindow[str] = field(init=False)
-    connections_started: SlidingWindow[None] = field(init=False)
-    refused_connections: SlidingWindow[None] = field(init=False)
-    short_sessions: SlidingWindow[int] = field(init=False)
+    syn_packets: TimeSeriesCounter = field(init=False)
+    syn_ack_received: TimeSeriesCounter = field(init=False)
+    rst_received: TimeSeriesCounter = field(init=False)
+    icmp_packets: TimeSeriesCounter = field(init=False)
+    connections_started: TimeSeriesCounter = field(init=False)
+    refused_connections: TimeSeriesCounter = field(init=False)
+    dns_times: TimeSeriesCounter = field(init=False)
+    http_times: TimeSeriesCounter = field(init=False)
+    dns_queries: DistinctWindow[str] = field(init=False)
+    dns_suspicious: DistinctWindow[str] = field(init=False)
+    """Parent domains of queries whose leftmost label looks like encoded data."""
+    http_requests: DistinctWindow[str] = field(init=False)
+    short_sessions: DistinctWindow[int] = field(init=False)
+    """Service port of each completed-but-brief session."""
 
     total_packets: int = 0
     total_bytes: int = 0
@@ -137,19 +159,24 @@ class SourceProfile:
 
     def __post_init__(self) -> None:
         window = self.window_seconds
+        durations = tuple({*self.durations, window})
         self.packets = SlidingWindow(window)
-        self.dst_ports = UniqueWindow(window)
-        self.dst_ips = UniqueWindow(window)
-        self.syn_packets = SlidingWindow(window)
-        self.syn_ack_received = SlidingWindow(window)
-        self.rst_received = SlidingWindow(window)
-        self.icmp_packets = SlidingWindow(window)
-        self.udp_ports = UniqueWindow(window)
-        self.dns_queries = SlidingWindow(window)
-        self.http_requests = SlidingWindow(window)
-        self.connections_started = SlidingWindow(window)
-        self.refused_connections = SlidingWindow(window)
-        self.short_sessions = SlidingWindow(window)
+        self.packet_times = TimeSeriesCounter(durations)
+        self.dst_ports = UniqueWindow(window, max_keys=1)
+        self.dst_ips = UniqueWindow(window, max_keys=1)
+        self.udp_ports = UniqueWindow(window, max_keys=1)
+        self.syn_packets = TimeSeriesCounter(durations)
+        self.syn_ack_received = TimeSeriesCounter(durations)
+        self.rst_received = TimeSeriesCounter(durations)
+        self.icmp_packets = TimeSeriesCounter(durations)
+        self.connections_started = TimeSeriesCounter(durations)
+        self.refused_connections = TimeSeriesCounter(durations)
+        self.dns_times = TimeSeriesCounter(durations)
+        self.http_times = TimeSeriesCounter(durations)
+        self.dns_queries = DistinctWindow(window)
+        self.dns_suspicious = DistinctWindow(window)
+        self.http_requests = DistinctWindow(window)
+        self.short_sessions = DistinctWindow(window)
 
     # ------------------------------------------------------------------ update
 
@@ -160,6 +187,7 @@ class SourceProfile:
         self.total_packets += 1
         self.total_bytes += packet.length
         self.packets.add(timestamp, packet.length)
+        self.packet_times.add(timestamp)
         self.protocol_counts[packet.protocol] = self.protocol_counts.get(packet.protocol, 0) + 1
 
         if packet.dst_ip:
@@ -169,8 +197,8 @@ class SourceProfile:
             self.dst_ports.add(self.source_ip, packet.dst_port, timestamp)
             flags = packet.tcp_flags
             if flags is not None and flags.is_syn_only:
-                self.syn_packets.add(timestamp, None)
-                self.connections_started.add(timestamp, None)
+                self.syn_packets.add(timestamp)
+                self.connections_started.add(timestamp)
         elif packet.protocol is Protocol.UDP and packet.dst_port is not None:
             if not _is_service_reply(packet.src_port, packet.dst_port):
                 self.udp_ports.add(self.source_ip, packet.dst_port, timestamp)
@@ -178,13 +206,25 @@ class SourceProfile:
             if isinstance(dns, dict) and not dns.get("is_response"):
                 name = dns.get("query_name")
                 if name:
-                    self.dns_queries.add(timestamp, str(name))
+                    self._observe_dns(timestamp, str(name), dns)
         elif packet.protocol in (Protocol.ICMP, Protocol.ICMPV6):
-            self.icmp_packets.add(timestamp, None)
+            self.icmp_packets.add(timestamp)
 
         http = packet.metadata.get("http")
         if isinstance(http, dict) and http.get("is_request"):
             self.http_requests.add(timestamp, str(http.get("path") or "/"))
+            self.http_times.add(timestamp)
+
+    def _observe_dns(self, timestamp: float, name: str, dns: dict[str, Any]) -> None:
+        self.dns_queries.add(timestamp, name)
+        self.dns_times.add(timestamp)
+        # Classify once, here, using the parser's pre-computed label length and
+        # entropy, so the tunnelling detector never re-scans the window per packet.
+        label_length = dns.get("max_label_length") or 0
+        entropy = dns.get("name_entropy") or 0.0
+        leftmost = len(name.split(".", 1)[0])
+        if label_length >= self.dns_long_label or (leftmost >= 20 and entropy >= self.dns_high_entropy):
+            self.dns_suspicious.add(timestamp, parent_domain(name))
 
     def observe_reply(self, packet: PacketEvent) -> None:
         """Fold in a packet sent *to* this source.
@@ -197,10 +237,10 @@ class SourceProfile:
         if flags is None:
             return
         if flags.is_syn_ack:
-            self.syn_ack_received.add(packet.timestamp, None)
+            self.syn_ack_received.add(packet.timestamp)
         elif flags.rst:
-            self.rst_received.add(packet.timestamp, None)
-            self.refused_connections.add(packet.timestamp, None)
+            self.rst_received.add(packet.timestamp)
+            self.refused_connections.add(packet.timestamp)
 
     def record_short_session(self, timestamp: float, port: int) -> None:
         """Record a completed-but-brief session, the signal for credential guessing."""
@@ -210,12 +250,16 @@ class SourceProfile:
 
     def expire(self, now: float) -> None:
         """Drop everything outside the window. Called before reading features."""
-        for window in (
-            self.packets, self.syn_packets, self.syn_ack_received, self.rst_received,
-            self.icmp_packets, self.dns_queries, self.http_requests,
-            self.connections_started, self.refused_connections, self.short_sessions,
+        self.packets.expire(now)
+        self.dns_queries.expire(now)
+        self.dns_suspicious.expire(now)
+        self.http_requests.expire(now)
+        self.short_sessions.expire(now)
+        for series in (
+            self.packet_times, self.syn_packets, self.syn_ack_received, self.rst_received, self.icmp_packets,
+            self.connections_started, self.refused_connections, self.dns_times, self.http_times,
         ):
-            window.expire(now)
+            series.expire(now)
 
     @property
     def is_idle(self) -> bool:
@@ -299,9 +343,10 @@ class SourceProfile:
             "short_sessions": len(self.short_sessions),
             "icmp_count": len(self.icmp_packets),
             "dns_query_count": len(self.dns_queries),
-            "dns_unique_domains": len(set(self.dns_queries.items())),
+            "dns_suspicious_queries": len(self.dns_suspicious),
+            "dns_unique_domains": self.dns_queries.distinct,
             "http_request_count": len(self.http_requests),
-            "http_unique_paths": len(set(self.http_requests.items())),
+            "http_unique_paths": self.http_requests.distinct,
             "packet_size_mean": sizes["mean"],
             "packet_size_stddev": sizes["stddev"],
             "packet_size_max": sizes["max"],

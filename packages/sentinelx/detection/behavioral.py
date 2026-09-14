@@ -63,7 +63,7 @@ class BruteForceDetector(Detector):
 
         window = self.settings.brute_force_window_seconds
         port = service_port
-        count = sum(1 for p in profile.short_sessions.items() if p == port)
+        count = profile.short_sessions.count_of(port)
         if count < self.settings.brute_force_attempts:
             return None
 
@@ -236,8 +236,7 @@ class ConnectionRateDetector(Detector):
         self.evaluations += 1
         profile = context.profile
         window = self.settings.connection_rate_window_seconds
-        cutoff = context.now - window
-        attempts = sum(1 for ts in profile.connections_started.timestamps() if ts >= cutoff)
+        attempts = profile.connections_started.count(window, context.now)
         if attempts < self.settings.connection_rate_threshold:
             return None
 
@@ -304,13 +303,12 @@ class IcmpFloodDetector(Detector):
         self.evaluations += 1
         profile = context.profile
         window = self.settings.icmp_flood_window_seconds
-        cutoff = context.now - window
-        count = sum(1 for ts in profile.icmp_packets.timestamps() if ts >= cutoff)
+        count = profile.icmp_packets.count(window, context.now)
         if count < self.settings.icmp_flood_threshold:
             return None
 
-        span = max(profile.icmp_packets.span(), 0.001)
-        rate = len(profile.icmp_packets) / span
+        span = max(profile.icmp_packets.span(window), 0.001)
+        rate = count / span
         sizes = profile.packet_size_stats()
         evidence = [
             Evidence(
@@ -377,12 +375,11 @@ class HttpFloodDetector(Detector):
         self.evaluations += 1
         profile = context.profile
         window = self.settings.http_flood_window_seconds
-        cutoff = context.now - window
-        count = sum(1 for ts in profile.http_requests.timestamps() if ts >= cutoff)
+        count = profile.http_times.count(window, context.now)
         if count < self.settings.http_flood_threshold:
             return None
 
-        unique_paths = len(set(profile.http_requests.items()))
+        unique_paths = profile.http_requests.distinct
         rate = count / window
         evidence = [
             Evidence(

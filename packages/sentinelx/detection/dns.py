@@ -12,8 +12,6 @@ almost no network blocks outbound DNS.  Two patterns are covered:
 
 from __future__ import annotations
 
-from collections import Counter
-
 from sentinelx.common.enums import ActionType, Severity, ThreatCategory
 from sentinelx.common.models import Detection, Evidence
 from sentinelx.detection.base import Detector
@@ -58,18 +56,14 @@ class DnsAnomalyDetector(Detector):
             return None
 
         profile = context.profile
-        names = list(profile.dns_queries.items())
-        suspicious = [
-            name for name in names if _looks_encoded(name, settings.dns_long_label_length)
-        ]
-        if len(suspicious) < self._MIN_SUSPICIOUS_QUERIES:
+        suspicious_count = len(profile.dns_suspicious)
+        if suspicious_count < self._MIN_SUSPICIOUS_QUERIES:
             return None
 
-        parents = Counter(_parent_domain(name) for name in suspicious)
-        parent, parent_count = parents.most_common(1)[0]
+        parent, parent_count = profile.dns_suspicious.most_common(1)[0]
         # Tunnels concentrate on one parent domain the attacker controls. Spread
         # across many parents, long names are far more likely to be CDN noise.
-        concentration = parent_count / len(suspicious)
+        concentration = parent_count / suspicious_count
         if concentration < 0.6:
             return None
 
@@ -77,9 +71,9 @@ class DnsAnomalyDetector(Detector):
         evidence = [
             Evidence(
                 key="suspicious_queries",
-                value=len(suspicious),
+                value=suspicious_count,
                 threshold=self._MIN_SUSPICIOUS_QUERIES,
-                description=f"{len(suspicious)} queries with long or high-entropy labels in {span:.0f}s",
+                description=f"{suspicious_count} queries with long or high-entropy labels in {span:.0f}s",
                 weight=1.0,
             ),
             Evidence(
@@ -121,12 +115,12 @@ class DnsAnomalyDetector(Detector):
             context=context,
             title="Possible DNS tunnelling",
             description=(
-                f"{context.packet.src_ip} sent {len(suspicious)} DNS queries with encoded-looking "
+                f"{context.packet.src_ip} sent {suspicious_count} DNS queries with encoded-looking "
                 f"labels under {parent}."
             ),
             evidence=evidence,
             confidence=self.scaled_confidence(
-                len(suspicious),
+                suspicious_count,
                 self._MIN_SUSPICIOUS_QUERIES,
                 floor=0.6,
                 ceiling=0.92,
@@ -143,10 +137,8 @@ class DnsAnomalyDetector(Detector):
         settings = self.settings
         profile = context.profile
         window = settings.dns_window_seconds
-        cutoff = context.now - window
-        timestamps = [ts for ts in profile.dns_queries.timestamps() if ts >= cutoff]
-        count = len(timestamps)
-        unique = len(set(profile.dns_queries.items()))
+        count = profile.dns_times.count(window, context.now)
+        unique = profile.dns_queries.distinct
         if count < settings.dns_query_threshold and unique < settings.dns_unique_domain_threshold:
             return None
 
@@ -191,20 +183,3 @@ class DnsAnomalyDetector(Detector):
             packet_count=len(profile.packets),
             tags=("dns", "volume"),
         )
-
-
-def _looks_encoded(name: str, long_label: int) -> bool:
-    from sentinelx.parser.application import shannon_entropy
-
-    leftmost = name.split(".", 1)[0]
-    return len(leftmost) >= long_label or (len(leftmost) >= 20 and shannon_entropy(leftmost) >= 3.8)
-
-
-def _parent_domain(name: str) -> str:
-    """Registrable-ish parent: the last two labels (or three for short TLD pairs)."""
-    labels = [label for label in name.split(".") if label]
-    if len(labels) <= 2:
-        return ".".join(labels)
-    if len(labels[-2]) <= 3 and len(labels) >= 3:  # e.g. example.co.uk
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])

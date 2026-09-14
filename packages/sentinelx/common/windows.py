@@ -12,10 +12,10 @@ with no infrastructure at all.
 from __future__ import annotations
 
 import math
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Hashable, Iterator
 
-__all__ = ["CounterWindow", "EwmaBaseline", "SlidingWindow", "UniqueWindow"]
+__all__ = ["CounterWindow", "DistinctWindow", "EwmaBaseline", "SlidingWindow", "TimeSeriesCounter", "UniqueWindow"]
 
 
 class SlidingWindow[T]:
@@ -87,6 +87,100 @@ class SlidingWindow[T]:
         return bool(self._entries)
 
 
+class TimeSeriesCounter:
+    """Event timestamps with O(1) counts over several trailing windows at once.
+
+    Detectors ask "how many events in the last N seconds" for different N about
+    the same series (connection attempts over 10s for the rate detector, over 15s
+    for the scan detector, over a rule's own ``within``).  Counting by scanning the
+    deque is O(events) per question, and asked once per packet it is quadratic under
+    exactly the load an IDS must survive.
+
+    Timestamps live in a list with a moving head, and each registered duration keeps
+    its own head pointer that only ever advances, so every registered count is
+    amortised O(1).  Unregistered cutoffs use :func:`bisect.bisect_left`, O(log n).
+    Out-of-order timestamps (common when merged captures are replayed) are clamped
+    to the newest seen, which keeps the list sorted at the cost of a few
+    milliseconds of timing precision.
+    """
+
+    __slots__ = ("_heads", "_max_entries", "_start", "_times", "durations", "retention")
+
+    def __init__(self, durations: tuple[float, ...] | list[float], max_entries: int = 200_000) -> None:
+        cleaned = sorted({float(d) for d in durations if d > 0})
+        if not cleaned:
+            raise ValueError("at least one positive duration is required")
+        self.durations = tuple(cleaned)
+        self.retention = cleaned[-1]
+        self._times: list[float] = []
+        self._start = 0
+        self._heads: dict[float, int] = dict.fromkeys(self.durations, 0)
+        self._max_entries = max_entries
+
+    def add(self, timestamp: float) -> None:
+        times = self._times
+        if times and timestamp < times[-1]:
+            timestamp = times[-1]
+        times.append(timestamp)
+        self._advance(timestamp)
+        if len(times) - self._start > self._max_entries:
+            self._start = len(times) - self._max_entries
+            for duration, head in self._heads.items():
+                self._heads[duration] = max(head, self._start)
+        if self._start > 4096 and self._start * 2 > len(times):
+            self._compact()
+
+    def _advance(self, now: float) -> None:
+        times = self._times
+        end = len(times)
+        for duration, head in self._heads.items():
+            cutoff = now - duration
+            while head < end and times[head] < cutoff:
+                head += 1
+            self._heads[duration] = head
+        self._start = min(self._heads.values())
+
+    def _compact(self) -> None:
+        offset = self._start
+        del self._times[:offset]
+        self._start = 0
+        for duration in self._heads:
+            self._heads[duration] -= offset
+
+    def count(self, duration: float, now: float) -> int:
+        """Events in the trailing ``duration`` ending at ``now``."""
+        if duration in self._heads:
+            if self._times and now > self._times[-1]:
+                self._advance(now)
+            return len(self._times) - self._heads[duration]
+        return self.count_since(now - duration)
+
+    def count_since(self, cutoff: float) -> int:
+        from bisect import bisect_left
+
+        return len(self._times) - bisect_left(self._times, cutoff, lo=self._start)
+
+    def expire(self, now: float) -> None:
+        if self._times and now > self._times[-1]:
+            self._advance(now)
+
+    def span(self, duration: float | None = None) -> float:
+        """Seconds between the oldest event in the window and the newest event."""
+        if not self._times:
+            return 0.0
+        head = self._heads.get(duration if duration is not None else self.retention, self._start)
+        if head >= len(self._times):
+            return 0.0
+        return self._times[-1] - self._times[head]
+
+    def __len__(self) -> int:
+        """Events within the longest registered window."""
+        return len(self._times) - self._heads[self.retention]
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+
 class CounterWindow[K: Hashable]:
     """Per-key event counts within a sliding window.
 
@@ -155,11 +249,72 @@ class CounterWindow[K: Hashable]:
                 del self._windows[key]
 
 
+class DistinctWindow[V: Hashable](SlidingWindow[V]):
+    """A sliding window that also tracks how many *distinct* values it holds.
+
+    A running :class:`~collections.Counter` is maintained alongside the deque, so
+    adding, expiring and asking "how many distinct values?" are all amortised O(1).
+
+    This matters for security, not just speed.  The previous implementation rebuilt
+    a ``set`` of the whole window on every packet, which made per-packet cost grow
+    with the window's size: a single source flooding 300 packets per second slowed
+    processing roughly sixfold, i.e. an attacker could degrade the IDS simply by
+    being noisy.  ``tests/unit/test_windows.py`` pins the linear behaviour.
+    """
+
+    __slots__ = ("_counts",)
+
+    def __init__(self, duration: float, max_entries: int = 100_000) -> None:
+        super().__init__(duration, max_entries)
+        self._counts: Counter[V] = Counter()
+
+    def add(self, timestamp: float, item: V) -> None:
+        self._entries.append((timestamp, item))
+        self._counts[item] += 1
+        self.expire(timestamp)
+        while len(self._entries) > self._max_entries:
+            self._forget(self._entries.popleft()[1])
+
+    def expire(self, now: float) -> None:
+        cutoff = now - self.duration
+        entries = self._entries
+        while entries and entries[0][0] < cutoff:
+            self._forget(entries.popleft()[1])
+
+    def _forget(self, item: V) -> None:
+        remaining = self._counts[item] - 1
+        if remaining:
+            self._counts[item] = remaining
+        else:
+            del self._counts[item]
+
+    @property
+    def distinct(self) -> int:
+        return len(self._counts)
+
+    def distinct_values(self) -> set[V]:
+        return set(self._counts)
+
+    def count_of(self, item: V) -> int:
+        """Occurrences of ``item`` currently in the window. O(1)."""
+        return self._counts.get(item, 0)
+
+    def most_common(self, limit: int = 1) -> list[tuple[V, int]]:
+        return self._counts.most_common(limit)
+
+    def distinct_since(self, cutoff: float) -> int:
+        """Distinct values at or after ``cutoff``. O(1) when the cutoff spans the window."""
+        if not self._entries or self._entries[0][0] >= cutoff:
+            return len(self._counts)
+        return len(set(self.items_since(cutoff)))
+
+
 class UniqueWindow[K: Hashable]:
     """Counts *distinct* values seen per key inside a window.
 
     Example: how many distinct destination ports one source touched in 10s -
-    the core signal for port-scan detection.
+    the core signal for port-scan detection.  Backed by :class:`DistinctWindow`,
+    so every operation is amortised O(1) per observation.
     """
 
     __slots__ = ("_windows", "duration", "max_keys")
@@ -167,7 +322,7 @@ class UniqueWindow[K: Hashable]:
     def __init__(self, duration: float, max_keys: int = 50_000) -> None:
         self.duration = duration
         self.max_keys = max_keys
-        self._windows: dict[K, SlidingWindow[Hashable]] = {}
+        self._windows: dict[K, DistinctWindow[Hashable]] = {}
 
     def add(self, key: K, value: Hashable, timestamp: float) -> int:
         """Record that ``key`` touched ``value``; return the distinct count."""
@@ -175,29 +330,29 @@ class UniqueWindow[K: Hashable]:
         if window is None:
             if len(self._windows) >= self.max_keys:
                 self._evict(timestamp)
-            window = SlidingWindow(self.duration)
+            window = DistinctWindow(self.duration)
             self._windows[key] = window
         window.add(timestamp, value)
-        return len(set(window.items()))
+        return window.distinct
 
     def unique_count(self, key: K, now: float) -> int:
         window = self._windows.get(key)
         if window is None:
             return 0
         window.expire(now)
-        return len(set(window.items()))
+        return window.distinct
 
     def unique_values(self, key: K, now: float) -> set[Hashable]:
         window = self._windows.get(key)
         if window is None:
             return set()
         window.expire(now)
-        return set(window.items())
+        return window.distinct_values()
 
     def unique_since(self, key: K, cutoff: float) -> int:
         """Distinct values for ``key`` observed at or after ``cutoff``."""
         window = self._windows.get(key)
-        return len(set(window.items_since(cutoff))) if window else 0
+        return window.distinct_since(cutoff) if window else 0
 
     def total_count(self, key: K, now: float) -> int:
         """Total observations (not distinct) for ``key``."""

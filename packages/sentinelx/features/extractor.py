@@ -155,6 +155,14 @@ class FeatureExtractor:
             self.settings.dns_window_seconds,
             self.settings.http_flood_window_seconds,
         )
+        self._durations = (
+            self.settings.port_scan_window_seconds,
+            self.settings.brute_force_window_seconds,
+            self.settings.connection_rate_window_seconds,
+            self.settings.icmp_flood_window_seconds,
+            self.settings.dns_window_seconds,
+            self.settings.http_flood_window_seconds,
+        )
         self.max_sources = self.settings.max_tracked_sources
         self.max_flows = self.max_sources * 4
 
@@ -226,6 +234,9 @@ class FeatureExtractor:
                 window_seconds=self.window_seconds,
                 first_seen=now,
                 last_seen=now,
+                durations=self._durations,
+                dns_long_label=self.settings.dns_long_label_length,
+                dns_high_entropy=self.settings.dns_high_entropy_threshold,
             )
             self.profiles[source_ip] = profile
         return profile

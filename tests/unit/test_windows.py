@@ -100,3 +100,43 @@ class TestEwmaBaseline:
     def test_rejects_invalid_alpha(self, alpha: float) -> None:
         with pytest.raises(ValueError):
             EwmaBaseline(alpha=alpha)
+
+
+class TestLinearScaling:
+    """Regression guard for an algorithmic-complexity weakness.
+
+    Per-packet cost once grew with window size, so a single flooding source slowed
+    the whole sensor. These tests compare cost *per packet* at two volumes; a
+    quadratic implementation makes the larger run several times more expensive
+    per packet, while a linear one keeps the ratio near 1. Ratios, not absolute
+    times, so the test is stable on slow CI machines.
+    """
+
+    @staticmethod
+    def per_packet_seconds(name: str, **params: object) -> float:
+        import time
+
+        from sentinelx.detection.engine import DetectionEngine
+        from sentinelx.features.extractor import FeatureExtractor
+        from sentinelx.parser.decoder import PacketDecoder
+        from sentinelx.testing import get_scenario
+
+        frames = get_scenario(name, **params).frames
+        decoder, extractor, engine = PacketDecoder(), FeatureExtractor(), DetectionEngine()
+        packets = [decoder.decode(f.data, f.timestamp, f.link_type) for f in frames]
+        started = time.perf_counter()
+        for packet in packets:
+            if packet is not None:
+                engine.evaluate(extractor.process(packet))
+        return (time.perf_counter() - started) / len(frames)
+
+    @pytest.mark.parametrize(("scenario", "small", "large"), [
+        ("icmp_flood", {"count": 2000}, {"count": 8000}),
+        ("http_flood", {"count": 1500}, {"count": 6000}),
+        ("dns_flood", {"count": 1000}, {"count": 4000}),
+        ("syn_flood", {"count": 2000}, {"count": 8000}),
+    ])
+    def test_flood_cost_per_packet_does_not_grow_with_volume(self, scenario: str, small: dict[str, int], large: dict[str, int]) -> None:
+        self.per_packet_seconds(scenario, **small)  # warm caches and imports
+        ratio = self.per_packet_seconds(scenario, **large) / self.per_packet_seconds(scenario, **small)
+        assert ratio < 2.5, f"{scenario}: per-packet cost grew {ratio:.1f}x with 4x volume"

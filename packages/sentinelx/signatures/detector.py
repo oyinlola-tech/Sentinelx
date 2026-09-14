@@ -40,7 +40,7 @@ def resolver_for(context: FeatureContext, within: float) -> Any:
     cache: dict[str, Any] = {}
 
     def packets_since() -> int:
-        return profile.packets.count_since(cutoff)
+        return profile.packet_times.count_since(cutoff)
 
     def syns_since() -> int:
         return profile.syn_packets.count_since(cutoff)
@@ -66,12 +66,12 @@ def resolver_for(context: FeatureContext, within: float) -> Any:
         "short_sessions": lambda: profile.short_sessions.count_since(cutoff),
         "rst_count": lambda: profile.rst_received.count_since(cutoff),
         "icmp_count": lambda: profile.icmp_packets.count_since(cutoff),
-        "dns_query_count": lambda: profile.dns_queries.count_since(cutoff),
-        "http_request_count": lambda: profile.http_requests.count_since(cutoff),
+        "dns_query_count": lambda: profile.dns_times.count_since(cutoff),
+        "http_request_count": lambda: profile.http_times.count_since(cutoff),
         "unique_dst_ports": lambda: profile.dst_ports.unique_since(source, cutoff),
         "unique_dst_ips": lambda: profile.dst_ips.unique_since(source, cutoff),
         "unique_udp_ports": lambda: profile.udp_ports.unique_since(source, cutoff),
-        "dns_unique_domains": lambda: len(set(profile.dns_queries.items_since(cutoff))),
+        "dns_unique_domains": lambda: profile.dns_queries.distinct_since(cutoff),
         "syn_ratio": lambda: (syns_since() / packets_since()) if packets_since() else 0.0,
         "syn_ack_ratio": lambda: (profile.syn_ack_received.count_since(cutoff) / syns_since()) if syns_since() else 0.0,
         "refusal_ratio": lambda: profile.refusal_ratio(),
@@ -146,7 +146,7 @@ class RuleDetector(Detector):
             severity=self.rule.severity,
             recommended_action=self.rule.action,
             observation_window=self.rule.within,
-            packet_count=context.profile.packets.count_since(context.now - self.rule.within),
+            packet_count=context.profile.packet_times.count_since(context.now - self.rule.within),
             tags=("rule", *self.rule.tags),
         )
         # rule_name is not a build() parameter and Detection is frozen.
