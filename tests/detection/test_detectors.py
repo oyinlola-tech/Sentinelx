@@ -325,3 +325,13 @@ class TestEnginePolicy:
 
 def test_frames_type_is_rawframe() -> None:
     assert isinstance(get_scenario("icmp_flood", count=1).frames[0], RawFrame)
+
+
+class TestDocumentedEvasions:
+    """Pin the known limitations, so a change that alters them is noticed and documented."""
+
+    def test_slow_port_scan_evades_window_detector(self, run_detection: Run) -> None:
+        assert "tcp_port_scan" not in detectors_fired(run_detection(get_scenario("slow_port_scan").frames))
+
+    def test_low_rate_brute_force_evades_threshold(self, run_detection: Run) -> None:
+        assert not {"ssh_brute_force", "auth_brute_force"} & detectors_fired(run_detection(get_scenario("low_rate_brute_force").frames))

@@ -80,6 +80,9 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment("DNS tunnelling", "5. DNS anomalies", "dns_tunneling"),
     Experiment("DNS query flood (DGA-like)", "5. DNS anomalies", "dns_flood"),
     Experiment("DNS rate spike vs learned baseline", "5. DNS anomalies", "dns_rate_spike"),
+    # Known limitations: these are expected to be missed with default thresholds.
+    Experiment("slow port scan (evasion)", "6. evasion: expected misses", "slow_port_scan"),
+    Experiment("low-rate brute force (evasion)", "6. evasion: expected misses", "low_rate_brute_force"),
 )
 
 
@@ -204,17 +207,22 @@ async def _run_once(experiment: Experiment, seed_offset: int, include_rules: boo
     time_to_detect: float | None = None
     packets_to_detect: int | None = None
     latencies: list[float] = []
+    # Ground truth is computed before the clock starts, so identifying attacker
+    # packets never counts against SentinelX's measured throughput.
+    is_attacker = [False] * len(frames)
+    if attacker is not None:
+        for index, frame in enumerate(frames):
+            packet = decoder.decode(frame.data, frame.timestamp, frame.link_type)
+            is_attacker[index] = packet is not None and packet.src_ip == attacker
     sampler = ProcessSampler()
     sampler.sample()
 
     started = time.perf_counter()
-    for frame in frames:
-        if attacker is not None:
-            packet = decoder.decode(frame.data, frame.timestamp, frame.link_type)
-            if packet is not None and packet.src_ip == attacker:
-                attacker_packets += 1
-                if first_attack_ts is None:
-                    first_attack_ts = frame.timestamp
+    for index, frame in enumerate(frames):
+        if is_attacker[index]:
+            attacker_packets += 1
+            if first_attack_ts is None:
+                first_attack_ts = frame.timestamp
         records = await pipeline.process_frame(frame)
         for record in records:
             detections += 1

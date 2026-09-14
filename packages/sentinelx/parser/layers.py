@@ -3,9 +3,10 @@
 Implemented with :mod:`struct` against raw bytes rather than by building Scapy
 objects.  Scapy is excellent for crafting and for interactive analysis, but it
 allocates a Python object per layer per packet, which dominates cost on a capture
-hot path.  Measured with ``scripts/benchmark.py``, this decoder is roughly an
-order of magnitude faster than ``Ether(raw_bytes)`` for the same fields, which is
-the difference between keeping up with a busy link and dropping packets.
+hot path.  ``scripts/benchmark.py`` measures both on the same frames; on the
+reference machine recorded in docs/benchmarking.md this decoder was about 2.5x
+faster than ``Ether(raw_bytes)``. Measure on your own hardware before relying on
+that figure.
 
 Every decoder is total: malformed input yields ``None`` or a partial result and is
 counted, never an exception.  Malformed packets are normal on a real network, and

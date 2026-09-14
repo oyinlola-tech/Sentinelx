@@ -543,6 +543,59 @@ def dns_rate_spike(
     )
 
 
+def slow_port_scan(
+    attacker: str = "203.0.113.61", target: str = "192.168.10.51", ports: int = 60, interval: float = 1.2, seed: int = 53
+) -> Scenario:
+    """A deliberately slow vertical scan: one probe every ``interval`` seconds.
+
+    An EVASION case. With default settings no more than about a dozen probes fall
+    inside the 15 second scan window, below the 20-port threshold, so the scan
+    detector is expected to MISS it. Included so benchmarks measure a known
+    limitation instead of only reporting successes.
+    """
+    rng = random.Random(seed)
+    packets: list[tuple[bytes, float]] = []
+    now = BASE_TIME
+    for index, port in enumerate(rng.sample(range(1, 10000), ports)):
+        now += interval
+        packets.append((build_tcp(attacker, target, 44000 + index, port, flags="S"), now))
+        packets.append((build_tcp(target, attacker, port, 44000 + index, flags="RA"), now + 0.003))
+    return Scenario(
+        name="slow_port_scan",
+        description=f"{ports}-port SYN scan spread over {ports * interval:.0f}s (evasion case, expected to be missed).",
+        frames=_frames(iter(packets)),
+        expected_detectors={"tcp_port_scan"},
+        expected_source=attacker,
+        duration_seconds=packets[-1][1] - packets[0][1],
+    )
+
+
+def low_rate_brute_force(
+    attacker: str = "198.51.100.44", target: str = "192.168.10.10", attempts: int = 30, interval: float = 8.0, seed: int = 59
+) -> Scenario:
+    """Credential guessing throttled to one attempt every ``interval`` seconds.
+
+    An EVASION case: at most about seven attempts fall in the 60 second window,
+    below the threshold of 15, so brute-force detection is expected to MISS it.
+    """
+    base = ssh_brute_force(attacker=attacker, target=target, attempts=attempts, seed=seed)
+    frames: list[RawFrame] = []
+    per_attempt = 6  # frames per session in ssh_brute_force
+    for index, frame in enumerate(base.frames):
+        attempt = index // per_attempt
+        session_start = base.frames[attempt * per_attempt].timestamp
+        offset = frame.timestamp - session_start
+        frames.append(RawFrame(frame.data, BASE_TIME + attempt * interval + offset, frame.link_type, frame.interface, frame.wire_length))
+    return Scenario(
+        name="low_rate_brute_force",
+        description=f"{attempts} SSH attempts, one every {interval:g}s (evasion case, expected to be missed).",
+        frames=frames,
+        expected_detectors={"ssh_brute_force"},
+        expected_source=attacker,
+        duration_seconds=frames[-1].timestamp - frames[0].timestamp,
+    )
+
+
 #: Every scenario, by name. Used by the CLI, the benchmark harness and the tests.
 SCENARIOS: dict[str, Any] = {
     "normal_traffic": normal_traffic,
@@ -557,6 +610,8 @@ SCENARIOS: dict[str, Any] = {
     "dns_flood": dns_flood,
     "mixed_intrusion": mixed_intrusion,
     "dns_rate_spike": dns_rate_spike,
+    "slow_port_scan": slow_port_scan,
+    "low_rate_brute_force": low_rate_brute_force,
 }
 
 
