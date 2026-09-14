@@ -159,7 +159,13 @@ class IptablesAdapter(FirewallAdapter):
         """Rules in our chain as argv token lists (``-A SENTINELX -s ...``)."""
         result = await runner.run("-w", "-S", CHAIN, check=False)
         if not result.ok:
-            return []
+            if "no chain" in result.stderr.lower() or "does not exist" in result.stderr.lower():
+                return []  # not set up yet: genuinely nothing blocked
+            raise FirewallError(
+                f"iptables could not list {CHAIN}: {result.stderr.strip()[:300]}",
+                command=result.display,
+                stderr=result.stderr,
+            )
         rules = []
         for line in result.stdout.splitlines():
             try:
@@ -176,8 +182,8 @@ class IptablesAdapter(FirewallAdapter):
         for parts in await self._rules(runner):
             if parts[parts.index("-s") + 1] != str(network):
                 continue
-            result = await runner.run("-w", "-D", *parts[1:], check=False)
-            removed = removed or result.ok
+            await runner.run("-w", "-D", *parts[1:])  # raises on permission errors
+            removed = True
         return removed
 
     async def list_blocked(self) -> list[BlockEntry]:

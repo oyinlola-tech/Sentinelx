@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from sentinelx import __version__
 from sentinelx.api.schemas import ConfigUpdateRequest
 from sentinelx.api.security import Admin, Analyst, PlatformDep, Viewer
 
@@ -42,6 +43,8 @@ async def overview(principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
     data["sensor"] = sensor.status()
     data["safety"] = platform.settings.safety_banner()
     data["health"] = (await platform.health())["status"]
+    data["version"] = __version__
+    data["api_docs"] = platform.settings.api.docs_enabled
     return data
 
 

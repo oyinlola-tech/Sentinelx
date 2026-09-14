@@ -352,7 +352,10 @@ async def _replay_persisted(
             await asyncio.to_thread(shutil.copyfile, source, copy)
             source = copy
         started = await service.start(
-            str(source.relative_to(service.directory)), actor=actor(), speed=speed, limit=limit
+            source.relative_to(service.directory).as_posix(),
+            actor=actor(),
+            speed=speed,
+            limit=limit,
         )
         await service.wait(started["replay_id"])
         record = await service.get(started["replay_id"])

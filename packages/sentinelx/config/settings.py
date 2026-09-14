@@ -93,6 +93,11 @@ class CaptureSettings(BaseModel):
     )
     pcap_directory: Path = Field(default=Path("pcaps"))
     max_pcap_size_mb: int = Field(default=512, ge=1)
+    upload_quota_mb: int = Field(
+        default=2048,
+        ge=1,
+        description="Total space uploaded captures may use. Uploads are refused once full.",
+    )
 
     @field_validator("home_networks")
     @classmethod
@@ -334,16 +339,18 @@ class ResponseSettings(BaseModel):
     nft_family: Literal["inet", "ip", "ip6"] = "inet"
 
     default_block_seconds: int = Field(default=900, ge=30, le=86_400)
-    max_block_seconds: int = Field(default=86_400, ge=60)
+    max_block_seconds: int = Field(default=86_400, ge=60, le=30 * 86_400)
     max_blocked_addresses: int = Field(
         default=10_000,
         ge=1,
+        le=1_000_000,
         description="Hard cap on concurrent blocks. A runaway detector "
         "hits this limit instead of exhausting the firewall set.",
     )
     max_block_prefix_hosts: int = Field(
         default=256,
         ge=1,
+        le=65_536,
         description="Largest prefix that may be blocked, in addresses. 256 = a /24. "
         "Stops a malformed rule from taking out an entire network.",
     )
@@ -360,8 +367,19 @@ class ResponseSettings(BaseModel):
     )
     management_addresses: list[str] = Field(default_factory=list)
 
-    webhook_url: str = ""
-    webhook_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    webhook_url: str = Field(
+        default="",
+        max_length=2048,
+        description="HTTPS endpoint that receives a JSON POST for detections at or above "
+        "webhook_min_risk. Empty disables webhooks.",
+    )
+    webhook_allow_private_addresses: bool = Field(
+        default=False,
+        description="Allow the webhook host to resolve to loopback, private or link-local "
+        "addresses (an internal SIEM, say). Off by default so a changed setting cannot "
+        "turn SentinelX into a proxy for internal services or cloud metadata.",
+    )
+    webhook_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     webhook_min_risk: Percent = Field(default=60.0)
 
     rate_limit_packets_per_second: int = Field(default=100, ge=1)
@@ -370,6 +388,22 @@ class ResponseSettings(BaseModel):
     @classmethod
     def _validate_nets(cls, value: list[str]) -> list[str]:
         parse_networks(value)
+        return value
+
+    @field_validator("webhook_url")
+    @classmethod
+    def _validate_webhook(cls, value: str) -> str:
+        if not value:
+            return value
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(value)
+        if parts.scheme != "https":
+            raise ValueError("webhook_url must use https://")
+        if not parts.hostname:
+            raise ValueError("webhook_url must include a host")
+        if any(ord(ch) < 0x21 for ch in value):
+            raise ValueError("webhook_url must not contain spaces or control characters")
         return value
 
     @model_validator(mode="after")

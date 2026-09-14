@@ -13,6 +13,8 @@ engine's actual output against that expectation - see ``docs/benchmarking.md``.
 
 from __future__ import annotations
 
+import inspect
+import ipaddress
 import random
 import struct
 from collections.abc import Iterator
@@ -35,6 +37,7 @@ __all__ = [
     "build_udp",
     "get_scenario",
     "shift_to",
+    "validate_scenario_params",
 ]
 
 _DEFAULT_SRC_MAC = bytes.fromhex("020000000001")
@@ -765,16 +768,84 @@ SCENARIOS: dict[str, Any] = {
 }
 
 
-def get_scenario(name: str, **kwargs: Any) -> Scenario:
-    """Build a scenario by name.
+#: Upper bounds on scenario parameters. Scenarios are generated in memory from
+#: API and rule-test input, so every size-like parameter is capped.
+_COUNT_PARAMETERS = frozenset(
+    {"packet_count", "count", "hosts", "attempts", "ports", "sources", "normal_qps", "spike_qps"}
+)
+_MAX_COUNT = 50_000
+_MAX_SECONDS = 3_600
+_MAX_SCENARIO_PACKETS = 2_000_000
+
+
+def validate_scenario_params(name: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Check user-supplied scenario parameters before anything is generated.
 
     Raises:
-        ValueError: naming every available scenario, so a typo is self-correcting.
+        ValueError: for an unknown scenario, unknown parameter, wrong type or a value
+            outside its bounds. The message names the parameter.
     """
     builder = SCENARIOS.get(name)
     if builder is None:
         raise ValueError(f"unknown scenario {name!r}; available: {', '.join(sorted(SCENARIOS))}")
-    return builder(**kwargs)  # type: ignore[no-any-return]
+    signature = inspect.signature(builder).parameters
+    unknown = sorted(set(params) - set(signature))
+    if unknown:
+        raise ValueError(
+            f"scenario {name!r} has no parameter(s) {', '.join(unknown)}; "
+            f"accepted: {', '.join(signature) or 'none'}"
+        )
+    for key, value in params.items():
+        default = signature[key].default
+        if isinstance(default, bool) or isinstance(value, bool):
+            raise ValueError(f"{key}: booleans are not accepted")
+        if isinstance(default, int):
+            if not isinstance(value, int):
+                raise ValueError(f"{key}: expected an integer")
+            if key == "seed":
+                limit_low, limit_high = 0, 2**32
+            elif key == "port":
+                limit_low, limit_high = 1, 65_535
+            elif key in _COUNT_PARAMETERS:
+                limit_low, limit_high = 1, _MAX_COUNT
+            else:
+                limit_low, limit_high = 1, _MAX_SECONDS
+            if not limit_low <= value <= limit_high:
+                raise ValueError(f"{key}: must be between {limit_low} and {limit_high}")
+        elif isinstance(default, float):
+            if not isinstance(value, int | float) or not 0.001 <= float(value) <= 600:
+                raise ValueError(f"{key}: must be a number between 0.001 and 600")
+        elif isinstance(default, str):
+            try:
+                ipaddress.ip_address(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{key}: must be an IP address") from None
+    merged = {k: v.default for k, v in signature.items()} | params
+    if name == "dns_rate_spike":
+        packets = (
+            merged["baseline_seconds"] * merged["normal_qps"]
+            + merged["spike_seconds"] * merged["spike_qps"]
+        ) * 2
+        if packets > _MAX_SCENARIO_PACKETS:
+            raise ValueError(
+                f"these parameters would generate about {packets:,} packets "
+                f"(limit {_MAX_SCENARIO_PACKETS:,})"
+            )
+    return params
+
+
+def get_scenario(name: str, **kwargs: Any) -> Scenario:
+    """Build a scenario by name, after validating its parameters.
+
+    Raises:
+        ValueError: for an unknown scenario or invalid parameters, naming what is
+            accepted so a typo is self-correcting.
+    """
+    validate_scenario_params(name, kwargs)
+    try:
+        return SCENARIOS[name](**kwargs)  # type: ignore[no-any-return]
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"scenario {name!r} cannot be built with these parameters: {exc}") from exc
 
 
 def shift_to(frames: list[RawFrame], end: float) -> list[RawFrame]:

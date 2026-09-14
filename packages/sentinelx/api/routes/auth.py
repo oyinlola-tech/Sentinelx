@@ -80,7 +80,8 @@ async def login(
         pair = await platform.auth.login(body.username, body.password, client_ip=ip)
     except AuthError as exc:
         await platform.audit.record(
-            actor=body.username[:64],
+            # Client-supplied text: keep it printable so it cannot forge log lines.
+            actor="".join(ch for ch in body.username[:64] if ch.isprintable()) or "(empty)",
             action="LOGIN_FAILED",
             source="api",
             outcome="failure",
@@ -138,11 +139,19 @@ async def me(principal: Authenticated, platform: PlatformDep) -> UserResponse:
     return _user(user)
 
 
-@router.post("/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/change-password",
+    response_model=TokenResponse,
+    summary="Change your password; every other session is signed out",
+)
 async def change_password(
-    body: ChangePasswordRequest, principal: Authenticated, request: Request, platform: PlatformDep
-) -> Response:
-    await platform.auth.change_password(principal, body.current_password, body.new_password)
+    body: ChangePasswordRequest,
+    principal: Authenticated,
+    request: Request,
+    response: Response,
+    platform: PlatformDep,
+) -> TokenResponse:
+    pair = await platform.auth.change_password(principal, body.current_password, body.new_password)
     await platform.audit.record(
         actor=principal.username,
         action="CHANGE_PASSWORD",
@@ -150,7 +159,8 @@ async def change_password(
         source="api",
         client_ip=client_ip(request),
     )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    # The caller keeps working with a fresh session; all earlier tokens are revoked.
+    return _token_response(request, response, pair, platform)
 
 
 @router.post("/auth/ws-ticket", summary="Issue a single-use 30 second WebSocket ticket")

@@ -5,6 +5,10 @@ driver on Windows, and from libpcap or a packet socket elsewhere. It is slower t
 :mod:`sentinelx.capture.afpacket` because Scapy builds an object per packet, and the
 sensor reports which backend is running so a throughput figure is explainable.
 
+On Linux, prefer the ``af_packet`` backend (``auto`` does): Scapy's listening socket
+cannot tell outgoing from incoming packets, so on the loopback device this backend
+sees every packet twice.
+
 Scapy runs its sniffer on a thread and keeps any error to itself. This module waits
 for the sniffer to start and watches it while running, so a permission or driver
 failure surfaces as an error instead of a capture that silently receives nothing.
@@ -20,6 +24,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from sentinelx.capture.afpacket import linux_interface_link_type
 from sentinelx.capture.base import CaptureCapabilities, PacketCapture, RawFrame
 from sentinelx.common.errors import (
     BackendUnavailableError,
@@ -149,9 +154,23 @@ class PcapLiveCapture(PacketCapture):
             except asyncio.QueueFull:
                 self.stats.dropped_queue += 1
 
+        fallback_link_types: dict[str, int | None] = {}
+
+        def interface_link_type(name: str) -> int | None:
+            # Scapy cannot classify some Linux interfaces (loopback, tun) and hands
+            # back an unparsed packet; the kernel's hardware type says how to decode it.
+            if name not in fallback_link_types:
+                fallback_link_types[name] = (
+                    linux_interface_link_type(name) if PLATFORM.startswith("linux") else None
+                )
+            return fallback_link_types[name]
+
         def on_packet(packet: Any) -> None:
             # Runs on Scapy's sniffer thread: never block it.
+            name = str(getattr(packet, "sniffed_on", "") or self.interface)
             link_type = layer_to_link.get(type(packet))
+            if link_type not in _DECODABLE_LINK_TYPES:
+                link_type = interface_link_type(name)
             if link_type not in _DECODABLE_LINK_TYPES:
                 self.unsupported_frames += 1
                 return

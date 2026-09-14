@@ -1,6 +1,6 @@
 """Rule definitions, loading and validation.
 
-Rule file format (YAML, loaded with ``yaml.safe_load`` only)::
+Rule file format (YAML, loaded with a restricted safe loader: no tags, aliases or deep nesting)::
 
     rules:
       - name: SSH Brute Force
@@ -60,6 +60,7 @@ __all__ = [
     "LoadResult",
     "Rule",
     "RuleTest",
+    "load_rule_yaml",
     "load_rules",
     "parse_duration",
     "parse_rule_document",
@@ -187,6 +188,13 @@ def validate_rule(rule: Rule, *, max_window_seconds: float) -> list[str]:
     except ConditionSyntaxError as exc:
         return [f"condition: {exc}"]
     problems.extend(f"condition: {problem}" for problem in validate_semantics(node))
+    from sentinelx.testing.scenarios import validate_scenario_params
+
+    for index, test in enumerate(rule.tests, start=1):
+        try:
+            validate_scenario_params(test.scenario, test.params)
+        except ValueError as exc:
+            problems.append(f"tests[{index}]: {exc}")
     if rule.within > max_window_seconds:
         problems.append(
             f"within {rule.within:g}s exceeds the {max_window_seconds:g}s of history the feature engine keeps; "
@@ -254,6 +262,54 @@ class LoadResult:
             raise RuleValidationError("rules", self.problems)
 
 
+MAX_YAML_DEPTH = 32
+
+
+class _RuleYamlLoader(yaml.SafeLoader):
+    """``SafeLoader`` without anchors, aliases or deep nesting.
+
+    Aliases let a few hundred bytes expand into gigabytes once the parsed document is
+    copied (the "billion laughs" pattern), and deep nesting exhausts the parser's
+    recursion. Rules need neither.
+    """
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._depth = 0
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        event = self.peek_event()  # type: ignore[no-untyped-call]
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
+            raise yaml.YAMLError("YAML anchors and aliases are not allowed in rules")
+        self._depth += 1
+        try:
+            if self._depth > MAX_YAML_DEPTH:
+                raise yaml.YAMLError(f"YAML nested deeper than {MAX_YAML_DEPTH} levels")
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+
+def load_rule_yaml(text: str) -> Any:
+    """Parse rule YAML safely: no tags, no aliases, bounded depth.
+
+    Raises:
+        yaml.YAMLError: for invalid or disallowed YAML.
+    """
+    # Cheap pre-check for flow-style nesting ("[[[[..."), which the YAML scanner would
+    # otherwise tokenise in full before the composer's depth limit is reached.
+    depth = deepest = 0
+    for char in text:
+        if char in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif char in "]}":
+            depth = max(depth - 1, 0)
+    if deepest > MAX_YAML_DEPTH:
+        raise yaml.YAMLError(f"YAML nested deeper than {MAX_YAML_DEPTH} levels")
+    return yaml.load(text, Loader=_RuleYamlLoader)  # noqa: S506 - restricted SafeLoader subclass
+
+
 def load_rules(path: Path, *, max_window_seconds: float) -> LoadResult:
     """Load every ``*.yml``/``*.yaml`` file under ``path`` (or one file).
 
@@ -271,7 +327,7 @@ def load_rules(path: Path, *, max_window_seconds: float) -> LoadResult:
             problems.append(f"{file}: larger than {MAX_RULE_FILE_BYTES} bytes")
             continue
         try:
-            document = yaml.safe_load(file.read_text(encoding="utf-8"))
+            document = load_rule_yaml(file.read_text(encoding="utf-8"))
         except (yaml.YAMLError, UnicodeDecodeError) as exc:
             problems.append(f"{file}: not valid YAML ({exc})")
             continue

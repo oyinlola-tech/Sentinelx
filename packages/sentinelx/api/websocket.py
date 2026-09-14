@@ -11,9 +11,14 @@ API worker is honoured by another.
 
 Every message is ``{"id", "type", "timestamp", "payload"}`` where ``type`` is an
 :class:`~sentinelx.events.bus.EventType` value.  The server sends
-``{"type": "ping"}`` every 25 seconds.  A client that cannot keep up has events
-dropped (the bus's bounded per-subscriber queue) and, if a single send stalls for
-10 seconds, is disconnected - a slow dashboard never slows detection.
+``{"type": "ping"}`` after 25 idle seconds, and re-checks the account at the same
+moment: a deactivated user is disconnected with 4401, a user whose role changed with
+4403. Each user may hold 10 streams (4429 beyond that). A client that cannot keep up
+has events dropped (the bus's bounded per-subscriber queue) and, if a single send
+stalls for 10 seconds, is disconnected - a slow dashboard never slows detection.
+
+Refusals are sent as close codes after the handshake: 4401 invalid or expired ticket,
+1008 disallowed origin or unknown event type, 4429 too many streams.
 """
 
 from __future__ import annotations
@@ -55,27 +60,39 @@ def _origin_allowed(websocket: WebSocket, platform: Platform) -> bool:
     return origin in allowed or origin in {f"http://{host}", f"https://{host}"}
 
 
+_MAX_CONNECTIONS_PER_USER = 10
+_connections: dict[str, int] = {}
+
+
+async def _reject(websocket: WebSocket, code: int, reason: str) -> None:
+    """Accept, then close with an application code.
+
+    Closing before the handshake completes reaches the client as a bare HTTP 403,
+    which it cannot tell apart from any other refusal. After accepting, the close code
+    says exactly what to do: 4401 fetch a new ticket, 1008 fix the request, 4429 back
+    off. Nothing but the close frame is sent.
+    """
+    await websocket.accept()
+    await websocket.close(code=code, reason=reason)
+
+
 @router.websocket("/ws/events")
 async def events(websocket: WebSocket) -> None:
     platform: Platform = websocket.app.state.platform
     if not _origin_allowed(websocket, platform):
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="origin not allowed")
+        await _reject(websocket, status.WS_1008_POLICY_VIOLATION, "origin not allowed")
         return
 
+    user_id: int | None = None
     if platform.settings.api.auth_enabled:
         try:
             principal = await platform.auth.redeem_ws_ticket(
                 websocket.query_params.get("ticket", "")
             )
         except AuthError:
-            # Accept, then close with an application code: a pre-accept rejection
-            # surfaces as a bare HTTP 403, which a client cannot distinguish from an
-            # origin violation. 4401 tells the dashboard to fetch a fresh ticket.
-            await websocket.accept()
-            await websocket.close(code=4401, reason="invalid or expired ticket")
+            await _reject(websocket, 4401, "invalid or expired ticket")
             return
-        role = principal.role
-        username = principal.username
+        role, username, user_id = principal.role, principal.username, principal.user_id
     else:
         role, username = UserRole.ADMIN, "anonymous"
 
@@ -85,50 +102,97 @@ async def events(websocket: WebSocket) -> None:
         try:
             requested = {EventType(t.strip()) for t in raw_types.split(",")[:32] if t.strip()}
         except ValueError:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="unknown event type")
+            await _reject(websocket, status.WS_1008_POLICY_VIOLATION, "unknown event type")
             return
     allowed = (
         set(EventType) if role.can_act_as(UserRole.ANALYST) else set(EventType) - _ANALYST_ONLY
     )
     types = (requested & allowed) if requested else allowed
 
+    if _connections.get(username, 0) >= _MAX_CONNECTIONS_PER_USER:
+        await _reject(websocket, 4429, "too many open event streams for this user")
+        return
+    _connections[username] = _connections.get(username, 0) + 1
+
     await websocket.accept()
     metrics.websocket_clients.inc()
     log.info("websocket_connected", user=username, types=len(types))
-    await websocket.send_json(
-        {
-            "type": "hello",
-            "payload": {
-                "user": username,
-                "role": role.value,
-                "subscribed": sorted(t.value for t in types),
-                "safety": platform.settings.safety_banner(),
-            },
-        }
-    )
-    receiver = asyncio.create_task(_drain_client(websocket))
+    receiver: asyncio.Task[None] | None = None
+    close_code, close_reason = 1000, ""
     try:
+        await websocket.send_json(
+            {
+                "type": "hello",
+                "payload": {
+                    "user": username,
+                    "role": role.value,
+                    "subscribed": sorted(t.value for t in types),
+                    "safety": platform.settings.safety_banner(),
+                },
+            }
+        )
+        receiver = asyncio.create_task(_drain_client(websocket))
         async with platform.bus.subscribe(
             f"ws:{username}", types, queue_size=platform.settings.api.websocket_max_queue
         ) as stream:
             iterator = stream.__aiter__()
-            while not receiver.done():
-                try:
-                    event = await asyncio.wait_for(anext(iterator), timeout=_PING_INTERVAL)
-                    message: dict[str, Any] = event.to_dict()
-                except TimeoutError:
-                    message = {"type": "ping"}
-                await asyncio.wait_for(websocket.send_json(message), timeout=_SEND_TIMEOUT)
+            # One long-lived pending read. Cancelling a read on every ping interval
+            # (wait_for) would close the async generator and silently end the stream.
+            next_event: asyncio.Future[Any] = asyncio.ensure_future(anext(iterator))
+            try:
+                while not receiver.done():
+                    done, _ = await asyncio.wait(
+                        {next_event, receiver},
+                        timeout=_PING_INTERVAL,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if receiver in done:
+                        break
+                    if next_event in done:
+                        message: dict[str, Any] = next_event.result().to_dict()
+                        next_event = asyncio.ensure_future(anext(iterator))
+                    else:
+                        # Idle: confirm the account is still allowed to see this stream.
+                        if user_id is not None:
+                            verdict = await _still_permitted(platform, user_id, role)
+                            if verdict is not None:
+                                close_code, close_reason = verdict
+                                break
+                        message = {"type": "ping"}
+                    await asyncio.wait_for(websocket.send_json(message), timeout=_SEND_TIMEOUT)
+            finally:
+                next_event.cancel()
+                with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration, Exception):
+                    await next_event
     except (WebSocketDisconnect, TimeoutError, RuntimeError):
         pass
     finally:
-        receiver.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await receiver
+        if receiver is not None:
+            receiver.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await receiver
+        _connections[username] = max(_connections.get(username, 1) - 1, 0)
+        if not _connections[username]:
+            _connections.pop(username, None)
         metrics.websocket_clients.dec()
         with contextlib.suppress(RuntimeError):
-            await websocket.close()
-        log.info("websocket_disconnected", user=username)
+            await websocket.close(code=close_code, reason=close_reason)
+        log.info("websocket_disconnected", user=username, code=close_code)
+
+
+async def _still_permitted(
+    platform: Platform, user_id: int, role: UserRole
+) -> tuple[int, str] | None:
+    """``None`` while the user may keep this stream, else the close code and reason."""
+    from sentinelx.storage.repositories import UserRepository
+
+    async with platform.database.session() as session:
+        user = await UserRepository(session).get(user_id)
+    if user is None or not user.is_active:
+        return 4401, "account disabled"
+    if user.role != role.value:
+        return 4403, "role changed; reconnect"
+    return None
 
 
 async def _drain_client(websocket: WebSocket) -> None:

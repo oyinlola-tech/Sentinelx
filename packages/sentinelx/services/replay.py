@@ -98,7 +98,7 @@ class ReplayService:
             stat = path.stat()
             files.append(
                 {
-                    "path": str(path.relative_to(self.directory)),
+                    "path": path.relative_to(self.directory).as_posix(),
                     "filename": path.name,
                     "size_bytes": stat.st_size,
                     "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
@@ -106,13 +106,36 @@ class ReplayService:
             )
         return files
 
-    async def store_upload(self, filename: str, chunks: Any, *, actor: str) -> dict[str, Any]:
-        """Stream an upload to disk, validating the magic number and size limit."""
-        limit = (
+    @property
+    def upload_limit_bytes(self) -> int:
+        return (
             min(self.settings.api.max_upload_mb, self.settings.capture.max_pcap_size_mb)
             * 1024
             * 1024
         )
+
+    def uploads_size_bytes(self) -> int:
+        uploads = self.directory / "uploads"
+        if not uploads.is_dir():
+            return 0
+        return sum(path.stat().st_size for path in uploads.iterdir() if path.is_file())
+
+    async def store_upload(self, filename: str, chunks: Any, *, actor: str) -> dict[str, Any]:
+        """Stream an upload to disk, validating the magic number, size limit and quota.
+
+        Raises:
+            PcapError: when the file is too large, the upload quota is exhausted, or the
+                content is not a pcap/pcapng capture. Nothing is left on disk.
+        """
+        limit = self.upload_limit_bytes
+        quota = self.settings.capture.upload_quota_mb * 1024 * 1024
+        used = await asyncio.to_thread(self.uploads_size_bytes)
+        if used >= quota:
+            raise PcapError(
+                f"the upload area is full ({used // 1_048_576} of "
+                f"{quota // 1_048_576} MB); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB"
+            )
+        limit = min(limit, quota - used)
         uploads = self.directory / "uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         stem = _SAFE_NAME.sub("_", Path(filename).stem)[:60] or "capture"
@@ -127,8 +150,10 @@ class ReplayService:
                         header += chunk[: 4 - len(header)]
                     written += len(chunk)
                     if written > limit:
-                        raise PcapError(f"upload exceeds the {limit // 1_048_576} MB limit")
-                    handle.write(chunk)
+                        raise PcapError(
+                            f"upload exceeds the {max(limit // 1_048_576, 1)} MB that can be accepted"
+                        )
+                    await asyncio.to_thread(handle.write, chunk)
             if header[:4] not in _PCAP_MAGICS:
                 raise PcapError("file is not a pcap or pcapng capture")
             metadata = await asyncio.to_thread(pcap_metadata, target)
@@ -136,7 +161,7 @@ class ReplayService:
             target.unlink(missing_ok=True)
             raise
         target.chmod(0o640)
-        relative = str(target.relative_to(self.directory))
+        relative = target.relative_to(self.directory).as_posix()
         await self.audit.record(
             actor=actor,
             action="UPLOAD_PCAP",
@@ -144,7 +169,8 @@ class ReplayService:
             source="api",
             details={"original_name": filename[:200], "size_bytes": written},
         )
-        return {"path": relative, **metadata}
+        # Relative path last: the metadata's own path is absolute and must not leak.
+        return {**metadata, "path": relative}
 
     async def inspect(self, relative: str) -> dict[str, Any]:
         path = self.resolve(relative)

@@ -3,7 +3,7 @@
 import { ArrowRight, Lock } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState, type FormEvent } from "react";
-import { Wordmark } from "@/components/shell/app-shell";
+import { Wordmark } from "@/components/shell/wordmark";
 import { ConsoleFooter } from "@/components/shell/footer";
 import { Trace } from "@/components/shell/trace";
 import { Button, Field, Input } from "@/components/ui/primitives";

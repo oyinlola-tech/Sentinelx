@@ -31,6 +31,7 @@ from sentinelx.config.settings import (
     Settings,
 )
 from sentinelx.events.bus import EventBus, EventType
+from sentinelx.response.engine import webhook_display
 from sentinelx.storage.audit import AuditService
 from sentinelx.storage.database import Database
 from sentinelx.storage.repositories import SettingRepository
@@ -96,12 +97,11 @@ class ConfigService:
     def view(self) -> dict[str, Any]:
         """Current settings with secrets removed, plus what is editable."""
         data = self.settings.model_dump(mode="json")
-        data["api"].pop("jwt_secret", None)
-        data["api"].pop("bootstrap_admin_password", None)
+        _redact_secrets(data)
         data["storage"]["database_url"] = redact_url(self.settings.storage.database_url)
         data["storage"]["redis_url"] = redact_url(self.settings.storage.redis_url)
         if data["response"].get("webhook_url"):
-            data["response"]["webhook_url"] = data["response"]["webhook_url"].split("?")[0]
+            data["response"]["webhook_url"] = webhook_display(data["response"]["webhook_url"])
         return {
             "settings": data,
             "editable": {section: sorted(fields) for section, fields in EDITABLE.items()},
@@ -258,6 +258,23 @@ class ConfigService:
 
             logging.getLogger().setLevel(getattr(logging, str(changes["log_level"])))
         return applied
+
+
+_SECRET_MARKERS = ("secret", "token", "password", "api_key", "apikey", "credential")
+
+
+def _redact_secrets(data: dict[str, Any]) -> None:
+    """Remove every secret-looking field, recursively (a denylist of *patterns*).
+
+    New secret settings are hidden by default as long as their names say what they
+    are; the test suite checks that known secrets never appear in the view.
+    """
+    for key in list(data):
+        value = data[key]
+        if isinstance(value, dict):
+            _redact_secrets(value)
+        elif any(marker in key.lower() for marker in _SECRET_MARKERS):
+            data[key] = "[redacted]" if value else ""
 
 
 def redact_url(url: str) -> str:

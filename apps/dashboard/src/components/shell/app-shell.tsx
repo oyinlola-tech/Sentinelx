@@ -1,22 +1,6 @@
 "use client";
 
-import {
-  Activity,
-  BarChart3,
-  ClipboardList,
-  Flame,
-  FlaskConical,
-  Gauge,
-  LogOut,
-  Menu,
-  Search,
-  Network,
-  ScrollText,
-  Settings,
-  ShieldHalf,
-  Siren,
-  X,
-} from "lucide-react";
+import { LogOut, Menu, Search, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMemo, useState, type ReactNode } from "react";
@@ -24,25 +8,15 @@ import useSWR from "swr";
 import { ThreatTape } from "@/components/charts/charts";
 import { CommandMenu } from "@/components/shell/command-menu";
 import { ConsoleFooter } from "@/components/shell/footer";
+import { NAV } from "@/components/shell/nav";
+import { Wordmark } from "@/components/shell/wordmark";
 import { query } from "@/lib/api";
 import { EventsProvider, useEvents, type StreamState } from "@/lib/events";
 import { useSession } from "@/lib/session";
 import { useNow } from "@/lib/use-now";
 import type { Detection, Overview, Page, Severity } from "@/lib/types";
 
-const NAV: { href: string; label: string; icon: ReactNode; group: string; hint: string; badge?: "incidents" | "approvals" }[] = [
-  { href: "/", label: "Overview", icon: <Gauge />, group: "Watch", hint: "Sensor, risk and what needs a decision" },
-  { href: "/monitor", label: "Live monitor", icon: <Activity />, group: "Watch", hint: "Detections and responses as they happen" },
-  { href: "/threats", label: "Threats", icon: <Flame />, group: "Investigate", hint: "Sources ranked by risk" },
-  { href: "/incidents", label: "Incidents", icon: <Siren />, group: "Investigate", hint: "Correlated attacks", badge: "incidents" },
-  { href: "/network", label: "Network", icon: <Network />, group: "Investigate", hint: "Interfaces, traffic and top talkers" },
-  { href: "/analytics", label: "Analytics", icon: <BarChart3 />, group: "Investigate", hint: "Trends, categories and false positives" },
-  { href: "/firewall", label: "Firewall", icon: <ShieldHalf />, group: "Respond", hint: "Blocks, approvals and allowlist", badge: "approvals" },
-  { href: "/rules", label: "Rules", icon: <ScrollText />, group: "Respond", hint: "Custom detection rules" },
-  { href: "/lab", label: "PCAP Lab", icon: <FlaskConical />, group: "Respond", hint: "Replay captures through the engine" },
-  { href: "/audit", label: "Audit log", icon: <ClipboardList />, group: "Administer", hint: "Who did what, and when" },
-  { href: "/settings", label: "Settings", icon: <Settings />, group: "Administer", hint: "Detection, response and retention" },
-];
+
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, loading } = useSession();
@@ -62,6 +36,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 function Chrome({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const { can } = useSession();
+  const visible = NAV.filter((item) => can(item.minRole));
   return (
     <div className="flex min-h-dvh">
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-iris focus:px-3 focus:py-1.5 focus:text-ground">
@@ -75,15 +51,16 @@ function Chrome({ children }: { children: ReactNode }) {
         </main>
         <ConsoleFooter />
       </div>
-      <CommandMenu pages={NAV.map((item) => ({ id: item.href, label: item.label, hint: item.hint, href: item.href }))} />
+      <CommandMenu pages={visible.map((item) => ({ id: item.href, label: item.label, hint: item.hint, href: item.href }))} />
     </div>
   );
 }
 
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const pathname = usePathname();
-  const { user, logout } = useSession();
-  const groups = [...new Set(NAV.map((item) => item.group))];
+  const { user, logout, can } = useSession();
+  const visible = NAV.filter((item) => can(item.minRole));
+  const groups = [...new Set(visible.map((item) => item.group))];
   const { data: overview } = useSWR<Overview>("/stats/overview", { refreshInterval: 30_000 });
   const counts = { incidents: overview?.open_incidents ?? 0, approvals: overview?.pending_approvals ?? 0 };
   return (
@@ -106,7 +83,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
             <div key={group} className="mb-4">
               <p className="eyebrow px-2 pb-1">{group}</p>
               <ul>
-                {NAV.filter((item) => item.group === group).map((item) => {
+                {visible.filter((item) => item.group === group).map((item) => {
                   const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
                   return (
                     <li key={item.href}>
@@ -148,18 +125,6 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   );
 }
 
-export function Wordmark() {
-  return (
-    <span className="flex items-center gap-2">
-      <svg viewBox="0 0 24 24" className="size-5" aria-hidden>
-        <path d="M2 14h4l2-6 3 10 3-14 2 10h6" fill="none" stroke="var(--color-iris)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      <span className="font-display text-[15px] font-bold tracking-tight text-frost">
-        Sentinel<span className="text-iris">X</span>
-      </span>
-    </span>
-  );
-}
 
 function TopBar({ onMenu }: { onMenu: () => void }) {
   const { state, recent } = useEvents();

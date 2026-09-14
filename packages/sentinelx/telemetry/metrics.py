@@ -155,6 +155,11 @@ class _Metrics:
             ["action", "outcome"],
             registry=registry,
         )
+        self.webhook_failures = Counter(
+            f"{ns}_webhook_failures_total",
+            "Webhook deliveries that failed or were refused.",
+            registry=registry,
+        )
         self.firewall_actions = Counter(
             f"{ns}_firewall_actions_total",
             "Firewall operations attempted.",

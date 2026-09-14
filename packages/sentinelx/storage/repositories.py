@@ -104,6 +104,29 @@ class UserRepository:
     async def refresh_token(self, jti: str) -> RefreshToken | None:
         return await self.session.get(RefreshToken, jti)
 
+    async def claim_refresh_token(self, jti: str) -> bool:
+        """Atomically mark a refresh token used. False if it was already used or revoked.
+
+        A single conditional UPDATE, so two concurrent refreshes presenting the same
+        token cannot both succeed; the loser is treated as token reuse.
+        """
+        result = await self.session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.jti == jti, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC))
+        )
+        return bool(getattr(result, "rowcount", 0))
+
+    async def record_failed_login(self, user_id: int) -> int:
+        """Increment the failure counter in the database and return the new value."""
+        result = await self.session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(failed_logins=User.failed_logins + 1)
+            .returning(User.failed_logins)
+        )
+        return int(result.scalar_one())
+
     async def revoke_tokens(self, user_id: int) -> None:
         await self.session.execute(
             update(RefreshToken)
@@ -687,10 +710,7 @@ class RetentionRepository:
         )
         await run("audit_events", delete(AuditEvent).where(AuditEvent.timestamp < audit_cutoff))
         await run("replays", delete(ReplayRecord).where(ReplayRecord.created_at < cutoff))
-        await run(
-            "refresh_tokens",
-            delete(RefreshToken).where(
-                or_(RefreshToken.expires_at < now, RefreshToken.revoked_at.is_not(None))
-            ),
-        )
+        # Revoked tokens are kept until they expire: presenting a revoked token is how
+        # reuse (theft) is detected, which only works while the record still exists.
+        await run("refresh_tokens", delete(RefreshToken).where(RefreshToken.expires_at < now))
         return results

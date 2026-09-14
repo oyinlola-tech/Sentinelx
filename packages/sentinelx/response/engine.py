@@ -555,19 +555,28 @@ class ResponseEngine:
         }
         decision = ResponseDecision(
             action=ActionType.WEBHOOK,
-            target=self.settings.webhook_url.split("?")[0],
+            target=webhook_display(self.settings.webhook_url),
             reason=detection.title,
             executed=False,
             dry_run=False,
             detection_id=detection.detection_id,
         )
         try:
-            async with httpx.AsyncClient(timeout=self.settings.webhook_timeout_seconds) as client:
+            await check_webhook_destination(
+                self.settings.webhook_url,
+                allow_private=self.settings.webhook_allow_private_addresses,
+            )
+            async with httpx.AsyncClient(
+                timeout=self.settings.webhook_timeout_seconds, follow_redirects=False
+            ) as client:
                 response = await client.post(self.settings.webhook_url, json=body)
                 response.raise_for_status()
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, WebhookRejectedError) as exc:
+            reason = str(exc) if isinstance(exc, WebhookRejectedError) else type(exc).__name__
+            metrics.webhook_failures.inc()
+            log.warning("webhook_failed", target=decision.target, error=reason)
             return await self._finalise(
-                replace(decision, error=f"webhook failed: {type(exc).__name__}"),
+                replace(decision, error=f"webhook failed: {reason}"),
                 source="engine",
                 record=False,
             )
@@ -635,3 +644,55 @@ class ResponseEngine:
             "auto_block_threshold": self.scoring.auto_block_threshold,
             "allowlist": self.guard.allowlist,
         }
+
+
+class WebhookRejectedError(Exception):
+    """The webhook destination is not allowed (for example, a private address)."""
+
+
+def webhook_display(url: str) -> str:
+    """A webhook URL safe to show and log: scheme and host only.
+
+    Chat and incident webhooks carry their secret in the path or query, and URLs can
+    embed ``user:password@``; none of that belongs in a dashboard or an audit record.
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if not parts.hostname:
+        return ""
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{parts.hostname}{port}/…"
+
+
+async def check_webhook_destination(url: str, *, allow_private: bool) -> None:
+    """Refuse to send to loopback, private, link-local or reserved addresses.
+
+    Resolved at send time, so a hostname cannot be pointed at an internal service
+    after validation. (A DNS answer that changes between this check and the connection
+    is not prevented; set ``webhook_allow_private_addresses`` only for trusted hosts.)
+
+    Raises:
+        WebhookRejectedError: when any resolved address is not a public address.
+    """
+    if allow_private:
+        return
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host, parts.port or 443, type=socket.SOCK_STREAM
+        )
+    except OSError as exc:
+        raise WebhookRejectedError(f"cannot resolve webhook host {host!r}") from exc
+    for info in infos:
+        address = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
+        if not address.is_global or address.is_multicast:
+            raise WebhookRejectedError(
+                f"webhook host {host!r} resolves to non-public address {address}; set "
+                "RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES=true to allow internal receivers"
+            )

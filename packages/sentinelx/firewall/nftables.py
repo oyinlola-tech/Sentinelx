@@ -48,6 +48,12 @@ def _element(network: IPNetworkT) -> str:
     return str(network)
 
 
+def _is_missing(stderr: str) -> bool:
+    """nft's wording for "that table, set or element does not exist"."""
+    text = stderr.lower()
+    return "no such file or directory" in text or "does not exist" in text
+
+
 class NftablesAdapter(FirewallAdapter):
     """Manages blocks through a dedicated nftables table.
 
@@ -233,18 +239,36 @@ class NftablesAdapter(FirewallAdapter):
     async def _add_element(
         self, set_name: str, network: IPNetworkT, duration: int | None, operation: str
     ) -> None:
-        tokens = ["{", _element(network)]
+        """Insert or replace a set element in one atomic nft transaction.
+
+        ``add element`` leaves an existing element (and its timeout) untouched, so a
+        re-block with a new duration, or a permanent block over a temporary one, would
+        silently keep the old expiry. Add-delete-add in a single batch always leaves
+        exactly the requested element, with no moment where the address is unblocked.
+        """
+        target = ("element", self.family, self.table, set_name)
+        element = ["{", _element(network), "}"]
+        final = ["{", _element(network)]
         if duration:
-            tokens += ["timeout", f"{int(duration)}s"]
-        tokens.append("}")
+            final += ["timeout", f"{int(duration)}s"]
+        final.append("}")
         try:
-            await self._runner.run("add", "element", self.family, self.table, set_name, *tokens)
+            await self._runner.run(
+                "add", *target, *element, ";", "delete", *target, *element, ";", "add", *target, *final
+            )
         except FirewallError:
             self._record(operation, self.backend, False)
             raise
         self._record(operation, self.backend, True)
 
     async def unblock(self, network: IPNetworkT) -> bool:
+        """Remove ``network`` from every set. False only when it was in none of them.
+
+        Raises:
+            FirewallError: when nft fails for any reason other than the element (or the
+                table) not existing, e.g. permission denied. A failure is never
+                reported as "was not blocked".
+        """
         removed = False
         sets = (
             (self.block_v4, self.limit_v4)
@@ -263,9 +287,17 @@ class NftablesAdapter(FirewallAdapter):
                 "}",
                 check=False,
             )
-            removed = removed or result.ok
+            if result.ok:
+                removed = True
+            elif not _is_missing(result.stderr):
+                self._record("unblock", self.backend, False)
+                raise FirewallError(
+                    f"nft could not remove {network}: {result.stderr.strip()[:300]}",
+                    command=result.display,
+                    stderr=result.stderr,
+                )
         self._comments.pop(str(network), None)
-        self._record("unblock", self.backend, removed)
+        self._record("unblock", self.backend, True)
         return removed
 
     async def list_blocked(self) -> list[BlockEntry]:
@@ -280,7 +312,13 @@ class NftablesAdapter(FirewallAdapter):
                 "-j", "list", "set", self.family, self.table, set_name, check=False
             )
             if not result.ok:
-                continue
+                if _is_missing(result.stderr):
+                    continue  # not set up yet: genuinely nothing blocked
+                raise FirewallError(
+                    f"nft could not list {set_name}: {result.stderr.strip()[:300]}",
+                    command=result.display,
+                    stderr=result.stderr,
+                )
             for network, expires in self._parse_elements(result.stdout):
                 entries.append(
                     BlockEntry(

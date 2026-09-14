@@ -34,7 +34,7 @@ from sentinelx.signatures import (
     run_rule_tests,
 )
 from sentinelx.signatures.dsl import FIELDS
-from sentinelx.signatures.rules import rule_to_yaml
+from sentinelx.signatures.rules import load_rule_yaml, rule_to_yaml
 from sentinelx.storage.audit import AuditService
 from sentinelx.storage.database import Database
 from sentinelx.storage.models import RuleRecord
@@ -83,7 +83,7 @@ class RuleService:
             RuleValidationError: listing every problem found.
         """
         try:
-            document = yaml.safe_load(definition)
+            document = load_rule_yaml(definition)
         except yaml.YAMLError as exc:
             raise RuleValidationError("rule", [f"not valid YAML: {exc}"]) from exc
         rules, problems = parse_rule_document(

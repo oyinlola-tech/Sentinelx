@@ -339,3 +339,37 @@ def test_block_entry_serialises() -> None:
 
     entry = BlockEntry(network="203.0.113.5/32", expires_at=datetime.now(UTC))
     assert entry.as_dict()["temporary"] is True
+
+
+class TestWebhookSafety:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://127.0.0.1/hook",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://[::1]:8443/hook",
+            "https://10.1.2.3/hook",
+            "https://localhost/hook",
+        ],
+    )
+    async def test_internal_destinations_are_refused_by_default(self, url: str) -> None:
+        from sentinelx.response.engine import WebhookRejectedError, check_webhook_destination
+
+        with pytest.raises(WebhookRejectedError):
+            await check_webhook_destination(url, allow_private=False)
+        await check_webhook_destination(url, allow_private=True)
+
+    @pytest.mark.parametrize(
+        "url", ["http://hooks.example.com/x", "gopher://x", "file:///etc/passwd", "not a url"]
+    )
+    def test_settings_require_https(self, url: str) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ResponseSettings(webhook_url=url)
+
+    def test_display_hides_credentials_path_and_query(self) -> None:
+        from sentinelx.response.engine import webhook_display
+
+        shown = webhook_display("https://u:pw@hooks.example.com:8443/T0/B0/SECRET?sig=1")
+        assert shown == "https://hooks.example.com:8443/…"

@@ -158,8 +158,23 @@ class SharedState:
             window.popleft()
         window.append(now)
         if len(self._memory_windows) > 100_000:
-            self._memory_windows.clear()
+            self._evict_memory_windows(now, window_seconds)
         return self._verdict(len(window), limit, window[0], window_seconds, now)
+
+    def _evict_memory_windows(self, now: float, window_seconds: int) -> None:
+        """Bound the in-process limiter without resetting every client's throttle.
+
+        Expired windows go first; if that is not enough, the least recently created
+        half is dropped. (Clearing everything would let anyone who can present many
+        source addresses reset login throttling for all clients.)
+        """
+        for key in [
+            k for k, w in self._memory_windows.items() if not w or w[-1] <= now - window_seconds
+        ]:
+            del self._memory_windows[key]
+        if len(self._memory_windows) > 100_000:
+            for key in list(self._memory_windows)[:50_000]:
+                del self._memory_windows[key]
 
     @staticmethod
     def _verdict(
@@ -168,6 +183,35 @@ class SharedState:
         allowed = count <= limit
         retry_after = 0.0 if allowed else max(oldest + window - now, 0.0)
         return allowed, max(limit - count, 0), round(retry_after, 1)
+
+    async def count(self, bucket: str, identity: str, *, window_seconds: int) -> tuple[int, float]:
+        """Events recorded by :meth:`hit` in the window, without recording one.
+
+        Returns:
+            ``(count, seconds until the oldest event leaves the window)``.
+        """
+        now = self._clock()
+        key = self._key("rl", bucket, identity)
+        client = await self._redis()
+        if client is not None:
+            try:
+                async with client.pipeline(transaction=True) as pipe:
+                    pipe.zremrangebyscore(key, 0, now - window_seconds)
+                    pipe.zcard(key)
+                    pipe.zrange(key, 0, 0, withscores=True)
+                    _, count, oldest = await pipe.execute()
+                oldest_ts = float(oldest[0][1]) if oldest else now
+                return int(count), round(max(oldest_ts + window_seconds - now, 0.0), 1)
+            except Exception as exc:
+                await self._fail(exc)
+        window = self._memory_windows.get(key)
+        if not window:
+            return 0, 0.0
+        while window and window[0] <= now - window_seconds:
+            window.popleft()
+        if not window:
+            return 0, 0.0
+        return len(window), round(max(window[0] + window_seconds - now, 0.0), 1)
 
     async def reset(self, bucket: str, identity: str) -> None:
         key = self._key("rl", bucket, identity)
@@ -192,7 +236,11 @@ class SharedState:
                 return
             except Exception as exc:
                 await self._fail(exc)
-        self._memory_cache[key] = (self._clock() + ttl_seconds, encoded)
+        now = self._clock()
+        if len(self._memory_cache) > 50_000:
+            for stale in [k for k, (expires, _) in self._memory_cache.items() if expires < now]:
+                del self._memory_cache[stale]
+        self._memory_cache[key] = (now + ttl_seconds, encoded)
 
     async def cache_get(self, name: str) -> Any | None:
         key = self._key("cache", name)
@@ -206,6 +254,21 @@ class SharedState:
         entry = self._memory_cache.get(key)
         if entry is None or entry[0] < self._clock():
             self._memory_cache.pop(key, None)
+            return None
+        return json.loads(entry[1])
+
+    async def cache_pop(self, name: str) -> Any | None:
+        """Read and delete in one atomic step (Redis ``GETDEL``). For single-use values."""
+        key = self._key("cache", name)
+        client = await self._redis()
+        if client is not None:
+            try:
+                raw = await client.getdel(key)
+                return json.loads(raw) if raw is not None else None
+            except Exception as exc:
+                await self._fail(exc)
+        entry = self._memory_cache.pop(key, None)
+        if entry is None or entry[0] < self._clock():
             return None
         return json.loads(entry[1])
 

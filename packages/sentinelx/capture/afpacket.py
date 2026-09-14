@@ -17,6 +17,7 @@ import struct
 import sys
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from sentinelx.capture.base import CaptureCapabilities, PacketCapture, RawFrame
@@ -31,7 +32,13 @@ from sentinelx.system.interfaces import list_interfaces as _list_interfaces
 from sentinelx.system.privileges import capture_privilege, libpcap_library
 from sentinelx.telemetry.logging import get_logger
 
-__all__ = ["AfPacketCapture"]
+__all__ = [
+    "ARPHRD_LINK_TYPES",
+    "PACKET_OUTGOING",
+    "AfPacketCapture",
+    "linux_hardware_type",
+    "linux_interface_link_type",
+]
 
 log = get_logger(__name__)
 
@@ -46,7 +53,7 @@ SO_ATTACH_FILTER = 26
 PACKET_OUTGOING = 4
 
 #: Linux ARPHRD_* hardware type -> the link-layer framing AF_PACKET delivers for it.
-_ARPHRD_LINK_TYPES: dict[int, int] = {
+ARPHRD_LINK_TYPES: dict[int, int] = {
     1: LinkType.ETHERNET,  # ARPHRD_ETHER
     772: LinkType.ETHERNET,  # ARPHRD_LOOPBACK: a zeroed Ethernet header
     65534: LinkType.RAW,  # ARPHRD_NONE: tun devices, WireGuard
@@ -55,8 +62,24 @@ _ARPHRD_LINK_TYPES: dict[int, int] = {
     778: LinkType.RAW,  # ARPHRD_IPGRE
     769: LinkType.RAW,  # ARPHRD_TUNNEL6
 }
-_ARPHRD_LOOPBACK = 772
+ARPHRD_LOOPBACK = 772
 _BATCH_PACKETS = 512
+
+
+def linux_hardware_type(interface: str) -> int | None:
+    """An interface's ARPHRD_* hardware type, from sysfs (Linux only)."""
+    try:
+        return int(
+            (Path("/sys/class/net") / interface / "type").read_text(encoding="ascii").strip()
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def linux_interface_link_type(interface: str) -> int | None:
+    """The framing AF_PACKET-style capture delivers for a Linux interface."""
+    hardware_type = linux_hardware_type(interface)
+    return ARPHRD_LINK_TYPES.get(hardware_type) if hardware_type is not None else None
 
 
 class AfPacketCapture(PacketCapture):
@@ -255,9 +278,9 @@ class AfPacketCapture(PacketCapture):
         )
         # The loopback device delivers every packet twice to an unbound socket (once
         # outgoing, once incoming); keep one, as libpcap does.
-        if hardware_type == _ARPHRD_LOOPBACK and packet_type == PACKET_OUTGOING:
+        if hardware_type == ARPHRD_LOOPBACK and packet_type == PACKET_OUTGOING:
             return
-        link_type = _ARPHRD_LINK_TYPES.get(hardware_type)
+        link_type = ARPHRD_LINK_TYPES.get(hardware_type)
         if link_type is None:
             self.unsupported_frames += 1
             return

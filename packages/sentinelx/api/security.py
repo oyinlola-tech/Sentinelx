@@ -63,7 +63,13 @@ def get_platform(request: Request) -> Platform:
 
 
 def client_ip(request: Request) -> str:
-    """The caller's address, believing X-Forwarded-For only from trusted proxies."""
+    """The caller's address, believing X-Forwarded-For only from trusted proxies.
+
+    The header is read right to left: each trusted proxy appends the address it
+    received the request from, so the first entry that is *not* a trusted proxy is the
+    real client. The leftmost entry is whatever the client chose to send and is never
+    believed on its own.
+    """
     peer = request.client.host if request.client else "0.0.0.0"
     platform: Platform = request.app.state.platform
     proxies = platform.settings.api.trusted_proxies
@@ -71,13 +77,18 @@ def client_ip(request: Request) -> str:
     if not forwarded or not proxies:
         return peer
     try:
-        if not in_any_network(parse_ip(peer), parse_networks(proxies)):
+        trusted = parse_networks(proxies)
+        if not in_any_network(parse_ip(peer), trusted):
             return peer
-        candidate = forwarded.split(",")[0].strip()
-        parse_ip(candidate)
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        for hop in reversed(hops):
+            address = parse_ip(hop)
+            if not in_any_network(address, trusted):
+                return str(address)
     except ValueError:
         return peer
-    return candidate
+    # Every hop was a trusted proxy: the innermost is as close to the client as we know.
+    return hops[0] if hops else peer
 
 
 def set_auth_cookies(response: Response, pair: TokenPair, *, secure: bool) -> str:

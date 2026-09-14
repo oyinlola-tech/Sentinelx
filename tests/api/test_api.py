@@ -147,7 +147,12 @@ class TestAuthentication:
                 "new_password": "A-much-better-passphrase-77",
             },
         )
-        assert ok.status_code == 204
+        assert ok.status_code == 200 and ok.json()["access_token"]
+        # The session that changed the password continues with its new token; the old
+        # access token is revoked.
+        fresh = {"Authorization": f"Bearer {ok.json()['access_token']}"}
+        assert (await client.get("/auth/me", headers=fresh)).status_code == 200
+        assert (await client.get("/auth/me", headers=admin)).status_code == 401
         relogin = await client.post(
             "/auth/login", json={"username": "admin", "password": "A-much-better-passphrase-77"}
         )
@@ -301,9 +306,24 @@ class TestValidationAndSafety:
             "/config/storage", headers=admin, json={"changes": {"database_url": "sqlite://"}}
         )
         assert response.status_code == 422
+        platform = client._transport.app.state.platform  # type: ignore[attr-defined]
+        platform.settings.api.metrics_token = "metrics-token-value-0123456789abcdef"
+        platform.settings.response.webhook_url = (
+            "https://user:hunter2@hooks.example.com/services/T000/B000/SECRETPATH?sig=abc"
+        )
         view = (await client.get("/config", headers=admin)).json()
-        assert "jwt_secret" not in view["settings"]["api"]
-        assert "bootstrap_admin_password" not in view["settings"]["api"]
+        text = str(view)
+        for secret in (
+            "x" * 48,
+            "Correct-Horse-Battery-2026",
+            "metrics-token-value",
+            "hunter2",
+            "SECRETPATH",
+            "sig=abc",
+        ):
+            assert secret not in text, secret
+        assert view["settings"]["api"]["jwt_secret"] == "[redacted]"
+        assert view["settings"]["response"]["webhook_url"] == "https://hooks.example.com/…"
 
     async def test_path_traversal_refused(
         self, client: httpx.AsyncClient, admin: dict[str, str]
@@ -313,11 +333,72 @@ class TestValidationAndSafety:
                 await client.get("/replay/files/inspect", headers=admin, params={"path": path})
             ).status_code == 422
 
-    async def test_upload_rejects_non_pcap(
-        self, client: httpx.AsyncClient, admin: dict[str, str]
+    async def test_upload_streams_raw_body_after_auth_with_limits(
+        self,
+        client: httpx.AsyncClient,
+        admin: dict[str, str],
+        platform: Platform,
+        tmp_path: Path,
     ) -> None:
-        files = {"file": ("evil.pcap", b"<?php system($_GET[1]); ?>", "application/octet-stream")}
-        assert (await client.post("/replay/upload", headers=admin, files=files)).status_code == 422
+        from sentinelx.testing import get_scenario, write_pcap
+
+        capture = tmp_path / "scan.pcap"
+        write_pcap(capture, get_scenario("tcp_port_scan", ports=30).frames)
+        body = capture.read_bytes()
+        octet = {"Content-Type": "application/octet-stream"}
+        uploads = Path(platform.settings.capture.pcap_directory) / "uploads"
+
+        # Unauthenticated: refused before the body is stored anywhere.
+        anonymous = await client.post("/replay/upload", headers=octet, content=body)
+        assert anonymous.status_code == 401
+        assert not uploads.exists() or not any(uploads.iterdir())
+
+        # Declared size over the limit: refused from the header alone.
+        too_big = {**admin, **octet, "Content-Length": str(1024 * 1024 * 1024)}
+        assert (
+            await client.post("/replay/upload", headers=too_big, content=b"x")
+        ).status_code == 413
+
+        # Multipart (or any other type) is not accepted.
+        files = {"file": ("scan.pcap", body, "application/octet-stream")}
+        assert (await client.post("/replay/upload", headers=admin, files=files)).status_code == 415
+
+        # Not a capture: rejected and removed.
+        evil = await client.post(
+            "/replay/upload",
+            headers={**admin, **octet},
+            params={"filename": "evil.pcap"},
+            content=b"<?php system($_GET[1]); ?>",
+        )
+        assert evil.status_code == 422
+        assert not any(uploads.iterdir())
+
+        stored = await client.post(
+            "/replay/upload",
+            headers={**admin, **octet},
+            params={"filename": "../../scan.pcap"},
+            content=body,
+        )
+        assert stored.status_code == 201, stored.text
+        result = stored.json()
+        assert result["path"].startswith("uploads/") and ".." not in result["path"]
+        assert not Path(result["path"]).is_absolute()
+        assert str(tmp_path) not in stored.text  # no server paths leak
+        assert result["packet_count"] == len(get_scenario("tcp_port_scan", ports=30).frames)
+
+    async def test_upload_quota_is_enforced(
+        self, client: httpx.AsyncClient, admin: dict[str, str], platform: Platform
+    ) -> None:
+        platform.settings.capture.upload_quota_mb = 1
+        uploads = Path(platform.settings.capture.pcap_directory) / "uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+        (uploads / "old.pcap").write_bytes(b"\0" * (1024 * 1024))
+        full = await client.post(
+            "/replay/upload",
+            headers={**admin, "Content-Type": "application/octet-stream"},
+            content=b"\xd4\xc3\xb2\xa1" + b"\0" * 20,
+        )
+        assert full.status_code == 422 and "full" in full.json()["detail"]
 
     async def test_security_headers(self, client: httpx.AsyncClient, admin: dict[str, str]) -> None:
         headers = (await client.get("/detections", headers=admin)).headers
@@ -500,3 +581,46 @@ def test_websocket_ticket_flow(tmp_path: Path) -> None:
         ):
             ws.receive_json()
         assert reused.value.code == 4401
+
+
+def test_websocket_survives_idle_pings_and_drops_deactivated_users(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a read cancelled at each ping interval closed the event stream."""
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import sentinelx.api.websocket as ws_module
+    from sentinelx.api.app import create_app
+    from sentinelx.events.bus import EventType
+    from sentinelx.storage.repositories import UserRepository
+
+    monkeypatch.setattr(ws_module, "_PING_INTERVAL", 0.2)
+    app = create_app(make_settings(tmp_path))
+    with TestClient(app) as http:
+        token = http.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+        ).json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        issued = http.post("/api/v1/auth/ws-ticket", headers=headers).json()["ticket"]
+        platform = app.state.platform
+        with http.websocket_connect(f"/api/v1/ws/events?ticket={issued}") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            assert ws.receive_json()["type"] == "ping"
+            assert ws.receive_json()["type"] == "ping"
+            http.portal.call(platform.bus.publish, EventType.DETECTION_CREATED, {"n": 1})
+            while (message := ws.receive_json())["type"] == "ping":
+                pass
+            assert message["type"] == "detection.created"
+
+            async def deactivate() -> None:
+                async with platform.database.session() as session:
+                    user = await UserRepository(session).by_username("admin")
+                    assert user is not None
+                    user.is_active = False
+
+            http.portal.call(deactivate)
+            with pytest.raises(WebSocketDisconnect) as closed:
+                while True:
+                    ws.receive_json()
+            assert closed.value.code == 4401

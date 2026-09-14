@@ -244,6 +244,8 @@ export interface Overview {
   sensor: SensorStatus;
   safety: string;
   health: "ok" | "degraded" | "error";
+  version: string;
+  api_docs: boolean;
 }
 
 export interface Grouped { key: string | null; count: number }
