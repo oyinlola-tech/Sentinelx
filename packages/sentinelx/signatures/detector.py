@@ -133,6 +133,9 @@ class RuleDetector(Detector):
             )
             for comparison, observed in matched
         ]
+        # Strongest evidence first: counted behaviour explains a match far better
+        # than the packet filter that merely scoped it ("protocol == tcp").
+        evidence.sort(key=lambda item: item.weight, reverse=True)
         evidence.append(
             Evidence(key="rule", value=self.rule.id, description=f"matched rule '{self.rule.name}': {self.rule.condition}", weight=0.3)
         )
