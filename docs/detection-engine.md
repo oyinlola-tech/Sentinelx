@@ -131,7 +131,7 @@ For emitted detections the engine also increments the source profile's `detectio
 
 ### Engine statistics
 
-`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. See [api.md](api.md).
+`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. On restart, `disabled_detectors` is applied to built-in detectors only, so a disabled `statistical_anomaly` or `ml_anomaly` detector comes back enabled. See [api.md](api.md).
 
 ## Detection modes
 

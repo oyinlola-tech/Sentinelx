@@ -202,7 +202,7 @@ A hostile or accidental rule cannot make parsing or evaluation expensive:
 | `MAX_DEPTH` | 16 levels; each `not` and each pair of parentheses adds one level (`and` and `or` chains do not) | `condition nests deeper than 16 levels` |
 | `MAX_LIST_ITEMS` | 128 items per list | `list exceeds 128 items` |
 
-Syntax errors report the character offset where the problem was found, for example `missing ')' (at character 34)`.
+Most syntax errors report the character offset where the problem was found, for example `missing ')' (at character 34)`. A condition longer than 2,000 characters in a rule file is rejected earlier, by the rule model, with `condition: String should have at most 2000 characters`.
 
 ### Operators and field kinds
 
@@ -380,7 +380,7 @@ Each enabled rule becomes one `RuleDetector` named `rule:<id>` in the detection 
 2. If it matches, a `Detection` is built with the rule's `name` as title, `description` (or a generic sentence), `severity`, `category`, `confidence` and `action`, `rule_name` set to the rule name, `observation_window_seconds` set to `within`, `packet_count` set to the source's packets in `within`, tags `rule` plus the rule's tags, and the evidence described in [Evaluation semantics](#evaluation-semantics).
 3. The engine applies its usual policy: evidence check, `DETECTION__ALLOWLIST_NETWORKS`, and the per-`(rule:<id>, source)` cooldown with escalation. A rule whose condition stays true is therefore reported once per cooldown period per source, not once per packet. See [detection-engine.md](detection-engine.md#the-detection-engine).
 
-Rules run after the built-in and anomaly detectors, and they are attached whatever `DETECTION_MODE` is set to, including `disabled`.
+Rules run after the built-in detectors, and they are attached whatever `DETECTION_MODE` is set to, including `disabled`.
 
 The detection's `source_ip` is always the packet's sender. Write conditions from the point of view of the host whose behaviour you are counting: `destination_port == 22 and short_sessions >= 20` matches on packets the client sends to the SSH server.
 
@@ -503,7 +503,7 @@ Definitions sent to the API must be 10-20,000 characters and contain exactly one
 {"detail": "rule is invalid", "problems": ["..."]}
 ```
 
-The same 422 shape is returned when updating or deleting a file rule (`'<id>' is defined in <path>; edit the file instead`), when renaming an API rule through `PUT` (`renaming a rule changes its id; create a new rule instead`), and when creating a rule whose id already exists. An unknown rule id returns 404.
+The same 422 shape is returned when updating a file rule (`'<id>' is defined in <path>; edit the file instead`), when deleting one (`'<id>' is defined in <path>; delete it there or disable it`), when renaming an API rule through `PUT` (`renaming a rule changes its id; create a new rule instead`), and when creating a rule whose id already exists. An unknown rule id returns 404.
 
 ### Dashboard
 
@@ -536,7 +536,7 @@ The messages below are the exact problem texts, shown without the `<file> rule '
 | `condition: empty list (at character 20)` | `[]` | Give at least one item |
 | `condition: expected a field name, found 'end of condition' (at character 12)` | Condition ends with `and`, `or` or `not` | Complete or remove the trailing operator |
 | `condition: unexpected 'ttl'; expected 'and', 'or' or end (at character 8)` | Two comparisons without `and` or `or` | Join them with `and` or `or` |
-| `condition: nests deeper than 16 levels`, `list exceeds 128 items`, `exceeds 400 tokens`, `exceeds 2000 characters` | A parser bound was hit | Simplify the condition, or split it into several rules |
+| `condition: condition nests deeper than 16 levels (at character N)`, `condition: list exceeds 128 items (at character N)`, `condition: condition exceeds 400 tokens`, `condition: String should have at most 2000 characters` | A parser or model bound was hit | Simplify the condition, or split it into several rules |
 | `within 300s exceeds the 60s of history the feature engine keeps; ...` | `within` longer than the feature window | Shorten `within`, or raise a detection window setting |
 | `within: Value error, invalid duration '10 minutes'; use e.g. 30s, 5m or 1h` | Unsupported duration format | Use `600s` or `10m` |
 | `action 'block_ip' requires the condition to include a count threshold ... on every branch; ...` | Preventive action without a selective condition | Add a `count >= N` (N at least 2) to every `or` branch, remove the negation, or use `action: alert` |
