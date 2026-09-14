@@ -13,7 +13,7 @@ SentinelX is a modular monolith. The Python package `packages/sentinelx` holds t
 - **API.** `sentinelx start` runs uvicorn with one worker. The FastAPI lifespan in `api/app.py` builds a `Platform` and calls `start()`. Routes are thin: they validate input, check roles and call a service.
 - **CLI.** Most commands use `platform_context()` in `cli/runtime.py`, which starts a `Platform` with background loops and bootstrap-admin creation turned off, runs the command and stops the platform.
 
-The front-ends share code, configuration and the database. They do not share memory. A CLI command such as `sentinelx status` builds its own short-lived `Platform`, so it sees stored history and the host's firewall state, but not the sliding windows, open incidents or capture statistics of a server running in another process. Use the API (see [api.md](api.md)) for the live state of a running sensor. `sentinelx metrics` is the exception: it reads Prometheus metrics from a running server over HTTP.
+The front-ends share code, configuration and the database. They do not share memory. A CLI command such as `sentinelx status` builds its own short-lived `Platform`, so it sees stored history, but not the sliding windows, open incidents or capture statistics of a server running in another process. Use the API (see [api.md](api.md)) for the live state of a running sensor. `sentinelx metrics` is the exception: it reads Prometheus metrics from a running server over HTTP.
 
 `Platform.start()` runs these steps in order:
 
@@ -28,7 +28,7 @@ The front-ends share code, configuration and the database. They do not share mem
 
 ### The security core is independent of the web layer
 
-The packages that process traffic (`capture`, `parser`, `features`, `detection`, `signatures`, `anomaly`, `scoring`, `correlation`, `threat_intel`, `response`, `firewall`) and `pipeline.py` import nothing from `api`, `cli`, `services` or `storage`. They depend only on `common`, `config`, `events` and `telemetry`. The dependency runs one way: services and front-ends use the core, and the core does not know they exist.
+The packages that process traffic (`capture`, `parser`, `features`, `detection`, `signatures`, `anomaly`, `scoring`, `correlation`, `threat_intel`, `response`, `firewall`) and `pipeline.py` import nothing from `api`, `cli`, `services` or `storage`. Apart from each other, they depend on `common`, `config`, `events` and `telemetry` (the rule test runner in `signatures` also uses the synthetic scenarios in `testing`). The dependency runs one way: services and front-ends use the core, and the core does not know they exist.
 
 In practice this means:
 
@@ -81,8 +81,8 @@ flowchart TD
 | Decode | `parser/decoder.py`, `parser/layers.py`, `parser/application.py` | Link, network and transport headers are decoded with `struct`. DNS, HTTP and TLS metadata is added for well-known ports. The result is a `PacketEvent`, or `None` for a frame that cannot be decoded (counted, never raised). |
 | Features | `features/extractor.py`, `features/profiles.py` | One `SourceProfile` per source address and one `FlowState` per canonical flow are updated once per packet. Detectors read a `FeatureContext` instead of keeping their own counters. |
 | Detect | `detection/engine.py` | Every enabled detector runs against the context. Built-in detectors, rule detectors (`signatures/detector.py`, one per enabled rule) and anomaly detectors are all `Detector` instances in the same engine. The engine then applies shared policy: detections without evidence are rejected, allowlisted sources are suppressed, and repeats of the same (detector, source) pair are suppressed for `detection_cooldown_seconds` unless severity rises or confidence rises by at least 0.2. See [detection-engine.md](detection-engine.md) and [rule-engine.md](rule-engine.md). |
-| Threat intel | `threat_intel/providers.py` | Only when a detection exists. The source address is checked against the configured providers. An allowlist verdict marks the source as trusted. |
-| Score | `scoring/engine.py` | The risk engine computes an additive, clamped 0-100 score from severity, confidence, frequency, history, intel, correlation (the number of distinct detectors that agree on this source) and target sensitivity. See [risk-scoring.md](risk-scoring.md). A `detection.created` event is published here. |
+| Threat intel | `threat_intel/providers.py` | Only when a detection exists. The source address is checked against every configured provider, each bounded by a 2-second timeout. An allowlist verdict marks the source as trusted; otherwise the highest reputation score wins. |
+| Score | `scoring/engine.py` | The risk engine computes an additive, clamped 0-100 score from severity, confidence, frequency, history, intel, correlation (the number of other detectors already in this source's open incident or pending group) and target sensitivity. See [risk-scoring.md](risk-scoring.md). A `detection.created` event is published here. |
 | Correlate | `correlation/engine.py` | Detections are grouped by source (optionally also by destination). An incident opens when enough distinct detectors agree within the window, or immediately for a critical detection above `standalone_risk_threshold`. `incident.opened`, `incident.updated` and `severity.changed` events are published. |
 | Respond | `response/engine.py`, `response/safety.py`, `firewall/` | The response engine records an alert and optionally calls the webhook. For a preventive recommendation at or above `auto_block_threshold`, it applies the `RESPONSE_MODE` and `DRY_RUN` decision matrix. Anything that would change the firewall passes the safety guard first. When an incident is created or changes severity and its risk crosses the threshold, its sources are considered for a temporary block. See [response-engine.md](response-engine.md). |
 | Publish and persist | `events/bus.py`, `storage/persister.py`, `api/websocket.py` | Subscribers receive events through bounded queues. The persister writes detections, incidents, response decisions, blocks and per-minute traffic summaries. WebSocket clients receive the events their role allows. |
@@ -127,7 +127,7 @@ A SentinelX server is one Python process with one asyncio event loop. The pipeli
 - `Pipeline.run()` iterates over a capture source and calls `process_frame()` for each frame. Frames are processed one at a time, in order. There is no parallel packet processing.
 - Per-packet work (decode, features, detection) is synchronous CPU work on the event loop. While a frame is being processed, no other coroutine runs.
 - The loop gets a chance to run other tasks between frames. Live AF_PACKET capture reads each frame with `asyncio.to_thread`, which suspends the pipeline on every read. PCAP replay reads frames synchronously and yields to the loop every 256 frames, so a replay at full speed does not starve the API.
-- Work on the detection path is awaited inline. Threat-intel lookups, firewall commands (subprocesses with a timeout) and the webhook call (bounded by `webhook_timeout_seconds`, default 5 seconds) all run before the pipeline takes the next frame. A slow webhook endpoint therefore delays packet processing each time a detection crosses `webhook_min_risk`.
+- Work on the detection path is awaited inline. Threat-intel lookups (each provider bounded by a 2-second timeout), firewall commands (subprocesses with a timeout) and the webhook call (bounded by `webhook_timeout_seconds`, default 5 seconds) all run before the pipeline takes the next frame. A slow webhook endpoint therefore delays packet processing each time a detection crosses `webhook_min_risk`.
 - Firewall changes made by the response engine are serialised by an `asyncio.Lock`. A separate reaper task checks for expired temporary blocks every 5 seconds.
 - Live capture runs as a background task owned by `SensorService`. Each PCAP replay started from the API runs as its own task with its own `Pipeline` instance (separate windows, incidents and a forced dry-run in-memory firewall). Replays share the process, the event loop and the event bus with live capture. At most two replays run at once.
 
@@ -289,7 +289,7 @@ With `STORAGE__REDIS_REQUIRED=true`, startup fails if Redis is unreachable, and 
 
 **Additive, explainable risk score.** Every point in the score can be traced to a named factor and re-weighted in configuration. The cost is that it cannot model interactions between factors the way a learned model could. See [risk-scoring.md](risk-scoring.md).
 
-**Safe response defaults.** `RESPONSE_MODE=detect_only` and `DRY_RUN=true` mean a new installation never modifies traffic. Enabling automatic enforcement requires an explicit confirmation. See [response-engine.md](response-engine.md) and [security.md](security.md).
+**Safe response defaults.** `RESPONSE_MODE=detect_only` and `DRY_RUN=true` mean a new installation never modifies traffic. Enabling automatic enforcement at runtime through the CLI or API requires an explicit confirmation phrase. See [response-engine.md](response-engine.md) and [security.md](security.md).
 
 ## Known limitations
 

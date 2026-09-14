@@ -9,7 +9,7 @@ description = "SentinelX - an explainable network intrusion detection and preven
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "SentinelX Contributors" }]
+authors = [{ name = "Oluwayemi Oyinlola Michael" }]
 keywords = ["ids", "ips", "nidps", "network-security", "intrusion-detection"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -58,8 +58,7 @@ pyshark = ["pyshark>=0.6"]
 sentinelx = "sentinelx.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/sentinelx/sentinelx"
-Documentation = "https://github.com/sentinelx/sentinelx/tree/main/docs"
+Homepage = "https://oyinlola1.vercel.app"
 
 [tool.setuptools]
 package-dir = { "" = "packages" }

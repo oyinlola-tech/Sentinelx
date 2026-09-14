@@ -7,7 +7,7 @@ interface Health { status: "ok" | "degraded" | "error"; version: string }
 
 /**
  * Slim console footer: honest system status, the running version, and the places an
- * operator goes next (API reference, metrics, docs). The health dot reads the same
+ * operator goes next (API reference, detection performance, audit log), and the author credit. The health dot reads the same
  * unauthenticated endpoint load balancers use.
  */
 export function ConsoleFooter({ minimal = false, sensor }: { minimal?: boolean; sensor?: string }) {
@@ -29,10 +29,14 @@ export function ConsoleFooter({ minimal = false, sensor }: { minimal?: boolean; 
             <a href="/api/docs" target="_blank" rel="noreferrer" className="hover:text-frost">API reference</a>
             <Link href="/analytics" className="hover:text-frost">Detection performance</Link>
             <Link href="/audit" className="hover:text-frost">Audit log</Link>
-            <a href="https://github.com/sentinelx/sentinelx/tree/main/docs" target="_blank" rel="noreferrer" className="hover:text-frost">Documentation</a>
           </nav>
         )}
-        <p>Apache-2.0 · defensive use only</p>
+        <p>
+          Apache-2.0 · defensive use only · built by{" "}
+          <a href="https://oyinlola1.vercel.app" target="_blank" rel="noreferrer" className="text-mist hover:text-frost">
+            Oluwayemi Oyinlola Michael
+          </a>
+        </p>
       </div>
     </footer>
   );

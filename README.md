@@ -28,6 +28,7 @@ Every alert shows its work: the evidence that triggered it, the thresholds it cr
 - [Security](#security)
 - [Limitations](#limitations)
 - [Documentation](#documentation)
+- [Author](#author)
 - [License](#license)
 
 ## Features
@@ -110,7 +111,7 @@ Requirements:
 - Optional: `nftables` (preferred) or `iptables`, for prevention.
 
 ```bash
-git clone https://github.com/sentinelx/sentinelx.git
+git clone <repository-url> sentinelx
 cd sentinelx
 make install          # creates .venv, installs the backend with dev tools and the dashboard, copies .env.example to .env
 source .venv/bin/activate
@@ -254,12 +255,28 @@ Every detector, its signals, settings and known evasions: [docs/detection-engine
 
 Rules are YAML files in `rules/`. The condition language supports comparisons, boolean logic, lists and windowed counts. It is parsed by a bounded recursive-descent parser, never evaluated as code.
 
-Here is the shipped SSH brute-force rule:
+A shipped rule, from `rules/authentication.yml`:
 
 ```yaml
-rule:
-  name: SSH Brute Force
-  # ...see rules/authentication.yml for the full definition
+rules:
+  - name: SSH Brute Force
+    description: Repeated short-lived SSH sessions from one source, the pattern of automated password guessing.
+    condition: protocol == TCP and destination_port == 22 and short_sessions >= 20
+    within: 60s
+    severity: high
+    category: brute_force
+    confidence: 0.85
+    action: temporary_block
+    duration: 900
+    tags: [ssh, t1110]
+    tests:
+      - scenario: ssh_brute_force
+        expect: match
+      - scenario: ssh_brute_force
+        params: {attempts: 10}
+        expect: no_match
+      - scenario: normal_traffic
+        expect: no_match
 ```
 
 Validate and test rules:
@@ -274,7 +291,7 @@ A rule whose action blocks or rate-limits must include a count threshold of at l
 
 ## Risk scoring and incidents
 
-Each detection's risk score adds weighted contributions from severity, confidence, repetition, target sensitivity, threat intelligence and prior history, capped at 100. Each contribution is stored with its reason. For example, a synthetic TCP port scan scored 66.6: severity 45, confidence 19.6, repetition 2.
+Each detection's risk score adds weighted contributions from severity, confidence, recent frequency, the source's history, correlation with other detections, threat intelligence, target sensitivity and previous responses, minus a penalty for allowlisted sources, capped to 0–100. Each contribution is stored with its reason, and every weight is configurable (`SCORING__SEVERITY_WEIGHT`, `SCORING__INTEL_WEIGHT` and so on). For example, a synthetic TCP port scan scored 66.6: severity 45, confidence 19.6, frequency 2.
 
 The correlation engine groups detections from the same source within a window (default 600 seconds) and matches kill-chain patterns to raise incidents. A single detection above the standalone threshold (default 85) opens an incident by itself.
 
@@ -309,7 +326,7 @@ The PCAP Lab (CLI, API and dashboard) runs captures through an isolated copy of 
 
 ```bash
 sentinelx replay capture.pcapng --speed 1 --persist --report report.json
-sentinelx rules test rules        # also supports testing one rule against a capture; see --help
+sentinelx rules test rules/authentication.yml --pcap capture.pcapng   # test rules against a capture
 ```
 
 Details: [docs/pcap-lab.md](docs/pcap-lab.md).
@@ -356,7 +373,7 @@ make lint               # ruff (check and format) and dashboard ESLint
 make typecheck          # mypy --strict and TypeScript
 make rules              # validate rules and run their embedded tests
 make openapi            # regenerate the dashboard's typed API contract
-make check              # lint, typecheck, test and rules
+make check              # lint, typecheck, test, rules and a dashboard production build
 ```
 
 CI runs all of these, checks that migrations match the models and that the committed OpenAPI contract has not drifted, builds the dashboard, and builds both container images. See [docs/contributing.md](docs/contributing.md).
@@ -410,6 +427,12 @@ Threat model and controls: [docs/security.md](docs/security.md). To report a vul
 | [contributing.md](docs/contributing.md) | Development workflow and conventions |
 | [security.md](docs/security.md) | Threat model and controls |
 
+## Author
+
+SentinelX is designed and built by **Oluwayemi Oyinlola Michael**.
+
+- Portfolio: [oyinlola1.vercel.app](https://oyinlola1.vercel.app)
+
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Copyright 2026 Oluwayemi Oyinlola Michael. Licensed under the Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
