@@ -29,6 +29,9 @@ rules:
     tags: [rdp, t1110]
     tests:
       - scenario: ssh_brute_force
+        params: {port: 3389}
+        expect: match
+      - scenario: ssh_brute_force
         expect: no_match
       - scenario: normal_traffic
         expect: no_match

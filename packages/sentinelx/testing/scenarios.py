@@ -319,7 +319,11 @@ def udp_scan(
 
 
 def ssh_brute_force(
-    attacker: str = "198.51.100.23", target: str = "192.168.10.10", attempts: int = 60, seed: int = 19
+    attacker: str = "198.51.100.23",
+    target: str = "192.168.10.10",
+    attempts: int = 60,
+    seed: int = 19,
+    port: int = 22,
 ) -> Scenario:
     """Repeated short-lived SSH sessions: connect, exchange a little, get reset.
 
@@ -330,20 +334,20 @@ def ssh_brute_force(
     packets: list[tuple[bytes, float]] = []
     now = BASE_TIME
     for index in range(attempts):
-        port = 45000 + index
+        src = 45000 + index
         now += rng.uniform(0.25, 0.8)
-        packets.append((build_tcp(attacker, target, port, 22, flags="S"), now))
-        packets.append((build_tcp(target, attacker, 22, port, flags="SA"), now + 0.01))
-        packets.append((build_tcp(attacker, target, port, 22, flags="A"), now + 0.011))
-        packets.append((build_tcp(target, attacker, 22, port, flags="PA", payload=b"SSH-2.0-OpenSSH_9.6\r\n"), now + 0.02))
-        packets.append((build_tcp(attacker, target, port, 22, flags="PA", payload=b"SSH-2.0-libssh_0.10\r\n"), now + 0.03))
+        packets.append((build_tcp(attacker, target, src, port, flags="S"), now))
+        packets.append((build_tcp(target, attacker, port, src, flags="SA"), now + 0.01))
+        packets.append((build_tcp(attacker, target, src, port, flags="A"), now + 0.011))
+        packets.append((build_tcp(target, attacker, port, src, flags="PA", payload=b"SSH-2.0-OpenSSH_9.6\r\n"), now + 0.02))
+        packets.append((build_tcp(attacker, target, src, port, flags="PA", payload=b"SSH-2.0-libssh_0.10\r\n"), now + 0.03))
         # Server tears the session down: a failed authentication.
-        packets.append((build_tcp(target, attacker, 22, port, flags="R"), now + 0.15))
+        packets.append((build_tcp(target, attacker, port, src, flags="R"), now + 0.15))
     return Scenario(
         name="ssh_brute_force",
-        description=f"{attempts} short-lived SSH sessions reset by the server.",
+        description=f"{attempts} short-lived sessions to port {port} reset by the server.",
         frames=_frames(iter(packets)),
-        expected_detectors={"ssh_brute_force"},
+        expected_detectors={"ssh_brute_force" if port == 22 else "auth_brute_force"},
         expected_source=attacker,
         duration_seconds=packets[-1][1] - packets[0][1],
     )

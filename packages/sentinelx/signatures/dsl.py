@@ -59,7 +59,7 @@ __all__ = [
 MAX_CONDITION_LENGTH: Final = 2000
 MAX_TOKENS: Final = 400
 MAX_DEPTH: Final = 16
-MAX_LIST_ITEMS: Final = 256
+MAX_LIST_ITEMS: Final = 128
 
 
 class ConditionSyntaxError(ValueError):
