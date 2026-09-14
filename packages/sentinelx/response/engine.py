@@ -358,7 +358,7 @@ class ResponseEngine:
             if self._on_response:
                 self._on_response(decision.target)
             if self.bus:
-                await self.bus.publish(EventType.IP_BLOCKED, {**entry.as_dict(), "reason": decision.reason})
+                await self.bus.publish(EventType.IP_BLOCKED, {**entry.as_dict(), "reason": decision.reason, "backend": self.firewall.backend})
             return True
         if action is ActionType.RATE_LIMIT:
             network = self.guard.check(decision.target)
@@ -370,7 +370,7 @@ class ResponseEngine:
             if self._on_response:
                 self._on_response(decision.target)
             if self.bus:
-                await self.bus.publish(EventType.IP_BLOCKED, {**entry.as_dict(), "reason": decision.reason})
+                await self.bus.publish(EventType.IP_BLOCKED, {**entry.as_dict(), "reason": decision.reason, "backend": self.firewall.backend})
             return True
         if action is ActionType.UNBLOCK_IP:
             network = parse_network(decision.target)

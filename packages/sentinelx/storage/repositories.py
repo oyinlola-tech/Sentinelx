@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, Select, and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinelx.storage.models import (
@@ -85,7 +85,7 @@ class UserRepository:
     async def count(self) -> int:
         return int(await self.session.scalar(select(func.count()).select_from(User)) or 0)
 
-    async def list(self) -> list[User]:
+    async def all(self) -> list[User]:
         return list((await self.session.execute(select(User).order_by(User.username))).scalars())
 
     async def add(self, user: User) -> User:
@@ -132,7 +132,7 @@ class DetectionFilter:
 
     def apply(self, query: Select[Any]) -> Select[Any]:
         model = DetectionRecord
-        conditions = []
+        conditions: list[ColumnElement[bool]] = []
         if self.severities:
             conditions.append(model.severity.in_(self.severities))
         if self.detectors:
@@ -182,11 +182,11 @@ class DetectionRepository:
     async def get(self, detection_id: str) -> DetectionRecord | None:
         return await self.session.get(DetectionRecord, detection_id)
 
-    async def list(self, filters: DetectionFilter, *, limit: int = 50, offset: int = 0, order: str = "newest") -> Page[DetectionRecord]:
+    async def page(self, filters: DetectionFilter, *, limit: int = 50, offset: int = 0, order: str = "newest") -> Page[DetectionRecord]:
         limit, offset = _clamp(limit, offset)
         base = filters.apply(select(DetectionRecord))
         total = int(await self.session.scalar(filters.apply(select(func.count()).select_from(DetectionRecord))) or 0)
-        ordering = {
+        ordering: Any = {
             "newest": DetectionRecord.timestamp.desc(),
             "oldest": DetectionRecord.timestamp.asc(),
             "risk": DetectionRecord.risk_score.desc(),
@@ -233,7 +233,7 @@ class IncidentRepository:
         await self.session.flush()
         return record
 
-    async def list(
+    async def page(
         self,
         *,
         statuses: list[str] | None = None,
@@ -246,7 +246,7 @@ class IncidentRepository:
         offset: int = 0,
     ) -> Page[IncidentRecord]:
         limit, offset = _clamp(limit, offset)
-        conditions = []
+        conditions: list[ColumnElement[bool]] = []
         if statuses:
             conditions.append(IncidentRecord.status.in_(statuses))
         if severities:
@@ -286,12 +286,12 @@ class ResponseActionRepository:
     async def add(self, record: ResponseActionRecord) -> None:
         self.session.add(record)
 
-    async def list(
+    async def page(
         self, *, target: str | None = None, outcomes: list[str] | None = None, incident_id: str | None = None,
         detection_id: str | None = None, limit: int = 100, offset: int = 0,
     ) -> Page[ResponseActionRecord]:
         limit, offset = _clamp(limit, offset)
-        conditions = []
+        conditions: list[ColumnElement[bool]] = []
         if target:
             conditions.append(ResponseActionRecord.target == target)
         if outcomes:
@@ -355,12 +355,12 @@ class AuditRepository:
         await self.session.flush()
         return record
 
-    async def list(
+    async def page(
         self, *, actor: str | None = None, action: str | None = None, target: str | None = None,
         since: datetime | None = None, limit: int = 100, offset: int = 0,
     ) -> Page[AuditEvent]:
         limit, offset = _clamp(limit, offset)
-        conditions = []
+        conditions: list[ColumnElement[bool]] = []
         if actor:
             conditions.append(AuditEvent.actor == actor)
         if action:
@@ -389,7 +389,7 @@ class RuleRepository:
     async def get(self, rule_id: str) -> RuleRecord | None:
         return await self.session.get(RuleRecord, rule_id)
 
-    async def list(self) -> list[RuleRecord]:
+    async def all(self) -> list[RuleRecord]:
         return list((await self.session.execute(select(RuleRecord).order_by(RuleRecord.name))).scalars())
 
     async def upsert(self, rule_id: str, **values: Any) -> RuleRecord:
@@ -436,7 +436,7 @@ class ReplayRepository:
     async def get(self, replay_id: str) -> ReplayRecord | None:
         return await self.session.get(ReplayRecord, replay_id)
 
-    async def list(self, *, limit: int = 50) -> list[ReplayRecord]:
+    async def recent(self, *, limit: int = 50) -> list[ReplayRecord]:
         limit, _ = _clamp(limit, 0)
         rows = await self.session.execute(select(ReplayRecord).order_by(ReplayRecord.created_at.desc()).limit(limit))
         return list(rows.scalars())

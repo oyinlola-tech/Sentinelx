@@ -188,6 +188,8 @@ class Pipeline:
         self.started_at: float | None = None
         self.last_report: RunReport | None = None
         self._packet_hooks: list[Callable[[PacketEvent], None]] = []
+        self.replay_id: str | None = None
+        """Tags published detections and incidents while a PCAP replay is running."""
 
     # ------------------------------------------------------------- lifecycle
 
@@ -247,13 +249,13 @@ class Pipeline:
             correlated_detectors=self.correlation.correlated_detector_count(detection),
         )
         risk = self.risk.assess(detection, context)
-        await self.bus.publish(EventType.DETECTION_CREATED, detection_to_dict(detection, risk))
+        await self.bus.publish(EventType.DETECTION_CREATED, {**detection_to_dict(detection, risk), "replay_id": self.replay_id})
 
         incident: Incident | None = None
         result = self.correlation.correlate(detection, risk)
         if result is not None:
             incident = result.incident
-            payload = incident_to_dict(incident)
+            payload = {**incident_to_dict(incident), "replay_id": self.replay_id}
             if result.created:
                 await self.bus.publish(EventType.INCIDENT_OPENED, payload)
             else:

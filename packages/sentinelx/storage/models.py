@@ -35,6 +35,7 @@ from sqlalchemy import (
     MetaData,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -85,7 +86,9 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint("role IN ('viewer', 'analyst', 'admin')", name="role_valid"),
-        Index("uq_users_username_lower", func.lower("username"), unique=True),
+        # text(), not a bare string: func.lower("username") would index the *literal*
+        # 'username', making every row collide and allowing only one user in total.
+        Index("uq_users_username_lower", func.lower(text("username")), unique=True),
     )
 
     id: Mapped[int] = mapped_column(Identity, primary_key=True, autoincrement=True)
