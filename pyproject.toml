@@ -125,7 +125,7 @@ show_error_codes = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["scapy.*", "sklearn.*", "pyshark.*", "redis.*", "psutil.*"]
+module = ["scapy.*", "sklearn.*", "pyshark.*", "redis.*", "psutil.*", "joblib.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

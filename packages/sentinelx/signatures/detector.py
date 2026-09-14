@@ -21,6 +21,11 @@ from sentinelx.signatures.rules import Rule
 __all__ = ["RuleDetector", "resolver_for"]
 
 
+def _section(metadata: dict[str, Any], key: str) -> dict[str, Any]:
+    value = metadata.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def resolver_for(context: FeatureContext, within: float) -> Any:
     """Build a caching field resolver for one packet and one window."""
     packet = context.packet
@@ -29,9 +34,9 @@ def resolver_for(context: FeatureContext, within: float) -> Any:
     cutoff = context.now - within
     source = profile.source_ip
     metadata = packet.metadata
-    dns = metadata.get("dns") if isinstance(metadata.get("dns"), dict) else {}
-    http = metadata.get("http") if isinstance(metadata.get("http"), dict) else {}
-    tls = metadata.get("tls") if isinstance(metadata.get("tls"), dict) else {}
+    dns = _section(metadata, "dns")
+    http = _section(metadata, "http")
+    tls = _section(metadata, "tls")
     cache: dict[str, Any] = {}
 
     def packets_since() -> int:

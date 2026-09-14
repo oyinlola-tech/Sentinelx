@@ -504,6 +504,45 @@ def mixed_intrusion(seed: int = 43) -> Scenario:
     )
 
 
+def dns_rate_spike(
+    baseline_seconds: int = 180,
+    spike_seconds: int = 20,
+    normal_qps: int = 20,
+    spike_qps: int = 300,
+    seed: int = 47,
+) -> Scenario:
+    """Steady DNS traffic, then one client's query rate jumps an order of magnitude.
+
+    Tests the statistical detector: the spike rate is unremarkable in absolute
+    terms for a large resolver, so only a learned baseline can call it unusual.
+    The spike deliberately uses ordinary, low-entropy names so the DNS rule-based
+    detector's tunnelling path does not fire on it.
+    """
+    rng = random.Random(seed)
+    clients = [f"192.168.30.{n}" for n in range(10, 30)]
+    resolver = "192.168.30.1"
+    names = ["www.example.com", "api.example.com", "cdn.example.net", "mail.example.org", "time.example.com"]
+    noisy = "192.168.30.99"
+    packets: list[tuple[bytes, float]] = []
+    for second in range(baseline_seconds + spike_seconds):
+        spiking = second >= baseline_seconds
+        rate = rng.randint(int(normal_qps * 0.8), int(normal_qps * 1.2))
+        for _ in range(rate):
+            packets.append((build_dns_query(rng.choice(clients), resolver, rng.choice(names)), BASE_TIME + second + rng.random()))
+        if spiking:
+            for index in range(spike_qps):
+                packets.append((build_dns_query(noisy, resolver, names[index % len(names)]), BASE_TIME + second + rng.random()))
+    packets.sort(key=lambda pair: pair[1])
+    return Scenario(
+        name="dns_rate_spike",
+        description=f"{baseline_seconds}s of ~{normal_qps} DNS queries/s, then {spike_seconds}s with one client adding {spike_qps}/s.",
+        frames=_frames(iter(packets)),
+        expected_detectors={"statistical_anomaly"},
+        expected_source=noisy,
+        duration_seconds=packets[-1][1] - packets[0][1],
+    )
+
+
 #: Every scenario, by name. Used by the CLI, the benchmark harness and the tests.
 SCENARIOS: dict[str, Any] = {
     "normal_traffic": normal_traffic,
@@ -517,6 +556,7 @@ SCENARIOS: dict[str, Any] = {
     "dns_tunneling": dns_tunneling,
     "dns_flood": dns_flood,
     "mixed_intrusion": mixed_intrusion,
+    "dns_rate_spike": dns_rate_spike,
 }
 
 

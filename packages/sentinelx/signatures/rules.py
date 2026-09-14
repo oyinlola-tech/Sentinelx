@@ -51,7 +51,6 @@ from sentinelx.signatures.dsl import (
     ConditionSyntaxError,
     FieldKind,
     Node,
-    Not,
     Or,
     parse_condition,
     validate_semantics,
@@ -177,9 +176,7 @@ def _has_selective_threshold(node: Node) -> bool:
         return any(_has_selective_threshold(item) for item in node.items)
     if isinstance(node, Or):
         return all(_has_selective_threshold(item) for item in node.items)
-    if isinstance(node, Not):
-        return False
-    return False
+    return False  # Not: negations are never trusted as selective
 
 
 def validate_rule(rule: Rule, *, max_window_seconds: float) -> list[str]:

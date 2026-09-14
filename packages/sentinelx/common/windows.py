@@ -246,17 +246,28 @@ class EwmaBaseline:
         self.samples = 0
         self._initialised = False
 
-    def update(self, value: float) -> None:
-        """Fold a new observation into the baseline."""
+    def update(self, value: float, *, alpha: float | None = None, update_variance: bool = True) -> None:
+        """Fold a new observation into the baseline.
+
+        Args:
+            value: the observation.
+            alpha: override the decay for this one update.
+            update_variance: when False, only the mean moves. Used for observations
+                already judged anomalous: letting them widen the variance shrinks
+                every later deviation, and a sustained attack then stops scoring as
+                anomalous and gets absorbed at full speed.
+        """
         self.samples += 1
         if not self._initialised:
             self.mean = value
             self._initialised = True
             return
+        rate = self.alpha if alpha is None else alpha
         delta = value - self.mean
-        self.mean += self.alpha * delta
-        # West's incremental EWMVar: tracks variance with the same decay.
-        self.variance = (1 - self.alpha) * (self.variance + self.alpha * delta * delta)
+        self.mean += rate * delta
+        if update_variance:
+            # West's incremental EWMVar: tracks variance with the same decay.
+            self.variance = (1 - rate) * (self.variance + rate * delta * delta)
 
     @property
     def stddev(self) -> float:
