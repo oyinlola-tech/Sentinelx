@@ -6,7 +6,7 @@ import asyncio
 import getpass
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, TypeVar
+from typing import Any
 
 import typer
 
@@ -16,8 +16,6 @@ from sentinelx.services.platform import Platform
 from sentinelx.telemetry.logging import configure_logging
 
 __all__ = ["actor", "load_settings", "platform_context", "run"]
-
-T = TypeVar("T")
 
 
 def load_settings(*, quiet: bool = True) -> Settings:
@@ -48,7 +46,7 @@ def actor() -> str:
         return "cli:unknown"
 
 
-def run(coroutine_factory: Callable[[], Awaitable[T]]) -> T:
+def run[T](coroutine_factory: Callable[[], Awaitable[T]]) -> T:
     """Run an async command, mapping errors onto exit codes.
 
     Exit 1 for platform errors (message shown, no traceback), 130 on Ctrl-C.
