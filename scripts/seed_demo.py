@@ -17,11 +17,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
 
 from sentinelx.capture import MockCapture
 from sentinelx.config.settings import reload_settings
 from sentinelx.services.platform import Platform
-from sentinelx.testing import get_scenario
+from sentinelx.testing import get_scenario, shift_to
 
 SCENARIOS: list[tuple[str, dict[str, object]]] = [
     ("normal_traffic", {"packet_count": 3000}),
@@ -46,7 +47,9 @@ async def main(delay: float) -> int:
     pipeline, _, _, _ = platform.require()
     try:
         for name, params in SCENARIOS:
-            report = await pipeline.run(MockCapture(get_scenario(name, **params).frames))
+            # Detections carry capture time, so move each scenario to "just now".
+            frames = shift_to(get_scenario(name, **params).frames, time.time())
+            report = await pipeline.run(MockCapture(frames))
             print(
                 f"{name:18} {report.frames:6d} packets -> {len(report.detections)} detections, {len(report.incidents)} incidents"
             )

@@ -22,7 +22,7 @@ Protected, unconditionally:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from sentinelx.common.errors import SafetyViolationError
@@ -74,16 +74,16 @@ class SafetyGuard:
         self,
         settings: ResponseSettings,
         *,
-        local_addresses: Callable[[], set[str]] | None = None,
+        local_addresses: Callable[[], Collection[str]] | None = None,
         active_block_count: Callable[[], int] | None = None,
     ) -> None:
         self.settings = settings
         self._allowlist = parse_networks(settings.allowlist_networks)
         self._management = parse_networks(settings.management_addresses)
         if local_addresses is None:
-            from sentinelx.capture.live import local_addresses as _discover
+            from sentinelx.system.interfaces import cached_local_addresses
 
-            local_addresses = _discover
+            local_addresses = cached_local_addresses
         self._local_addresses = local_addresses
         self._active_block_count = active_block_count or (lambda: 0)
         self.refusals = 0
@@ -174,7 +174,18 @@ class SafetyGuard:
                 )
 
         if self.settings.protect_management_addresses:
-            for raw in self._local_addresses():
+            try:
+                own_addresses = self._local_addresses()
+            except OSError as exc:
+                # Fail closed: without this host's addresses we cannot promise not
+                # to block ourselves.
+                self._refuse(
+                    record,
+                    target,
+                    "local_addresses_unknown",
+                    f"could not list this host's addresses ({exc}); refusing to block",
+                )
+            for raw in own_addresses:
                 try:
                     local = parse_network(raw)
                 except ValueError:

@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable
+from dataclasses import replace
+from datetime import UTC, datetime
 
 from sentinelx.common.enums import DetectionMode
 from sentinelx.common.models import Detection
@@ -107,7 +109,6 @@ class DetectionEngine:
             list(detectors) if detectors is not None else default_detectors(self.settings)
         )
         self._allowlist: list[IPNetworkT] = parse_networks(self.settings.allowlist_networks)
-        self._cooldown = self.settings.detection_cooldown_seconds
         #: (detector, source) -> (packet time, severity rank, confidence) last reported.
         self._last_reported: dict[tuple[str, str], tuple[float, int, float]] = {}
         self.escalations = 0
@@ -173,7 +174,7 @@ class DetectionEngine:
         key = (detection.detector, detection.source_ip)
         now = context.now
         last = self._last_reported.get(key)
-        if last is not None and now - last[0] < self._cooldown:
+        if last is not None and now - last[0] < self.settings.detection_cooldown_seconds:
             if not self._escalates(detection, last):
                 self.suppressed_cooldown += 1
                 metrics.detections_suppressed.labels(reason="cooldown").inc()
@@ -186,6 +187,11 @@ class DetectionEngine:
         profile = context.profile_of(detection.source_ip)
         if profile is not None:
             profile.detections_triggered += 1
+
+        # Stamp the capture time of the triggering packet, not the wall clock: replaying
+        # a capture then reproduces the same timeline, and correlation windows measure
+        # the traffic rather than how fast it was replayed.
+        detection = replace(detection, timestamp=datetime.fromtimestamp(now, UTC))
 
         self.detections_emitted += 1
         metrics.detections.labels(
@@ -228,7 +234,7 @@ class DetectionEngine:
         return any(ip.version == net.version and ip in net for net in self._allowlist)
 
     def _prune_cooldowns(self, now: float) -> None:
-        cutoff = now - self._cooldown
+        cutoff = now - self.settings.detection_cooldown_seconds
         self._last_reported = {k: v for k, v in self._last_reported.items() if v[0] >= cutoff}
 
     # ------------------------------------------------------------ management

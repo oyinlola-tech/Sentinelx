@@ -110,10 +110,17 @@ class FeatureContext:
     _features: dict[str, Any] | None = None
 
     def profile_of(self, ip: str) -> SourceProfile | None:
-        """The profile for any tracked address, not only this packet's sender."""
+        """The profile for any tracked address, not only this packet's sender.
+
+        Another source's profile is expired to ``now`` before it is returned, so its
+        windows describe the same instant as this packet.
+        """
         if ip == self.profile.source_ip:
             return self.profile
-        return self.profiles.get(ip)
+        profile = self.profiles.get(ip)
+        if profile is not None:
+            profile.expire(self.now)
+        return profile
 
     def features(self) -> dict[str, Any]:
         """The flattened feature vector for this source, at this instant."""
@@ -215,6 +222,7 @@ class FeatureExtractor:
         if self._packets_since_sweep >= _SWEEP_INTERVAL:
             self._sweep(now)
 
+        profile.expire(now)
         return FeatureContext(
             packet=packet,
             profile=profile,

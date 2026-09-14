@@ -456,3 +456,30 @@ class TestDocumentedEvasions:
         )
         wide = DetectionSettings(port_scan_window_seconds=90, brute_force_window_seconds=90)
         assert "tcp_port_scan" in detectors_fired(run_detection(frames, wide))
+
+
+class TestStaleWindows:
+    """Regression: windows only expired on insert, so detectors could count old events."""
+
+    def test_brute_force_does_not_refire_on_expired_attempts(self, run_detection: Run) -> None:
+        attacker, target = "198.51.100.23", "192.168.10.10"
+        attack = get_scenario("ssh_brute_force", attempts=20).frames
+        later = attack[-1].timestamp + 600  # ten minutes: far outside the 60 s window
+        # One ordinary, long SSH session from the same address, torn down by the server.
+        session = frames_from(
+            [
+                (build_tcp(attacker, target, 51000, 22, flags="S"), later),
+                (build_tcp(target, attacker, 22, 51000, flags="SA"), later + 0.01),
+                (build_tcp(attacker, target, 51000, 22, flags="A"), later + 0.02),
+                (build_tcp(attacker, target, 51000, 22, flags="PA", payload=b"x"), later + 20),
+                (build_tcp(target, attacker, 22, 51000, flags="R"), later + 20.5),
+            ]
+        )
+        # Cooldown disabled, so only stale counts could produce another detection.
+        settings = DetectionSettings(detection_cooldown_seconds=0)
+
+        def brute_force(frames: list[RawFrame]) -> int:
+            return sum(d.detector == "ssh_brute_force" for d in run_detection(frames, settings))
+
+        assert brute_force(attack) > 0
+        assert brute_force(attack + session) == brute_force(attack)

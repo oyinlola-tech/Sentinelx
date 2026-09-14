@@ -30,6 +30,11 @@ __all__ = ["PATTERNS", "CorrelationEngine", "CorrelationResult", "IncidentPatter
 
 log = get_logger(__name__)
 
+#: Detections kept per open incident for risk and timeline purposes.
+MAX_MEMBERS = 1000
+#: How often stale pending (not-yet-incident) groups are swept, in capture seconds.
+PRUNE_INTERVAL_SECONDS = 30.0
+
 C = ThreatCategory
 
 
@@ -124,6 +129,8 @@ class CorrelationResult:
     created: bool
     severity_changed: bool
     previous_severity: Severity | None = None
+    previous_risk: float | None = None
+    """Incident risk before this detection was folded in (``None`` when created)."""
 
 
 class CorrelationEngine:
@@ -141,6 +148,7 @@ class CorrelationEngine:
         """Group key -> open incident."""
         self._pending: dict[str, list[tuple[Detection, RiskAssessment]]] = {}
         """Group key -> detections not yet numerous enough for an incident."""
+        self._last_prune = float("-inf")
         self.incidents_created = 0
 
     # ------------------------------------------------------------ correlation
@@ -237,7 +245,15 @@ class CorrelationEngine:
     ) -> CorrelationResult:
         members = self._members.setdefault(incident.incident_id, [])
         members.append((detection, risk))
+        if len(members) > MAX_MEMBERS:
+            # Bound memory for long-running incidents: keep the highest-risk member
+            # (it drives incident risk) and the most recent ones.
+            worst = max(members, key=lambda pair: pair[1].score)
+            members[:] = [worst, *[m for m in members[-(MAX_MEMBERS - 1) :] if m is not worst]]
+        if len(incident.timeline) >= MAX_MEMBERS:
+            del incident.timeline[: len(incident.timeline) - MAX_MEMBERS + 1]
         previous = incident.severity
+        previous_risk = incident.risk.score
 
         incident.detection_ids.append(detection.detection_id)
         incident.affected_sources.add(detection.source_ip)
@@ -270,6 +286,7 @@ class CorrelationEngine:
             created=False,
             severity_changed=changed,
             previous_severity=previous if changed else None,
+            previous_risk=previous_risk,
         )
 
     # --------------------------------------------------------------- analysis
@@ -362,6 +379,17 @@ class CorrelationEngine:
         window = self.settings.window_seconds
         for key in [k for k, inc in self._open.items() if now - inc.last_seen.timestamp() > window]:
             self._close(key, IncidentStatus.OPEN, reason="window_elapsed")
+        # Pending groups are otherwise only pruned when the same source reappears, so a
+        # source that triggers one detector and goes quiet would be kept forever.
+        if now - self._last_prune >= PRUNE_INTERVAL_SECONDS:
+            self._last_prune = now
+            cutoff = now - window
+            for key in [
+                k
+                for k, members in self._pending.items()
+                if all(d.timestamp.timestamp() < cutoff for d, _ in members)
+            ]:
+                del self._pending[key]
 
     def _close(self, key: str, status: IncidentStatus, *, reason: str) -> None:
         """Stop correlating into an incident.

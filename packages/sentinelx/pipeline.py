@@ -31,7 +31,7 @@ from sentinelx.common.models import (
 )
 from sentinelx.common.netutils import parse_networks
 from sentinelx.config.settings import Settings
-from sentinelx.correlation.engine import CorrelationEngine
+from sentinelx.correlation.engine import CorrelationEngine, CorrelationResult
 from sentinelx.detection.base import Detector
 from sentinelx.detection.engine import DetectionEngine
 from sentinelx.events.bus import EventBus, EventType
@@ -293,11 +293,7 @@ class Pipeline:
                 )
 
         decisions = await self.response.handle_detection(detection, risk)
-        if (
-            incident is not None
-            and result is not None
-            and (result.created or result.severity_changed)
-        ):
+        if incident is not None and result is not None and self._incident_needs_response(result):
             decisions.extend(await self.response.handle_incident(incident))
 
         return DetectionRecord(
@@ -307,6 +303,19 @@ class Pipeline:
             decisions=decisions,
             latency_seconds=time.perf_counter() - started,
         )
+
+    def _incident_needs_response(self, result: CorrelationResult) -> bool:
+        """Re-evaluate the incident response when it could have changed.
+
+        That is on creation, on escalation, and when a new member pushes incident risk
+        across the automatic response threshold (which can happen without a change in
+        severity).
+        """
+        if result.created or result.severity_changed:
+            return True
+        threshold = self.settings.scoring.auto_block_threshold
+        previous = result.previous_risk
+        return previous is not None and previous < threshold <= result.incident.risk.score
 
     # ------------------------------------------------------------------ run
 

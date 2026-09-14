@@ -232,7 +232,7 @@ class StatisticalAnomalyDetector(Detector):
             Evidence(
                 key="top_contributor",
                 value={"source": source, "share": round(share, 3)},
-                description=f"{source} produced {share:.0%} of this interval's {label[0].lower()}{label[1:]}",
+                description=f"{source} produced {share:.0%} of this interval's {_lower_first(label)}",
                 weight=0.7,
             ),
         ]
@@ -244,7 +244,7 @@ class StatisticalAnomalyDetector(Detector):
             # Capped below the rule-based detectors: deviation is weaker evidence
             # of malice than a matched behavioural pattern.
             confidence=round(min(0.85, 0.4 + 0.45 * score * max(share, 0.3)), 3),
-            title=f"Unusual {label[0].lower()}{label[1:]}",
+            title=f"Unusual {_lower_first(label)}",
             description=f"{label} reached {value:,.1f} {unit}, {sigma:.1f} standard deviations above the learned baseline.",
             source_ip=source,
             protocol=context.packet.protocol,
@@ -266,3 +266,10 @@ class StatisticalAnomalyDetector(Detector):
             }
             for metric, baseline in self.baselines.items()
         }
+
+
+def _lower_first(label: str) -> str:
+    """``"Packet rate"`` -> ``"packet rate"``, but leave acronyms alone (``"DNS query rate"``)."""
+    if len(label) > 1 and label[1].isupper():
+        return label
+    return label[:1].lower() + label[1:]

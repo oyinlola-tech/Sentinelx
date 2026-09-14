@@ -17,12 +17,12 @@ import abc
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Self
+from typing import Any, Self
 
 from sentinelx.parser.layers import LinkType
 from sentinelx.telemetry.logging import get_logger
 
-__all__ = ["CaptureStats", "PacketCapture", "RawFrame"]
+__all__ = ["CaptureCapabilities", "CaptureStats", "PacketCapture", "RawFrame"]
 
 log = get_logger(__name__)
 
@@ -120,6 +120,39 @@ class CaptureStats:
             "megabits_per_second": round(self.megabits_per_second, 3),
             "capture_span_seconds": round(self.capture_span_seconds, 3),
             "drop_rate": round(self.drop_rate, 6),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureCapabilities:
+    """What a capture backend can do on *this* host, determined at runtime."""
+
+    backend: str
+    available: bool
+    """The backend can be opened here (library present and privileges granted)."""
+    live: bool
+    """Captures traffic from a network interface, as opposed to a file or generator."""
+    reason: str = ""
+    """Why it is unavailable, or what it relies on when available."""
+    remedy: str = ""
+    """How to make it available."""
+    bpf_filter: bool = False
+    any_interface: bool = False
+    """Supports capturing from every interface at once."""
+    promiscuous: bool = False
+    kernel_drop_counters: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "available": self.available,
+            "live": self.live,
+            "reason": self.reason,
+            "remedy": self.remedy,
+            "bpf_filter": self.bpf_filter,
+            "any_interface": self.any_interface,
+            "promiscuous": self.promiscuous,
+            "kernel_drop_counters": self.kernel_drop_counters,
         }
 
 
@@ -223,6 +256,18 @@ class PacketCapture(abc.ABC):
     @abc.abstractmethod
     async def _close(self) -> None:
         """Release the source. Must tolerate being called after a failed open."""
+
+    # ------------------------------------------------------------ discovery
+
+    @classmethod
+    def capabilities(cls) -> CaptureCapabilities:
+        """What this kind of source can do on this host. Live backends override it."""
+        return CaptureCapabilities(backend=cls.source_kind, available=True, live=False)
+
+    @staticmethod
+    def list_interfaces() -> list[dict[str, Any]]:
+        """Interfaces this source can capture from. Empty for non-live sources."""
+        return []
 
     # ----------------------------------------------------------------- status
 

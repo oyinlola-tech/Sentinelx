@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -416,11 +417,12 @@ class TestWorkflows:
         self, client: httpx.AsyncClient, admin: dict[str, str], platform: Platform
     ) -> None:
         from sentinelx.capture import MockCapture
-        from sentinelx.testing import get_scenario
+        from sentinelx.testing import get_scenario, shift_to
 
         if platform.pipeline is None:
             raise RuntimeError("pipeline missing")
-        await platform.pipeline.run(MockCapture(get_scenario("mixed_intrusion").frames))
+        frames = shift_to(get_scenario("mixed_intrusion").frames, time.time())
+        await platform.pipeline.run(MockCapture(frames))
         await asyncio.sleep(0.3)
         detections = (await client.get("/detections", headers=admin)).json()
         assert detections["total"] >= 3

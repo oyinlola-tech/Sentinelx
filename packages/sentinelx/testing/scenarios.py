@@ -16,7 +16,7 @@ from __future__ import annotations
 import random
 import struct
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sentinelx.capture.base import RawFrame
@@ -34,6 +34,7 @@ __all__ = [
     "build_tcp",
     "build_udp",
     "get_scenario",
+    "shift_to",
 ]
 
 _DEFAULT_SRC_MAC = bytes.fromhex("020000000001")
@@ -774,3 +775,15 @@ def get_scenario(name: str, **kwargs: Any) -> Scenario:
     if builder is None:
         raise ValueError(f"unknown scenario {name!r}; available: {', '.join(sorted(SCENARIOS))}")
     return builder(**kwargs)  # type: ignore[no-any-return]
+
+
+def shift_to(frames: list[RawFrame], end: float) -> list[RawFrame]:
+    """The same frames moved in time so the last one is at ``end`` (Unix seconds).
+
+    Detections carry capture time, so seeding a dashboard or testing "last 24 hours"
+    views needs fixtures that happened just now rather than at :data:`BASE_TIME`.
+    """
+    if not frames:
+        return []
+    offset = end - frames[-1].timestamp
+    return [replace(frame, timestamp=frame.timestamp + offset) for frame in frames]

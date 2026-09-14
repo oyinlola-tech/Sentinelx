@@ -9,6 +9,7 @@ boundaries small and explicit.
 from __future__ import annotations
 
 __all__ = [
+    "BackendUnavailableError",
     "CaptureError",
     "ConfigurationError",
     "CorrelationError",
@@ -55,7 +56,17 @@ class InterfaceNotFoundError(CaptureError):
 
 
 class PermissionDeniedError(CaptureError):
-    """Live capture requires CAP_NET_RAW / root and the process has neither."""
+    """Live capture needs a privilege this process lacks (CAP_NET_RAW, root, BPF
+    device access, or Npcap access)."""
+
+
+class BackendUnavailableError(CaptureError):
+    """A capture backend cannot run on this host (missing kernel feature or library).
+
+    Distinct from :class:`PermissionDeniedError` and from configuration errors such as
+    an invalid BPF filter: only this error lets the live capture fall back to another
+    backend.
+    """
 
 
 class PcapError(CaptureError):

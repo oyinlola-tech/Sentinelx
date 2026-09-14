@@ -265,7 +265,15 @@ class SourceProfile:
     # ---------------------------------------------------------------- features
 
     def expire(self, now: float) -> None:
-        """Drop everything outside the window. Called before reading features."""
+        """Drop everything outside each structure's window, as of ``now``.
+
+        Structures only expire when something is added to them, so a detector reading a
+        profile that did not just receive a matching event (the attacker's profile when
+        the server sends the RST, or ``dns_suspicious`` on an ordinary query) would
+        otherwise count stale entries, and could re-fire on an attack that ended long
+        ago. The feature extractor calls this before detectors read a profile. Each call
+        is O(1) amortised: it only pops what has actually expired.
+        """
         self.packets.expire(now)
         self.dns_queries.expire(now)
         self.dns_suspicious.expire(now)
