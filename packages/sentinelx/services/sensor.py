@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from datetime import UTC, datetime
 from typing import Any
 
-from sentinelx.capture.live import LiveCapture, has_capture_privileges, list_interfaces
+from sentinelx.capture.live import LiveCapture
 from sentinelx.common.errors import CaptureError
 from sentinelx.config.settings import Settings
 from sentinelx.events.bus import EventBus, EventType
 from sentinelx.pipeline import Pipeline, RunReport
+from sentinelx.system.interfaces import list_interfaces
 from sentinelx.telemetry.logging import get_logger
 
 __all__ = ["SensorService"]
@@ -35,6 +37,7 @@ class SensorService:
         self.started_at: datetime | None = None
         self.interface: str | None = None
         self.bpf_filter: str | None = None
+        self._capabilities: tuple[float, dict[str, Any]] | None = None
 
     @property
     def running(self) -> bool:
@@ -59,10 +62,12 @@ class SensorService:
 
         capture = LiveCapture(
             interface=interface,
+            backend=self.settings.capture.backend,
             bpf_filter=bpf,
             snapshot_length=self.settings.capture.snapshot_length,
             promiscuous=self.settings.capture.promiscuous,
             buffer_size_mb=self.settings.capture.buffer_size_mb,
+            queue_size=self.settings.capture.queue_size,
         )
         try:
             await capture.open()
@@ -120,9 +125,22 @@ class SensorService:
             "error": self.error,
             "backend": capture.backend if capture else None,
             "capture": capture.stats.as_dict() if capture else None,
-            "has_capture_privileges": has_capture_privileges(),
+            "capture_capabilities": self.capture_capabilities(),
             "safety": self.settings.safety_banner(),
         }
+
+    def capture_capabilities(self) -> dict[str, Any]:
+        """Whether live capture can run here, cached briefly.
+
+        The health loop reads status every few seconds; probing privileges opens a raw
+        socket, which is cheap once but not worth repeating that often.
+        """
+        now = time.monotonic()
+        cached = self._capabilities
+        if cached is None or now - cached[0] > 30:
+            report = LiveCapture.capabilities(self.settings.capture.backend).as_dict()
+            cached = self._capabilities = (now, report)
+        return cached[1]
 
     @staticmethod
     def interfaces() -> list[dict[str, Any]]:

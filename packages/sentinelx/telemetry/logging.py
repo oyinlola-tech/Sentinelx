@@ -137,15 +137,21 @@ def configure_logging(
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
         _add_sensor(sensor_name),
+        # Tracebacks become plain text *before* redaction, so secrets inside exception
+        # messages (a DSN in a driver error, say) are scrubbed like any other value.
+        # Rich-style tracebacks are never used: they print every frame's local
+        # variables, which would put settings objects and their secrets in the log.
+        structlog.processors.format_exc_info,
         redact_secrets,
     ]
 
     renderer: Processor
     if settings.log_format == "json":
-        shared.append(structlog.processors.format_exc_info)
         renderer = structlog.processors.JSONRenderer(sort_keys=True)
     else:
-        renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
+        renderer = structlog.dev.ConsoleRenderer(
+            colors=sys.stderr.isatty(), exception_formatter=structlog.dev.plain_traceback
+        )
 
     structlog.configure(
         processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],

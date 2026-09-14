@@ -133,3 +133,26 @@ class TestRedaction:
         captured = capsys.readouterr().err
         assert "hunter2" not in captured and "alice" in captured
         structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
+
+    @pytest.mark.parametrize("log_format", ["console", "json"])
+    def test_exception_logs_never_include_frame_locals_or_message_secrets(
+        self, capsys: pytest.CaptureFixture[str], log_format: str
+    ) -> None:
+        # Regression: rich console tracebacks printed every frame's local variables,
+        # which put settings objects (JWT secret, bootstrap password) into the log.
+        configure_logging(TelemetrySettings(log_format=log_format))
+
+        def fail() -> None:
+            jwt_secret = "local-variable-secret-0123456789abcdef"
+            assert jwt_secret
+            raise RuntimeError("connect failed postgresql://svc:hunter2@db/sentinelx")
+
+        try:
+            fail()
+        except RuntimeError:
+            get_logger("t").exception("unhandled_error")
+        captured = capsys.readouterr().err
+        structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
+        assert "RuntimeError" in captured
+        assert "local-variable-secret" not in captured
+        assert "hunter2" not in captured

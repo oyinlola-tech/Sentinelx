@@ -9,12 +9,12 @@ from sentinelx.capture import (
     PcapFileCapture,
     RawFrame,
     create_capture,
-    list_interfaces,
     pcap_metadata,
 )
 from sentinelx.capture.live import LiveCapture
 from sentinelx.common.errors import InterfaceNotFoundError, PcapError
 from sentinelx.config.settings import CaptureSettings
+from sentinelx.system.interfaces import list_interfaces
 from sentinelx.testing import get_scenario, write_pcap
 
 
@@ -105,14 +105,15 @@ def test_factory_selects_pcap_or_live(tmp_path: Path) -> None:
 
 
 def test_list_interfaces_includes_loopback() -> None:
-    names = {entry["name"] for entry in list_interfaces()}
-    if names:  # Linux with /sys mounted
-        assert "lo" in names
+    interfaces = list_interfaces()
+    assert any(entry["is_loopback"] for entry in interfaces)
+    assert any(
+        "127.0.0.1" in entry["addresses"] or "::1" in entry["addresses"] for entry in interfaces
+    )
 
 
 async def test_live_capture_unknown_interface_names_alternatives() -> None:
-    if not list_interfaces():
-        pytest.skip("interface enumeration unavailable")
+    loopback = next(entry["name"] for entry in list_interfaces() if entry["is_loopback"])
     with pytest.raises(InterfaceNotFoundError) as excinfo:
         await LiveCapture("definitely-not-an-iface0").open()
-    assert "lo" in excinfo.value.available
+    assert loopback in excinfo.value.available

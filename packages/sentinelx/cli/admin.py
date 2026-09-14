@@ -491,16 +491,16 @@ def register(app: typer.Typer) -> None:
             "warn" if settings.prevention_active else "ok",
             settings.safety_banner(),
         )
-        from sentinelx.capture.live import has_capture_privileges, list_interfaces
+        from sentinelx.capture.live import LiveCapture
+        from sentinelx.system.interfaces import list_interfaces
 
-        privileged = has_capture_privileges()
+        capture = LiveCapture.capabilities(settings.capture.backend)
         check(
-            "capture privileges",
-            "ok" if privileged else "warn",
-            "CAP_NET_RAW available"
-            if privileged
-            else "no CAP_NET_RAW: live capture unavailable (replay still works). "
-            "Grant with: sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))",
+            "live capture",
+            "ok" if capture.available else "warn",
+            f"available via {capture.backend}: {capture.reason}"
+            if capture.available
+            else f"unavailable: {capture.reason} (replay still works). {capture.remedy}",
         )
         interfaces = list_interfaces()
         wanted = settings.capture.interface

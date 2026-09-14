@@ -62,7 +62,12 @@ class CaptureSettings(BaseModel):
 
     interface: str = Field(
         default="any",
-        description="Interface to capture from. 'any' uses the Linux cooked-capture device.",
+        description="Interface to capture from, or 'any' for every interface.",
+    )
+    backend: Literal["auto", "af_packet", "libpcap"] = Field(
+        default="auto",
+        description="Live capture backend. 'auto' uses AF_PACKET on Linux and libpcap "
+        "(BPF devices on macOS, Npcap on Windows) elsewhere.",
     )
     bpf_filter: str = Field(
         default="",
@@ -79,8 +84,8 @@ class CaptureSettings(BaseModel):
     queue_size: int = Field(
         default=20_000,
         ge=100,
-        description="Bounded hand-off queue between capture and the pipeline. "
-        "When full, packets are dropped and counted rather than growing memory.",
+        description="Bounded hand-off queue for the libpcap backend. When full, packets "
+        "are dropped and counted (dropped_queue) rather than growing memory.",
     )
     home_networks: list[str] = Field(
         default_factory=lambda: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fd00::/8"],

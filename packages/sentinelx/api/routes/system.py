@@ -96,11 +96,18 @@ async def prometheus(request: Request, platform: PlatformDep) -> Response:
     token = platform.settings.api.metrics_token
     if token:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        if not hmac.compare_digest(supplied, token):
+        # Compare bytes: str comparison raises on non-ASCII input.
+        if not hmac.compare_digest(supplied.encode(), token.encode()):
             raise HTTPException(status_code=401, detail="metrics token required")
     else:
+        # Without a token, only a scraper on this host may read metrics. A request that
+        # arrived through a proxy (the dashboard's /api rewrite, nginx) also appears to
+        # come from loopback, so any forwarding header disqualifies it.
+        forwarded = any(
+            name in request.headers for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+        )
         try:
-            loopback = parse_ip(client_ip(request)).is_loopback
+            loopback = not forwarded and parse_ip(client_ip(request)).is_loopback
         except ValueError:
             loopback = False
         if not loopback:

@@ -247,7 +247,12 @@ class AfPacketCapture(PacketCapture):
         return frames
 
     def _append(self, frames: list[RawFrame], data: bytes, address: Any, timestamp: float) -> None:
-        interface, _protocol, packet_type, hardware_type = address[0], address[1], address[2], address[3]
+        interface, _protocol, packet_type, hardware_type = (
+            address[0],
+            address[1],
+            address[2],
+            address[3],
+        )
         # The loopback device delivers every packet twice to an unbound socket (once
         # outgoing, once incoming); keep one, as libpcap does.
         if hardware_type == _ARPHRD_LOOPBACK and packet_type == PACKET_OUTGOING:

@@ -38,8 +38,10 @@ def create_capture(
         return PcapFileCapture(pcap_path, speed=speed, limit=limit)
     return LiveCapture(
         interface=settings.interface,
+        backend=settings.backend,
         bpf_filter=settings.bpf_filter,
         snapshot_length=settings.snapshot_length,
         promiscuous=settings.promiscuous,
         buffer_size_mb=settings.buffer_size_mb,
+        queue_size=settings.queue_size,
     )

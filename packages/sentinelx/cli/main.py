@@ -196,11 +196,15 @@ def status(as_json: JsonOption = False) -> None:
 @app.command(rich_help_panel="Operate")
 def interfaces(as_json: JsonOption = False) -> None:
     """Network interfaces available for capture."""
-    from sentinelx.capture.live import has_capture_privileges, list_interfaces
+    from rich.markup import escape
+
+    from sentinelx.capture.live import LiveCapture
+    from sentinelx.system.interfaces import list_interfaces
 
     entries = list_interfaces()
+    capture = LiveCapture.capabilities()
     if as_json:
-        emit_json({"has_capture_privileges": has_capture_privileges(), "interfaces": entries})
+        emit_json({"capture": capture.as_dict(), "interfaces": entries})
         return
     console.print(
         table(
@@ -211,7 +215,7 @@ def interfaces(as_json: JsonOption = False) -> None:
                     i["name"],
                     i["state"],
                     ", ".join(i["addresses"]) or "-",
-                    i["mac"],
+                    i["mac"] or "-",
                     i["mtu"],
                     f"{i['statistics']['rx_packets']:,}",
                     i["statistics"]["rx_dropped"],
@@ -220,10 +224,15 @@ def interfaces(as_json: JsonOption = False) -> None:
             ],
         )
     )
-    if not has_capture_privileges():
+    if capture.available:
+        err.print(f"Live capture: available via {capture.backend} ({capture.reason}).")
+    else:
         err.print(
-            "[yellow]This process cannot capture (no CAP_NET_RAW).[/] Replay and fixtures still work; see: sentinelx doctor"
+            f"[yellow]LIVE CAPTURE UNAVAILABLE:[/] {escape(capture.reason)}. "
+            "PCAP replay and fixtures still work."
         )
+        if capture.remedy:
+            err.print(f"To enable it: {escape(capture.remedy)}")
 
 
 security.register(app)

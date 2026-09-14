@@ -13,6 +13,7 @@ failure surfaces as an error instead of a capture that silently receives nothing
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import threading
 import time
@@ -166,10 +167,8 @@ class PcapLiveCapture(PacketCapture):
                 interface=getattr(packet, "sniffed_on", None) or self.interface,
                 wire_length=int(getattr(packet, "wirelen", None) or len(data)),
             )
-            try:
+            with contextlib.suppress(RuntimeError):  # the loop closed during shutdown
                 loop.call_soon_threadsafe(enqueue, frame)
-            except RuntimeError:  # loop closed during shutdown
-                pass
 
         sniffer = AsyncSniffer(
             iface=interfaces,
@@ -211,9 +210,11 @@ class PcapLiveCapture(PacketCapture):
             return names
         known = [entry["name"] for entry in _list_interfaces()]
         try:
+            # On Windows Npcap device names differ from the friendly names psutil
+            # reports; scapy knows both.
             known.extend(str(name) for name in conf.ifaces)
-        except Exception:  # pragma: no cover - scapy internals vary by platform
-            pass
+        except Exception as exc:  # pragma: no cover - scapy internals vary by platform
+            log.debug("scapy_interface_listing_failed", error=str(exc))
         if known and self.interface not in known:
             raise InterfaceNotFoundError(self.interface, sorted(set(known)))
         return self.interface

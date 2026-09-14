@@ -72,6 +72,7 @@ class LiveCapture(PacketCapture):
         snapshot_length: int = 2048,
         promiscuous: bool = True,
         buffer_size_mb: int = 16,
+        queue_size: int = 20_000,
     ) -> None:
         if backend not in self.backend_names:
             raise CaptureError(
@@ -87,6 +88,7 @@ class LiveCapture(PacketCapture):
             "promiscuous": promiscuous,
             "buffer_size_mb": buffer_size_mb,
         }
+        self._queue_size = queue_size
         self._inner: PacketCapture | None = None
 
     # ------------------------------------------------------------ discovery
@@ -121,7 +123,10 @@ class LiveCapture(PacketCapture):
         order = _auto_order() if self.requested_backend == "auto" else [self.requested_backend]
         unavailable: list[str] = []
         for name in order:
-            inner = LIVE_BACKENDS[name](self.interface, **self._options)  # type: ignore[call-arg]
+            options = dict(self._options)
+            if name == "libpcap":
+                options["queue_size"] = self._queue_size
+            inner = LIVE_BACKENDS[name](self.interface, **options)  # type: ignore[call-arg]
             try:
                 await inner.open()
             except BackendUnavailableError as exc:
