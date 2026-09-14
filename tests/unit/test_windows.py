@@ -130,13 +130,20 @@ class TestLinearScaling:
                 engine.evaluate(extractor.process(packet))
         return (time.perf_counter() - started) / len(frames)
 
-    @pytest.mark.parametrize(("scenario", "small", "large"), [
-        ("icmp_flood", {"count": 2000}, {"count": 8000}),
-        ("http_flood", {"count": 1500}, {"count": 6000}),
-        ("dns_flood", {"count": 1000}, {"count": 4000}),
-        ("syn_flood", {"count": 2000}, {"count": 8000}),
-    ])
-    def test_flood_cost_per_packet_does_not_grow_with_volume(self, scenario: str, small: dict[str, int], large: dict[str, int]) -> None:
+    @pytest.mark.parametrize(
+        ("scenario", "small", "large"),
+        [
+            ("icmp_flood", {"count": 2000}, {"count": 8000}),
+            ("http_flood", {"count": 1500}, {"count": 6000}),
+            ("dns_flood", {"count": 1000}, {"count": 4000}),
+            ("syn_flood", {"count": 2000}, {"count": 8000}),
+        ],
+    )
+    def test_flood_cost_per_packet_does_not_grow_with_volume(
+        self, scenario: str, small: dict[str, int], large: dict[str, int]
+    ) -> None:
         self.per_packet_seconds(scenario, **small)  # warm caches and imports
-        ratio = self.per_packet_seconds(scenario, **large) / self.per_packet_seconds(scenario, **small)
+        ratio = self.per_packet_seconds(scenario, **large) / self.per_packet_seconds(
+            scenario, **small
+        )
         assert ratio < 2.5, f"{scenario}: per-packet cost grew {ratio:.1f}x with 4x volume"

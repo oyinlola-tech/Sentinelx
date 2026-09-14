@@ -319,7 +319,11 @@ class FeatureExtractor:
 
     def _evict_sources(self, now: float) -> None:
         """Make room by dropping idle, then least-recently-seen, profiles."""
-        for ip in [ip for ip, profile in self.profiles.items() if profile.last_seen < now - self.window_seconds]:
+        for ip in [
+            ip
+            for ip, profile in self.profiles.items()
+            if profile.last_seen < now - self.window_seconds
+        ]:
             del self.profiles[ip]
             self.evicted_sources += 1
         if len(self.profiles) >= self.max_sources:
@@ -329,7 +333,9 @@ class FeatureExtractor:
                 self.evicted_sources += 1
 
     def _evict_flows(self, now: float) -> None:
-        for key in [k for k, flow in self.flows.items() if flow.last_seen < now - _FLOW_IDLE_SECONDS]:
+        for key in [
+            k for k, flow in self.flows.items() if flow.last_seen < now - _FLOW_IDLE_SECONDS
+        ]:
             del self.flows[key]
             self.evicted_flows += 1
         if len(self.flows) >= self.max_flows:

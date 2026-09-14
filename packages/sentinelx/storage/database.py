@@ -91,6 +91,7 @@ class Database:
 
         engine = create_async_engine(self.url, **kwargs)
         if self.dialect == "sqlite":
+
             @event.listens_for(engine.sync_engine, "connect")
             def _sqlite_pragmas(dbapi_connection: Any, _record: Any) -> None:
                 cursor = dbapi_connection.cursor()
@@ -103,7 +104,9 @@ class Database:
                 await connection.execute(text("SELECT 1"))
         except (SQLAlchemyError, OSError) as exc:
             await engine.dispose()
-            raise StorageError(f"cannot connect to database {self.safe_url}: {type(exc).__name__}: {exc}") from exc
+            raise StorageError(
+                f"cannot connect to database {self.safe_url}: {type(exc).__name__}: {exc}"
+            ) from exc
 
         self._engine = engine
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -111,7 +114,12 @@ class Database:
         if should_create:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
-        log.info("database_connected", url=self.safe_url, dialect=self.dialect, schema_created=should_create)
+        log.info(
+            "database_connected",
+            url=self.safe_url,
+            dialect=self.dialect,
+            schema_created=should_create,
+        )
 
     async def close(self) -> None:
         engine, self._engine = self._engine, None
@@ -143,4 +151,9 @@ class Database:
                 await connection.execute(text("SELECT 1"))
             return {"ok": True, "dialect": self.dialect, "url": self.safe_url}
         except (SQLAlchemyError, OSError, StorageError) as exc:
-            return {"ok": False, "dialect": self.dialect, "url": self.safe_url, "error": type(exc).__name__}
+            return {
+                "ok": False,
+                "dialect": self.dialect,
+                "url": self.safe_url,
+                "error": type(exc).__name__,
+            }

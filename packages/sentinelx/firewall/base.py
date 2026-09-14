@@ -127,9 +127,13 @@ class CommandRunner:
             except TimeoutError:
                 process.kill()
                 await process.wait()
-                raise FirewallError(f"firewall command timed out after {self.timeout}s", command=" ".join(argv)) from None
+                raise FirewallError(
+                    f"firewall command timed out after {self.timeout}s", command=" ".join(argv)
+                ) from None
         except OSError as exc:
-            raise FirewallError(f"could not execute firewall command: {exc}", command=" ".join(argv)) from exc
+            raise FirewallError(
+                f"could not execute firewall command: {exc}", command=" ".join(argv)
+            ) from exc
 
         result = CommandResult(
             argv=argv,
@@ -138,7 +142,12 @@ class CommandRunner:
             stderr=stderr.decode("utf-8", errors="replace"),
             duration=time.perf_counter() - started,
         )
-        log.debug("firewall_command", command=result.display, returncode=result.returncode, duration=round(result.duration, 4))
+        log.debug(
+            "firewall_command",
+            command=result.display,
+            returncode=result.returncode,
+            duration=round(result.duration, 4),
+        )
         if check and not result.ok:
             raise FirewallError(
                 f"firewall command failed ({result.returncode}): {result.stderr.strip() or result.stdout.strip()}",
@@ -162,7 +171,9 @@ class FirewallAdapter(abc.ABC):
         """Create the tables/chains/sets this adapter owns. Idempotent."""
 
     @abc.abstractmethod
-    async def block(self, network: IPNetworkT, *, duration: int | None = None, comment: str = "") -> BlockEntry:
+    async def block(
+        self, network: IPNetworkT, *, duration: int | None = None, comment: str = ""
+    ) -> BlockEntry:
         """Drop traffic from ``network``; auto-expire after ``duration`` seconds if given."""
 
     @abc.abstractmethod
@@ -170,7 +181,9 @@ class FirewallAdapter(abc.ABC):
         """Remove a block. Returns False if it was not present."""
 
     @abc.abstractmethod
-    async def rate_limit(self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None) -> BlockEntry:
+    async def rate_limit(
+        self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None
+    ) -> BlockEntry:
         """Limit packets from ``network`` to a rate."""
 
     @abc.abstractmethod
@@ -187,7 +200,9 @@ class FirewallAdapter(abc.ABC):
     async def unblock_ip(self, network: IPNetworkT) -> bool:
         return await self.unblock(network)
 
-    async def add_temporary_block(self, network: IPNetworkT, duration: int, comment: str = "") -> BlockEntry:
+    async def add_temporary_block(
+        self, network: IPNetworkT, duration: int, comment: str = ""
+    ) -> BlockEntry:
         if duration <= 0:
             raise ValueError(f"temporary block duration must be positive, got {duration}")
         return await self.block(network, duration=duration, comment=comment)
@@ -200,4 +215,6 @@ class FirewallAdapter(abc.ABC):
 
     @staticmethod
     def _record(operation: str, backend: str, ok: bool) -> None:
-        metrics.firewall_actions.labels(backend=backend, operation=operation, result="ok" if ok else "error").inc()
+        metrics.firewall_actions.labels(
+            backend=backend, operation=operation, result="ok" if ok else "error"
+        ).inc()

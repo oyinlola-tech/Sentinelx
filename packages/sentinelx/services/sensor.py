@@ -40,7 +40,9 @@ class SensorService:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def start(self, interface: str | None = None, bpf_filter: str | None = None) -> dict[str, Any]:
+    async def start(
+        self, interface: str | None = None, bpf_filter: str | None = None
+    ) -> dict[str, Any]:
         """Start live capture.
 
         Raises:

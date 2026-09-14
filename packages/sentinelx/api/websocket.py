@@ -64,7 +64,9 @@ async def events(websocket: WebSocket) -> None:
 
     if platform.settings.api.auth_enabled:
         try:
-            principal = await platform.auth.redeem_ws_ticket(websocket.query_params.get("ticket", ""))
+            principal = await platform.auth.redeem_ws_ticket(
+                websocket.query_params.get("ticket", "")
+            )
         except AuthError:
             # Accept, then close with an application code: a pre-accept rejection
             # surfaces as a bare HTTP 403, which a client cannot distinguish from an
@@ -85,18 +87,30 @@ async def events(websocket: WebSocket) -> None:
         except ValueError:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="unknown event type")
             return
-    allowed = set(EventType) if role.can_act_as(UserRole.ANALYST) else set(EventType) - _ANALYST_ONLY
+    allowed = (
+        set(EventType) if role.can_act_as(UserRole.ANALYST) else set(EventType) - _ANALYST_ONLY
+    )
     types = (requested & allowed) if requested else allowed
 
     await websocket.accept()
     metrics.websocket_clients.inc()
     log.info("websocket_connected", user=username, types=len(types))
-    await websocket.send_json({"type": "hello", "payload": {"user": username, "role": role.value,
-                                                             "subscribed": sorted(t.value for t in types),
-                                                             "safety": platform.settings.safety_banner()}})
+    await websocket.send_json(
+        {
+            "type": "hello",
+            "payload": {
+                "user": username,
+                "role": role.value,
+                "subscribed": sorted(t.value for t in types),
+                "safety": platform.settings.safety_banner(),
+            },
+        }
+    )
     receiver = asyncio.create_task(_drain_client(websocket))
     try:
-        async with platform.bus.subscribe(f"ws:{username}", types, queue_size=platform.settings.api.websocket_max_queue) as stream:
+        async with platform.bus.subscribe(
+            f"ws:{username}", types, queue_size=platform.settings.api.websocket_max_queue
+        ) as stream:
             iterator = stream.__aiter__()
             while not receiver.done():
                 try:

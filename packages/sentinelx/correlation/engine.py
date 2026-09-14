@@ -171,7 +171,8 @@ class CorrelationEngine:
         # An incident needs corroboration: either several distinct detectors, or
         # a single detection severe enough to warrant one on its own.
         standalone = (
-            risk.score >= self.settings.standalone_risk_threshold and detection.severity is Severity.CRITICAL
+            risk.score >= self.settings.standalone_risk_threshold
+            and detection.severity is Severity.CRITICAL
         )
         if len(distinct) < self.settings.min_detections and not standalone:
             return None
@@ -231,7 +232,9 @@ class CorrelationEngine:
         )
         return incident
 
-    def _extend(self, incident: Incident, detection: Detection, risk: RiskAssessment) -> CorrelationResult:
+    def _extend(
+        self, incident: Incident, detection: Detection, risk: RiskAssessment
+    ) -> CorrelationResult:
         members = self._members.setdefault(incident.incident_id, [])
         members.append((detection, risk))
         previous = incident.severity
@@ -300,7 +303,9 @@ class CorrelationEngine:
         corroboration = min(4.0 * (len(distinct_detectors) - 1), 12.0)
         if corroboration:
             contributions["corroboration"] = corroboration
-            rationale.append(f"+{corroboration:.1f} {len(distinct_detectors)} distinct detectors agree")
+            rationale.append(
+                f"+{corroboration:.1f} {len(distinct_detectors)} distinct detectors agree"
+            )
 
         breadth = min(3.0 * (len(distinct_categories) - 1), 9.0)
         if breadth:
@@ -369,7 +374,12 @@ class CorrelationEngine:
             return
         self._members.pop(incident.incident_id, None)
         metrics.open_incidents.set(len(self._open))
-        log.debug("incident_correlation_closed", incident=incident.incident_id, reason=reason, status=status.value)
+        log.debug(
+            "incident_correlation_closed",
+            incident=incident.incident_id,
+            reason=reason,
+            status=status.value,
+        )
 
     def open_incidents(self) -> list[Incident]:
         return sorted(self._open.values(), key=lambda inc: inc.risk.score, reverse=True)

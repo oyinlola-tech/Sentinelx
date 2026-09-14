@@ -41,7 +41,9 @@ class IptablesAdapter(FirewallAdapter):
         self.rate_limit_pps = int(rate_limit_pps)
         self._v4 = runner_v4 or CommandRunner("iptables", use_sudo=use_sudo)
         try:
-            self._v6: CommandRunner | None = runner_v6 or CommandRunner("ip6tables", use_sudo=use_sudo)
+            self._v6: CommandRunner | None = runner_v6 or CommandRunner(
+                "ip6tables", use_sudo=use_sudo
+            )
         except FirewallError:
             self._v6 = None
             log.warning("ip6tables_unavailable", effect="IPv6 blocks will be refused")
@@ -71,12 +73,27 @@ class IptablesAdapter(FirewallAdapter):
         # hashlimit names are limited to 15 chars; derive a stable one per network.
         name = "sx" + hashlib.sha1(str(network).encode(), usedforsecurity=False).hexdigest()[:12]
         return (
-            "-s", str(network), "-m", "hashlimit", "--hashlimit-above", f"{self.rate_limit_pps}/sec",
-            "--hashlimit-mode", "srcip", "--hashlimit-name", name,
-            "-m", "comment", "--comment", _COMMENT, "-j", "DROP",
+            "-s",
+            str(network),
+            "-m",
+            "hashlimit",
+            "--hashlimit-above",
+            f"{self.rate_limit_pps}/sec",
+            "--hashlimit-mode",
+            "srcip",
+            "--hashlimit-name",
+            name,
+            "-m",
+            "comment",
+            "--comment",
+            _COMMENT,
+            "-j",
+            "DROP",
         )
 
-    async def block(self, network: IPNetworkT, *, duration: int | None = None, comment: str = "") -> BlockEntry:
+    async def block(
+        self, network: IPNetworkT, *, duration: int | None = None, comment: str = ""
+    ) -> BlockEntry:
         runner = self._runner(network)
         rule = self._drop_rule(network)
         exists = await runner.run("-w", "-C", CHAIN, *rule, check=False)
@@ -95,7 +112,9 @@ class IptablesAdapter(FirewallAdapter):
         self._meta[str(network)] = entry
         return entry
 
-    async def rate_limit(self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None) -> BlockEntry:
+    async def rate_limit(
+        self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None
+    ) -> BlockEntry:
         runner = self._runner(network)
         rule = self._limit_rule(network)
         exists = await runner.run("-w", "-C", CHAIN, *rule, check=False)
@@ -137,7 +156,9 @@ class IptablesAdapter(FirewallAdapter):
                     continue
                 network = parts[parts.index("-s") + 1]
                 limited = "hashlimit" in parts
-                entries[network] = self._meta.get(network) or BlockEntry(network=network, rate_limited=limited)
+                entries[network] = self._meta.get(network) or BlockEntry(
+                    network=network, rate_limited=limited
+                )
         return list(entries.values())
 
     async def teardown(self) -> None:
@@ -150,5 +171,11 @@ class IptablesAdapter(FirewallAdapter):
 
     async def health(self) -> dict[str, object]:
         result = await self._v4.run("-w", "-S", CHAIN, check=False)
-        return {"backend": self.backend, "ok": result.ok, "enforcing": result.ok, "chain": CHAIN,
-                "ipv6": self._v6 is not None, "error": None if result.ok else result.stderr.strip()[:300]}
+        return {
+            "backend": self.backend,
+            "ok": result.ok,
+            "enforcing": result.ok,
+            "chain": CHAIN,
+            "ipv6": self._v6 is not None,
+            "error": None if result.ok else result.stderr.strip()[:300],
+        }

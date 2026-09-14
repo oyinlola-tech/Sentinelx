@@ -39,7 +39,8 @@ async def blocked(principal: Viewer, platform: PlatformDep) -> list[dict[str, An
 
 @router.get("/firewall/actions")
 async def actions(
-    principal: Viewer, platform: PlatformDep,
+    principal: Viewer,
+    platform: PlatformDep,
     target: str | None = Query(default=None, max_length=64),
     outcome: list[str] = Query(default=[], max_length=10),
     limit: int = Query(default=100, ge=1, le=500),
@@ -49,8 +50,12 @@ async def actions(
     return await queries.actions(target=target, outcomes=outcome, limit=limit, offset=offset)
 
 
-@router.post("/firewall/check", summary="Preview whether the safety guard would permit acting on a target")
-async def check(body: SafetyCheckRequest, principal: Analyst, platform: PlatformDep) -> dict[str, Any]:
+@router.post(
+    "/firewall/check", summary="Preview whether the safety guard would permit acting on a target"
+)
+async def check(
+    body: SafetyCheckRequest, principal: Analyst, platform: PlatformDep
+) -> dict[str, Any]:
     pipeline, _, _, _ = platform.require()
     report = pipeline.response.guard.evaluate(body.target).as_dict()
     report["dry_run"] = platform.settings.response.dry_run
@@ -58,24 +63,36 @@ async def check(body: SafetyCheckRequest, principal: Analyst, platform: Platform
 
 
 @router.post("/firewall/block")
-async def block(body: BlockRequest, principal: Admin, request: Request, platform: PlatformDep) -> dict[str, Any]:
+async def block(
+    body: BlockRequest, principal: Admin, request: Request, platform: PlatformDep
+) -> dict[str, Any]:
     pipeline, _, _, _ = platform.require()
     if body.rate_limit:
         action = ActionType.RATE_LIMIT
     else:
         action = ActionType.TEMPORARY_BLOCK if body.duration_seconds else ActionType.BLOCK_IP
     decision = await pipeline.response.manual_action(
-        action, body.target, actor=principal.username, reason=body.reason, duration=body.duration_seconds,
+        action,
+        body.target,
+        actor=principal.username,
+        reason=body.reason,
+        duration=body.duration_seconds,
         source=_source(request),
     )
     return _decision(decision)
 
 
 @router.post("/firewall/unblock")
-async def unblock(body: UnblockRequest, principal: Admin, request: Request, platform: PlatformDep) -> dict[str, Any]:
+async def unblock(
+    body: UnblockRequest, principal: Admin, request: Request, platform: PlatformDep
+) -> dict[str, Any]:
     pipeline, _, _, _ = platform.require()
     decision = await pipeline.response.manual_action(
-        ActionType.UNBLOCK_IP, body.target, actor=principal.username, reason=body.reason, source=_source(request)
+        ActionType.UNBLOCK_IP,
+        body.target,
+        actor=principal.username,
+        reason=body.reason,
+        source=_source(request),
     )
     return _decision(decision)
 
@@ -97,10 +114,14 @@ async def approve(action_id: str, principal: Admin, platform: PlatformDep) -> di
 
 
 @router.post("/firewall/approvals/{action_id}/reject")
-async def reject(action_id: str, body: RejectRequest, principal: Admin, platform: PlatformDep) -> dict[str, Any]:
+async def reject(
+    action_id: str, body: RejectRequest, principal: Admin, platform: PlatformDep
+) -> dict[str, Any]:
     pipeline, _, _, _ = platform.require()
     try:
-        pending = await pipeline.response.reject(action_id, actor=principal.username, reason=body.reason)
+        pending = await pipeline.response.reject(
+            action_id, actor=principal.username, reason=body.reason
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="no pending action with that id") from exc
     return pending.as_dict()
@@ -115,10 +136,18 @@ async def get_allowlist(principal: Viewer, platform: PlatformDep) -> dict[str, A
     }
 
 
-@router.put("/firewall/allowlist", summary="Replace the never-block allowlist (loopback is always retained)")
-async def put_allowlist(body: AllowlistRequest, principal: Admin, request: Request, platform: PlatformDep) -> dict[str, Any]:
-    await platform.config.update("response", {"allowlist_networks": body.networks}, actor=principal.username,
-                                 source=_source(request))
+@router.put(
+    "/firewall/allowlist", summary="Replace the never-block allowlist (loopback is always retained)"
+)
+async def put_allowlist(
+    body: AllowlistRequest, principal: Admin, request: Request, platform: PlatformDep
+) -> dict[str, Any]:
+    await platform.config.update(
+        "response",
+        {"allowlist_networks": body.networks},
+        actor=principal.username,
+        source=_source(request),
+    )
     return {"response_allowlist": platform.settings.response.allowlist_networks}
 
 
@@ -129,5 +158,7 @@ def _source(request: Request) -> str:
 def _decision(decision: Any) -> dict[str, Any]:
     payload = decision_payload(decision)
     if decision.error:
-        payload["http_note"] = "the request was valid but the action was not carried out; see 'error'"
+        payload["http_note"] = (
+            "the request was valid but the action was not carried out; see 'error'"
+        )
     return payload

@@ -73,7 +73,9 @@ def resolver_for(context: FeatureContext, within: float) -> Any:
         "unique_udp_ports": lambda: profile.udp_ports.unique_since(source, cutoff),
         "dns_unique_domains": lambda: profile.dns_queries.distinct_since(cutoff),
         "syn_ratio": lambda: (syns_since() / packets_since()) if packets_since() else 0.0,
-        "syn_ack_ratio": lambda: (profile.syn_ack_received.count_since(cutoff) / syns_since()) if syns_since() else 0.0,
+        "syn_ack_ratio": lambda: (
+            (profile.syn_ack_received.count_since(cutoff) / syns_since()) if syns_since() else 0.0
+        ),
         "refusal_ratio": lambda: profile.refusal_ratio(),
         "packet_rate": lambda: packets_since() / within,
         "dns_query_name": lambda: dns.get("query_name"),
@@ -127,7 +129,9 @@ class RuleDetector(Detector):
             Evidence(
                 key=comparison.field,
                 value=observed,
-                threshold=comparison.value if not isinstance(comparison.value, tuple) else list(comparison.value),
+                threshold=comparison.value
+                if not isinstance(comparison.value, tuple)
+                else list(comparison.value),
                 description=_describe(comparison, observed, self.rule.within),
                 weight=1.0 if FIELDS[comparison.field].kind is FieldKind.COUNT else 0.5,
             )
@@ -137,7 +141,12 @@ class RuleDetector(Detector):
         # than the packet filter that merely scoped it ("protocol == tcp").
         evidence.sort(key=lambda item: item.weight, reverse=True)
         evidence.append(
-            Evidence(key="rule", value=self.rule.id, description=f"matched rule '{self.rule.name}': {self.rule.condition}", weight=0.3)
+            Evidence(
+                key="rule",
+                value=self.rule.id,
+                description=f"matched rule '{self.rule.name}': {self.rule.condition}",
+                weight=0.3,
+            )
         )
         self.hits += 1
         detection = self.build(
@@ -159,7 +168,9 @@ class RuleDetector(Detector):
         return {
             **super().stats(),
             "rule_id": self.rule.id,
-            "mean_eval_microseconds": round(1e6 * self.total_eval_seconds / self.evaluations, 2) if self.evaluations else 0.0,
+            "mean_eval_microseconds": round(1e6 * self.total_eval_seconds / self.evaluations, 2)
+            if self.evaluations
+            else 0.0,
         }
 
 

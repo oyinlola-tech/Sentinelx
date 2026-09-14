@@ -84,7 +84,9 @@ def feature_vector(features: dict[str, Any]) -> list[float]:
     import math
 
     return [
-        float(features.get(name) or 0.0) if name in _RATIO_FEATURES else math.log1p(max(float(features.get(name) or 0.0), 0.0))
+        float(features.get(name) or 0.0)
+        if name in _RATIO_FEATURES
+        else math.log1p(max(float(features.get(name) or 0.0), 0.0))
         for name in FEATURE_NAMES
     ]
 
@@ -113,7 +115,9 @@ class ModelBundle:
         }
 
 
-def train_model(vectors: list[list[float]], *, contamination: float = 0.02, seed: int = 0) -> ModelBundle:
+def train_model(
+    vectors: list[list[float]], *, contamination: float = 0.02, seed: int = 0
+) -> ModelBundle:
     """Fit an Isolation Forest on feature vectors from known-normal traffic.
 
     Raises:
@@ -121,7 +125,9 @@ def train_model(vectors: list[list[float]], *, contamination: float = 0.02, seed
             points describes nothing and would flag almost everything.
     """
     if len(vectors) < 50:
-        raise ValueError(f"need at least 50 training samples, got {len(vectors)}; capture more normal traffic")
+        raise ValueError(
+            f"need at least 50 training samples, got {len(vectors)}; capture more normal traffic"
+        )
     import numpy as np
     from sklearn.ensemble import IsolationForest
 
@@ -149,14 +155,18 @@ def save_model(bundle: ModelBundle, path: Path) -> None:
     import joblib
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"format": MODEL_FORMAT_VERSION, **{k: getattr(bundle, k) for k in bundle.__slots__}}, path)
+    joblib.dump(
+        {"format": MODEL_FORMAT_VERSION, **{k: getattr(bundle, k) for k in bundle.__slots__}}, path
+    )
     path.chmod(0o600)
 
 
 def _check_file_is_trusted(path: Path) -> None:
     info = path.stat()
     if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        raise ConfigurationError(f"refusing to load {path}: it is group- or world-writable (chmod 600 it)")
+        raise ConfigurationError(
+            f"refusing to load {path}: it is group- or world-writable (chmod 600 it)"
+        )
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise ConfigurationError(f"refusing to load {path}: it is not owned by the current user")
 
@@ -168,7 +178,9 @@ def load_model(path: Path) -> ModelBundle:
         ConfigurationError: when the file is missing, untrusted or incompatible.
     """
     if not path.is_file():
-        raise ConfigurationError(f"model file not found: {path}; train one with 'sentinelx anomaly train'")
+        raise ConfigurationError(
+            f"model file not found: {path}; train one with 'sentinelx anomaly train'"
+        )
     _check_file_is_trusted(path)
     import joblib
 
@@ -184,11 +196,18 @@ class MlAnomalyDetector(Detector):
     """Scores each active source's behaviour vector with a trained Isolation Forest."""
 
     name = "ml_anomaly"
-    description = "Per-source behaviour that a model trained on this network's normal traffic finds rare."
+    description = (
+        "Per-source behaviour that a model trained on this network's normal traffic finds rare."
+    )
     category = ThreatCategory.ANOMALY
     default_severity = Severity.LOW
 
-    def __init__(self, bundle: ModelBundle, anomaly: AnomalySettings | None = None, settings: DetectionSettings | None = None) -> None:
+    def __init__(
+        self,
+        bundle: ModelBundle,
+        anomaly: AnomalySettings | None = None,
+        settings: DetectionSettings | None = None,
+    ) -> None:
         super().__init__(settings)
         self.bundle = bundle
         self.anomaly = anomaly or AnomalySettings()
@@ -235,8 +254,13 @@ class MlAnomalyDetector(Detector):
         # Report which features are furthest from typical, so the finding is not a
         # bare number. Ranking by magnitude is a heuristic, and is labelled as one.
         notable = sorted(
-            ((name, features.get(name) or 0) for name in FEATURE_NAMES if (features.get(name) or 0)),
-            key=lambda pair: float(pair[1]), reverse=True,
+            (
+                (name, features.get(name) or 0)
+                for name in FEATURE_NAMES
+                if (features.get(name) or 0)
+            ),
+            key=lambda pair: float(pair[1]),
+            reverse=True,
         )[:4]
         self.hits += 1
         return self.build(
@@ -244,15 +268,34 @@ class MlAnomalyDetector(Detector):
             title="Unusual source behaviour (model)",
             description=f"The anomaly model rates {source}'s behaviour as rarer than {score:.0%} of the training data range.",
             evidence=[
-                Evidence(key="anomaly_score", value=round(score, 3), threshold=self.anomaly.ml_min_score,
-                         description=f"model anomaly score {score:.2f}", weight=1.0),
-                Evidence(key="model", value=self.bundle.info(),
-                         description=f"IsolationForest v{self.bundle.version}, trained on {self.bundle.samples} samples",
-                         weight=0.3),
-                *(Evidence(key=f"feature:{name}", value=value, description=f"{name} = {value}", weight=0.4)
-                  for name, value in notable),
-                Evidence(key="interpretation", value="lead", weight=0.1,
-                         description="statistical rarity, not proof of malice; review before acting"),
+                Evidence(
+                    key="anomaly_score",
+                    value=round(score, 3),
+                    threshold=self.anomaly.ml_min_score,
+                    description=f"model anomaly score {score:.2f}",
+                    weight=1.0,
+                ),
+                Evidence(
+                    key="model",
+                    value=self.bundle.info(),
+                    description=f"IsolationForest v{self.bundle.version}, trained on {self.bundle.samples} samples",
+                    weight=0.3,
+                ),
+                *(
+                    Evidence(
+                        key=f"feature:{name}",
+                        value=value,
+                        description=f"{name} = {value}",
+                        weight=0.4,
+                    )
+                    for name, value in notable
+                ),
+                Evidence(
+                    key="interpretation",
+                    value="lead",
+                    weight=0.1,
+                    description="statistical rarity, not proof of malice; review before acting",
+                ),
             ],
             confidence=round(min(0.6, 0.3 + 0.3 * score), 3),
             severity=Severity.MEDIUM if score >= 0.95 else Severity.LOW,
@@ -265,11 +308,15 @@ class MlAnomalyDetector(Detector):
         return {
             **super().stats(),
             "model": self.bundle.info(),
-            "mean_inference_ms": round(1000 * self.inference_seconds / self.evaluations, 3) if self.evaluations else 0.0,
+            "mean_inference_ms": round(1000 * self.inference_seconds / self.evaluations, 3)
+            if self.evaluations
+            else 0.0,
         }
 
 
-def collect_training_vectors(frames: Any, settings: DetectionSettings | None = None, every_seconds: float = 5.0) -> list[list[float]]:
+def collect_training_vectors(
+    frames: Any, settings: DetectionSettings | None = None, every_seconds: float = 5.0
+) -> list[list[float]]:
     """Sample per-source feature vectors from (assumed normal) traffic for training.
 
     Samples each active source at most every ``every_seconds`` of packet time,
@@ -284,12 +331,17 @@ def collect_training_vectors(frames: Any, settings: DetectionSettings | None = N
     last: dict[str, float] = {}
     vectors: list[list[float]] = []
     for frame in frames:
-        packet = decoder.decode(frame.data, frame.timestamp, frame.link_type, frame.interface, frame.wire_length)
+        packet = decoder.decode(
+            frame.data, frame.timestamp, frame.link_type, frame.interface, frame.wire_length
+        )
         if packet is None:
             continue
         context = extractor.process(packet)
         source = context.profile.source_ip
-        if len(context.profile.packets) < 10 or context.now - last.get(source, -1e18) < every_seconds:
+        if (
+            len(context.profile.packets) < 10
+            or context.now - last.get(source, -1e18) < every_seconds
+        ):
             continue
         last[source] = context.now
         vectors.append(feature_vector(context.features()))

@@ -47,7 +47,9 @@ async def main(delay: float) -> int:
     try:
         for name, params in SCENARIOS:
             report = await pipeline.run(MockCapture(get_scenario(name, **params).frames))
-            print(f"{name:18} {report.frames:6d} packets -> {len(report.detections)} detections, {len(report.incidents)} incidents")
+            print(
+                f"{name:18} {report.frames:6d} packets -> {len(report.detections)} detections, {len(report.incidents)} incidents"
+            )
             pipeline.reset_state()  # keep scenarios from correlating with each other
             await asyncio.sleep(delay)
         await asyncio.sleep(settings.storage.flush_interval_seconds + 0.5)
@@ -58,5 +60,7 @@ async def main(delay: float) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--delay", type=float, default=1.0, help="Seconds between scenarios, spreading timestamps.")
+    parser.add_argument(
+        "--delay", type=float, default=1.0, help="Seconds between scenarios, spreading timestamps."
+    )
     sys.exit(asyncio.run(main(parser.parse_args().delay)))

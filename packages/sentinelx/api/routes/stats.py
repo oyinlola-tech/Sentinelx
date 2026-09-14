@@ -18,10 +18,21 @@ async def get_config(principal: Analyst, platform: PlatformDep) -> dict[str, Any
 
 
 @router.patch("/config/{section}", tags=["config"], summary="Change runtime-editable settings")
-async def update_config(section: str, body: ConfigUpdateRequest, principal: Admin, request: Request, platform: PlatformDep) -> dict[str, Any]:
+async def update_config(
+    section: str,
+    body: ConfigUpdateRequest,
+    principal: Admin,
+    request: Request,
+    platform: PlatformDep,
+) -> dict[str, Any]:
     source = "dashboard" if request.headers.get("x-sentinelx-client") == "dashboard" else "api"
-    return await platform.config.update(section, body.changes, actor=principal.username, source=source,
-                                        confirmation=body.confirmation)
+    return await platform.config.update(
+        section,
+        body.changes,
+        actor=principal.username,
+        source=source,
+        confirmation=body.confirmation,
+    )
 
 
 @router.get("/stats/overview", tags=["statistics"])
@@ -43,6 +54,8 @@ async def network(principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
 
 
 @router.get("/stats/analytics", tags=["statistics"])
-async def analytics(principal: Viewer, platform: PlatformDep, hours: int = Query(default=24, ge=1, le=24 * 90)) -> dict[str, Any]:
+async def analytics(
+    principal: Viewer, platform: PlatformDep, hours: int = Query(default=24, ge=1, le=24 * 90)
+) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     return await queries.analytics(hours=hours)

@@ -66,7 +66,9 @@ NAMING = {
 }
 
 JsonType = JSON().with_variant(JSONB(), "postgresql")
-Identity = BigInteger().with_variant(Integer(), "sqlite")  # SQLite autoincrements INTEGER PRIMARY KEY only
+Identity = BigInteger().with_variant(
+    Integer(), "sqlite"
+)  # SQLite autoincrements INTEGER PRIMARY KEY only
 TZ = DateTime(timezone=True)
 
 
@@ -76,7 +78,11 @@ def _now() -> datetime:
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING)
-    type_annotation_map: ClassVar[dict[Any, Any]] = {dict[str, Any]: JsonType, list[Any]: JsonType, datetime: TZ}
+    type_annotation_map: ClassVar[dict[Any, Any]] = {
+        dict[str, Any]: JsonType,
+        list[Any]: JsonType,
+        datetime: TZ,
+    }
 
 
 # ======================================================================= auth
@@ -110,7 +116,9 @@ class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
 
     jti: Mapped[str] = mapped_column(Text, primary_key=True)
-    user_id: Mapped[int] = mapped_column(Identity, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Identity, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     issued_at: Mapped[datetime] = mapped_column(TZ, nullable=False, default=_now)
     expires_at: Mapped[datetime] = mapped_column(TZ, nullable=False, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(TZ)
@@ -123,7 +131,8 @@ class IncidentRecord(Base):
     __tablename__ = "incidents"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('open', 'investigating', 'contained', 'resolved', 'false_positive')", name="status_valid"
+            "status IN ('open', 'investigating', 'contained', 'resolved', 'false_positive')",
+            name="status_valid",
         ),
         CheckConstraint("risk_score >= 0 AND risk_score <= 100", name="risk_range"),
         Index("ix_incidents_status_last_seen", "status", "last_seen"),
@@ -333,7 +342,10 @@ class SystemMetric(Base):
 class ReplayRecord(Base):
     __tablename__ = "replays"
     __table_args__ = (
-        CheckConstraint("status IN ('queued', 'running', 'completed', 'failed', 'cancelled')", name="status_valid"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            name="status_valid",
+        ),
     )
 
     replay_id: Mapped[str] = mapped_column(Text, primary_key=True)

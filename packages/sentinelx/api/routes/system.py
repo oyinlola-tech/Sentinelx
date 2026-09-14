@@ -46,17 +46,32 @@ async def interfaces(principal: Viewer, platform: PlatformDep) -> list[dict[str,
 
 
 @router.post("/sensors/start", tags=["sensors"], summary="Start live capture")
-async def start_sensor(body: SensorStartRequest, principal: Admin, request: Request, platform: PlatformDep) -> dict[str, Any]:
+async def start_sensor(
+    body: SensorStartRequest, principal: Admin, request: Request, platform: PlatformDep
+) -> dict[str, Any]:
     _, sensor, _, _ = platform.require()
     interface = body.interface or platform.settings.capture.interface
     try:
         result = await sensor.start(interface, body.bpf_filter)
     except Exception as exc:
-        await platform.audit.record(actor=principal.username, action="START_CAPTURE", target=interface, source="api",
-                                    outcome="failure", client_ip=client_ip(request), reason=str(exc))
+        await platform.audit.record(
+            actor=principal.username,
+            action="START_CAPTURE",
+            target=interface,
+            source="api",
+            outcome="failure",
+            client_ip=client_ip(request),
+            reason=str(exc),
+        )
         raise
-    await platform.audit.record(actor=principal.username, action="START_CAPTURE", target=interface, source="api",
-                                client_ip=client_ip(request), details={"bpf_filter": body.bpf_filter})
+    await platform.audit.record(
+        actor=principal.username,
+        action="START_CAPTURE",
+        target=interface,
+        source="api",
+        client_ip=client_ip(request),
+        details={"bpf_filter": body.bpf_filter},
+    )
     return result
 
 
@@ -64,12 +79,19 @@ async def start_sensor(body: SensorStartRequest, principal: Admin, request: Requ
 async def stop_sensor(principal: Admin, request: Request, platform: PlatformDep) -> dict[str, Any]:
     _, sensor, _, _ = platform.require()
     result = await sensor.stop()
-    await platform.audit.record(actor=principal.username, action="STOP_CAPTURE", target=result.get("interface"),
-                                source="api", client_ip=client_ip(request))
+    await platform.audit.record(
+        actor=principal.username,
+        action="STOP_CAPTURE",
+        target=result.get("interface"),
+        source="api",
+        client_ip=client_ip(request),
+    )
     return result
 
 
-@router.get("/metrics", tags=["metrics"], summary="Prometheus exposition format", response_class=Response)
+@router.get(
+    "/metrics", tags=["metrics"], summary="Prometheus exposition format", response_class=Response
+)
 async def prometheus(request: Request, platform: PlatformDep) -> Response:
     token = platform.settings.api.metrics_token
     if token:
@@ -82,7 +104,10 @@ async def prometheus(request: Request, platform: PlatformDep) -> Response:
         except ValueError:
             loopback = False
         if not loopback:
-            raise HTTPException(status_code=403, detail="set API__METRICS_TOKEN to expose metrics to remote scrapers")
+            raise HTTPException(
+                status_code=403,
+                detail="set API__METRICS_TOKEN to expose metrics to remote scrapers",
+            )
     return Response(render_metrics(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
@@ -95,7 +120,9 @@ async def metrics_summary(principal: Viewer, platform: PlatformDep) -> dict[str,
         "pipeline": {
             "decoder": pipeline.decoder.stats(),
             "features": pipeline.extractor.state(),
-            "detection": {k: v for k, v in pipeline.detection.stats().items() if k != "per_detector"},
+            "detection": {
+                k: v for k, v in pipeline.detection.stats().items() if k != "per_detector"
+            },
         },
         "last_run": report.as_dict() if report else None,
         "capture": sensor.status().get("capture"),
@@ -115,4 +142,6 @@ async def audit(
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     _, _, _, queries = platform.require()
-    return await queries.audit(actor=actor, action=action, target=target, since=since, limit=limit, offset=offset)
+    return await queries.audit(
+        actor=actor, action=action, target=target, since=since, limit=limit, offset=offset
+    )

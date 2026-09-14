@@ -74,7 +74,14 @@ class AuditService:
         async with self.database.session() as session:
             await AuditRepository(session).add(record)
         payload = audit_to_dict(record)
-        log.info("audit", actor=record.actor, action=record.action, target=record.target, outcome=record.outcome, source=record.source)
+        log.info(
+            "audit",
+            actor=record.actor,
+            action=record.action,
+            target=record.target,
+            outcome=record.outcome,
+            source=record.source,
+        )
         if self.bus is not None:
             await self.bus.publish(EventType.AUDIT_EVENT, payload)
         return payload

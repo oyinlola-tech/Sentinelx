@@ -64,7 +64,13 @@ def detection_record_to_dict(record: DetectionRecord) -> dict[str, Any]:
         "protocol": record.protocol,
         "evidence": record.evidence,
         "recommended_action": record.recommended_action,
-        "risk": record.risk or {"score": record.risk_score, "band": record.risk_band, "contributions": {}, "rationale": []},
+        "risk": record.risk
+        or {
+            "score": record.risk_score,
+            "band": record.risk_band,
+            "contributions": {},
+            "rationale": [],
+        },
         "observation_window_seconds": record.observation_window_seconds,
         "packet_count": record.packet_count,
         "tags": record.tags,
@@ -144,9 +150,13 @@ class QueryService:
 
     # ----------------------------------------------------------- detections
 
-    async def detections(self, filters: DetectionFilter, *, limit: int, offset: int, order: str) -> dict[str, Any]:
+    async def detections(
+        self, filters: DetectionFilter, *, limit: int, offset: int, order: str
+    ) -> dict[str, Any]:
         async with self.database.session() as session:
-            page = await DetectionRepository(session).page(filters, limit=limit, offset=offset, order=order)
+            page = await DetectionRepository(session).page(
+                filters, limit=limit, offset=offset, order=order
+            )
         return page_to_dict(page, [detection_record_to_dict(r) for r in page.items])
 
     async def detection(self, detection_id: str) -> dict[str, Any] | None:
@@ -159,7 +169,9 @@ class QueryService:
         data["actions"] = [action_to_dict(a) for a in actions.items]
         return data
 
-    async def set_detection_status(self, detection_id: str, status: str, reviewer: str) -> dict[str, Any] | None:
+    async def set_detection_status(
+        self, detection_id: str, status: str, reviewer: str
+    ) -> dict[str, Any] | None:
         async with self.database.session() as session:
             record = await DetectionRepository(session).set_status(detection_id, status, reviewer)
             return detection_record_to_dict(record) if record else None
@@ -182,11 +194,15 @@ class QueryService:
             detection_ids = [d.detection_id for d in detections]
             detection_actions: list[ResponseActionRecord] = []
             for detection_id in detection_ids[:50]:
-                detection_actions.extend((await ResponseActionRepository(session).page(detection_id=detection_id)).items)
+                detection_actions.extend(
+                    (await ResponseActionRepository(session).page(detection_id=detection_id)).items
+                )
         data = incident_record_to_dict(record)
         data["detections"] = [detection_record_to_dict(d) for d in detections]
         all_actions = {a.decision_id: a for a in [*actions.items, *detection_actions]}
-        data["actions"] = [action_to_dict(a) for a in sorted(all_actions.values(), key=lambda a: a.decided_at)]
+        data["actions"] = [
+            action_to_dict(a) for a in sorted(all_actions.values(), key=lambda a: a.decided_at)
+        ]
         top = max(detections, key=lambda d: d.risk_score, default=None)
         data["recommended_action"] = top.recommended_action if top else "alert"
         return data
@@ -206,15 +222,29 @@ class QueryService:
     async def threats(self, *, since: datetime, limit: int = 100) -> list[dict[str, Any]]:
         """Detections grouped by source: the "who is attacking us" view."""
         async with self.database.session() as session:
-            page = await DetectionRepository(session).page(DetectionFilter(since=since), limit=500, order="risk")
+            page = await DetectionRepository(session).page(
+                DetectionFilter(since=since), limit=500, order="risk"
+            )
             active_blocks = {b.network for b in await BlockRepository(session).active()}
         grouped: dict[str, dict[str, Any]] = {}
         for record in page.items:
-            entry = grouped.setdefault(record.source_ip, {
-                "source_ip": record.source_ip, "detections": 0, "max_risk": 0.0, "severities": {}, "categories": set(),
-                "detectors": set(), "destinations": set(), "first_seen": record.timestamp, "last_seen": record.timestamp,
-                "top_detection": detection_record_to_dict(record), "incident_ids": set(), "statuses": {},
-            })
+            entry = grouped.setdefault(
+                record.source_ip,
+                {
+                    "source_ip": record.source_ip,
+                    "detections": 0,
+                    "max_risk": 0.0,
+                    "severities": {},
+                    "categories": set(),
+                    "detectors": set(),
+                    "destinations": set(),
+                    "first_seen": record.timestamp,
+                    "last_seen": record.timestamp,
+                    "top_detection": detection_record_to_dict(record),
+                    "incident_ids": set(),
+                    "statuses": {},
+                },
+            )
             entry["detections"] += 1
             entry["max_risk"] = max(entry["max_risk"], record.risk_score)
             entry["severities"][record.severity] = entry["severities"].get(record.severity, 0) + 1
@@ -229,17 +259,20 @@ class QueryService:
             entry["last_seen"] = max(entry["last_seen"], record.timestamp)
         output = []
         for entry in grouped.values():
-            output.append({
-                **entry,
-                "categories": sorted(entry["categories"]),
-                "detectors": sorted(entry["detectors"]),
-                "destinations": sorted(entry["destinations"])[:20],
-                "incident_ids": sorted(entry["incident_ids"]),
-                "first_seen": _iso(entry["first_seen"]),
-                "last_seen": _iso(entry["last_seen"]),
-                "blocked": f"{entry['source_ip']}/32" in active_blocks or f"{entry['source_ip']}/128" in active_blocks,
-                "history": self.pipeline.risk.source_summary(entry["source_ip"]),
-            })
+            output.append(
+                {
+                    **entry,
+                    "categories": sorted(entry["categories"]),
+                    "detectors": sorted(entry["detectors"]),
+                    "destinations": sorted(entry["destinations"])[:20],
+                    "incident_ids": sorted(entry["incident_ids"]),
+                    "first_seen": _iso(entry["first_seen"]),
+                    "last_seen": _iso(entry["last_seen"]),
+                    "blocked": f"{entry['source_ip']}/32" in active_blocks
+                    or f"{entry['source_ip']}/128" in active_blocks,
+                    "history": self.pipeline.risk.source_summary(entry["source_ip"]),
+                }
+            )
         output.sort(key=lambda item: item["max_risk"], reverse=True)
         return output[:limit]
 
@@ -270,15 +303,23 @@ class QueryService:
     async def network(self) -> dict[str, Any]:
         extractor = self.pipeline.extractor
         async with self.database.session() as session:
-            summaries = await TelemetryRepository(session).summaries(datetime.now(UTC) - timedelta(hours=24))
+            summaries = await TelemetryRepository(session).summaries(
+                datetime.now(UTC) - timedelta(hours=24)
+            )
         return {
             "state": extractor.state(),
             "top_sources": extractor.top_sources(15),
             "top_destinations": extractor.top_destinations(15),
             "protocols": extractor.stats.protocol_distribution(),
             "traffic": [
-                {"bucket_start": _iso(s.bucket_start), "packets": s.packets, "bytes": s.bytes_total,
-                 "packets_per_second": s.packets_per_second, "detections": s.detections, "protocols": s.protocols}
+                {
+                    "bucket_start": _iso(s.bucket_start),
+                    "packets": s.packets,
+                    "bytes": s.bytes_total,
+                    "packets_per_second": s.packets_per_second,
+                    "detections": s.detections,
+                    "protocols": s.protocols,
+                }
                 for s in summaries
             ],
         }
@@ -302,8 +343,13 @@ class QueryService:
             "detector_performance": detection["per_detector"],
             "engine": {k: v for k, v in detection.items() if k != "per_detector"},
             "system": [
-                {"timestamp": _iso(m.timestamp), "cpu_percent": m.cpu_percent, "memory_bytes": m.memory_bytes,
-                 "packets_processed": m.packets_processed, "packets_dropped": m.packets_dropped}
+                {
+                    "timestamp": _iso(m.timestamp),
+                    "cpu_percent": m.cpu_percent,
+                    "memory_bytes": m.memory_bytes,
+                    "packets_processed": m.packets_processed,
+                    "packets_dropped": m.packets_dropped,
+                }
                 for m in metrics[-500:]
             ],
         }
@@ -313,8 +359,12 @@ class QueryService:
         since = datetime.now(UTC) - timedelta(hours=24)
         async with self.database.session() as session:
             summary = await AnalyticsRepository(session).summary(since)
-            open_incidents = await IncidentRepository(session).page(statuses=["open", "investigating"], limit=5)
-            critical = await IncidentRepository(session).page(statuses=["open", "investigating"], severities=["critical"], limit=1)
+            open_incidents = await IncidentRepository(session).page(
+                statuses=["open", "investigating"], limit=5
+            )
+            critical = await IncidentRepository(session).page(
+                statuses=["open", "investigating"], severities=["critical"], limit=1
+            )
             recent = await DetectionRepository(session).page(DetectionFilter(), limit=8)
         report = pipeline.last_report
         stats = pipeline.extractor.stats
@@ -322,7 +372,9 @@ class QueryService:
         return {
             "packets_processed": stats.packets,
             "bytes_processed": stats.bytes_total,
-            "packets_per_second": round(report.packets_per_second, 1) if report and report.finished_at is None else None,
+            "packets_per_second": round(report.packets_per_second, 1)
+            if report and report.finished_at is None
+            else None,
             "active_flows": len(pipeline.extractor.flows),
             "tracked_sources": len(pipeline.extractor.profiles),
             "detections_24h": summary["detections"],

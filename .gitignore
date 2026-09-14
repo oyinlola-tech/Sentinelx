@@ -1,97 +1,39 @@
-# Byte-compiled / optimized / DLL files
+# Python
+.venv/
 __pycache__/
 *.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
-
-# Type checking / linting caches
+build/
+dist/
+.pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.pyre/
-.pytype/
-
-# Testing / coverage
-.pytest_cache/
 .coverage
-.coverage.*
 htmlcov/
-.tox/
-.nox/
-coverage.xml
-*.cover
-.hypothesis/
 
-# Environments / secrets
+# Secrets and local state
 .env
 .env.*
 !.env.example
-.env.local
-.env.production
-*.pem
-*.key
-*.p12
-*.pfx
-*.jks
-
-# Databases
 *.db
-*.sqlite
-*.sqlite3
-*.db3
-*.sql
+*.db-shm
+*.db-wal
 
-# Alembic migration runtime artifacts (versions are tracked)
-alembic/version/_version.txt
+# Captures and models are data, not source (fixtures are regenerated with `make fixtures`)
+pcaps/*
+!pcaps/.gitkeep
+models/
 
-# IDE / Editor
-.vscode/
+# Benchmark output is machine-specific; the reference run is quoted in docs/benchmarking.md
+benchmarks/results/
+
+# Dashboard
+apps/dashboard/node_modules/
+apps/dashboard/.next/
+apps/dashboard/next-env.d.ts
+apps/dashboard/*.tsbuildinfo
+
+# Editors / OS
 .idea/
-*.swp
-*.swo
-*~
+.vscode/
 .DS_Store
-Thumbs.db
-*.log
-
-# PCAP captures (large binary files)
-pcaps/*.pcap
-pcaps/*.pcapng
-pcaps/*.cap
-
-# Operational / runtime data
-data/
-logs/
-*.pid
-*.lock
-
-# OS
-.DS_Store
-Thumbs.db

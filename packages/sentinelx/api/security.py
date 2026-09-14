@@ -85,15 +85,27 @@ def set_auth_cookies(response: Response, pair: TokenPair, *, secure: bool) -> st
     csrf = secrets.token_urlsafe(32)
     now = datetime.now(pair.access_expires_at.tzinfo)
     response.set_cookie(
-        ACCESS_COOKIE, pair.access_token, httponly=True, secure=secure, samesite="strict", path="/api",
+        ACCESS_COOKIE,
+        pair.access_token,
+        httponly=True,
+        secure=secure,
+        samesite="strict",
+        path="/api",
         max_age=int((pair.access_expires_at - now).total_seconds()),
     )
     response.set_cookie(
-        REFRESH_COOKIE, pair.refresh_token, httponly=True, secure=secure, samesite="strict", path="/api/v1/auth",
+        REFRESH_COOKIE,
+        pair.refresh_token,
+        httponly=True,
+        secure=secure,
+        samesite="strict",
+        path="/api/v1/auth",
         max_age=int((pair.refresh_expires_at - now).total_seconds()),
     )
     # Deliberately readable by JavaScript: that is how double-submit works.
-    response.set_cookie(CSRF_COOKIE, csrf, httponly=False, secure=secure, samesite="strict", path="/")
+    response.set_cookie(
+        CSRF_COOKIE, csrf, httponly=False, secure=secure, samesite="strict", path="/"
+    )
     return csrf
 
 
@@ -103,7 +115,9 @@ def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(CSRF_COOKIE, path="/")
 
 
-async def current_principal(request: Request, platform: Annotated[Platform, Depends(get_platform)]) -> Principal:
+async def current_principal(
+    request: Request, platform: Annotated[Platform, Depends(get_platform)]
+) -> Principal:
     if not platform.settings.api.auth_enabled:
         # Development only; Settings refuses auth_enabled=False in production.
         return Principal(user_id=0, username="anonymous", role=UserRole.ADMIN)
@@ -117,7 +131,11 @@ async def current_principal(request: Request, platform: Annotated[Platform, Depe
         token = request.cookies[ACCESS_COOKIE]
         via_cookie = True
     if not token:
-        raise HTTPException(status_code=401, detail="authentication required", headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(
+            status_code=401,
+            detail="authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     if via_cookie and request.method not in _SAFE_METHODS:
         expected = request.cookies.get(CSRF_COOKIE, "")
@@ -128,7 +146,9 @@ async def current_principal(request: Request, platform: Annotated[Platform, Depe
     try:
         principal = await platform.auth.authenticate(token)
     except AuthError as exc:
-        raise HTTPException(status_code=401, detail=str(exc), headers={"WWW-Authenticate": "Bearer"}) from exc
+        raise HTTPException(
+            status_code=401, detail=str(exc), headers={"WWW-Authenticate": "Bearer"}
+        ) from exc
 
     # An account with a generated or reset password may only change it.
     allowed_paths = ("/api/v1/auth/change-password", "/api/v1/auth/me", "/api/v1/auth/logout")
@@ -157,7 +177,9 @@ PlatformDep = Annotated[Platform, Depends(get_platform)]
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Conservative headers for an API that serves no HTML of its own (except docs)."""
 
-    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         started = time.perf_counter()
         response = await call_next(request)
         path = request.url.path
@@ -176,25 +198,35 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         route = request.scope.get("route")
         template = getattr(route, "path", "unmatched")
-        metrics.api_requests.labels(method=request.method, path=template, status=str(response.status_code)).inc()
-        metrics.api_latency.labels(method=request.method, path=template).observe(time.perf_counter() - started)
+        metrics.api_requests.labels(
+            method=request.method, path=template, status=str(response.status_code)
+        ).inc()
+        metrics.api_latency.labels(method=request.method, path=template).observe(
+            time.perf_counter() - started
+        )
         return response
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Per-client sliding-window limit on API requests, shared across workers via Redis."""
 
-    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         if not request.url.path.startswith("/api/") or request.url.path.endswith("/system/health"):
             return await call_next(request)
         platform: Platform = request.app.state.platform
         settings = platform.settings.api
         allowed, remaining, retry_after = await platform.state.hit(
-            "api", client_ip(request), limit=settings.rate_limit_requests, window_seconds=settings.rate_limit_window_seconds
+            "api",
+            client_ip(request),
+            limit=settings.rate_limit_requests,
+            window_seconds=settings.rate_limit_window_seconds,
         )
         if not allowed:
             return JSONResponse(
-                {"detail": "rate limit exceeded"}, status_code=429,
+                {"detail": "rate limit exceeded"},
+                status_code=429,
                 headers={"Retry-After": str(max(1, int(retry_after)))},
             )
         response = await call_next(request)

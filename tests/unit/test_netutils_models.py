@@ -13,9 +13,20 @@ from sentinelx.common.netutils import (
 )
 
 
-@pytest.mark.parametrize(("score", "band"), [(0, RiskBand.INFORMATIONAL), (20, RiskBand.INFORMATIONAL), (21, RiskBand.LOW),
-                                              (40, RiskBand.LOW), (41, RiskBand.MEDIUM), (61, RiskBand.HIGH), (80, RiskBand.HIGH),
-                                              (81, RiskBand.CRITICAL), (100, RiskBand.CRITICAL)])
+@pytest.mark.parametrize(
+    ("score", "band"),
+    [
+        (0, RiskBand.INFORMATIONAL),
+        (20, RiskBand.INFORMATIONAL),
+        (21, RiskBand.LOW),
+        (40, RiskBand.LOW),
+        (41, RiskBand.MEDIUM),
+        (61, RiskBand.HIGH),
+        (80, RiskBand.HIGH),
+        (81, RiskBand.CRITICAL),
+        (100, RiskBand.CRITICAL),
+    ],
+)
 def test_risk_band_boundaries_match_documented_scale(score: float, band: RiskBand) -> None:
     assert RiskBand.from_score(score) is band
 
@@ -39,19 +50,33 @@ def test_flow_key_canonical_is_direction_independent() -> None:
 
 def test_detection_rejects_out_of_range_confidence() -> None:
     with pytest.raises(ValueError, match="confidence"):
-        Detection(detector="d", category="other", severity=Severity.LOW, confidence=1.2,  # type: ignore[arg-type]
-                  title="t", description="d", source_ip="1.1.1.1")
+        Detection(
+            detector="d",
+            category="other",
+            severity=Severity.LOW,
+            confidence=1.2,  # type: ignore[arg-type]
+            title="t",
+            description="d",
+            source_ip="1.1.1.1",
+        )
 
 
 def test_detection_explain_includes_every_evidence_line() -> None:
     detection = Detection(
-        detector="tcp_port_scan", category="reconnaissance", severity=Severity.HIGH, confidence=0.9,  # type: ignore[arg-type]
-        title="TCP port scan", description="d", source_ip="203.0.113.5",
+        detector="tcp_port_scan",
+        category="reconnaissance",
+        severity=Severity.HIGH,
+        confidence=0.9,  # type: ignore[arg-type]
+        title="TCP port scan",
+        description="d",
+        source_ip="203.0.113.5",
         evidence=[Evidence("a", 94, "94 destination ports"), Evidence("b", 12, "12 second window")],
         recommended_action=ActionType.TEMPORARY_BLOCK,
     )
     text = detection.explain()
-    assert "94 destination ports" in text and "12 second window" in text and "temporary_block" in text
+    assert (
+        "94 destination ports" in text and "12 second window" in text and "temporary_block" in text
+    )
 
 
 def test_risk_assessment_rejects_out_of_range_score() -> None:
@@ -83,7 +108,17 @@ def test_in_any_network_never_mixes_families() -> None:
     assert in_any_network(parse_ip("10.0.0.1"), [parse_network("10.0.0.0/8")])
 
 
-@pytest.mark.parametrize(("address", "special"), [("127.0.0.1", True), ("::1", True), ("169.254.3.3", True),
-                                                   ("224.0.0.5", True), ("0.0.0.0", True), ("8.8.8.8", False), ("10.1.1.1", False)])
+@pytest.mark.parametrize(
+    ("address", "special"),
+    [
+        ("127.0.0.1", True),
+        ("::1", True),
+        ("169.254.3.3", True),
+        ("224.0.0.5", True),
+        ("0.0.0.0", True),
+        ("8.8.8.8", False),
+        ("10.1.1.1", False),
+    ],
+)
 def test_is_special(address: str, special: bool) -> None:
     assert is_special(parse_ip(address)) is special

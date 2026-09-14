@@ -33,7 +33,9 @@ def load_settings(*, quiet: bool = True) -> Settings:
             err.print(f"  {location}: {error['msg']}")
         raise typer.Exit(2) from None
     if quiet and settings.telemetry.log_level in ("INFO", "DEBUG"):
-        settings.telemetry.log_level = "WARNING"  # keep CLI output clean; logs go to stderr regardless
+        settings.telemetry.log_level = (
+            "WARNING"  # keep CLI output clean; logs go to stderr regardless
+        )
     configure_logging(settings.telemetry, sensor_name=settings.sensor_name)
     return settings
 

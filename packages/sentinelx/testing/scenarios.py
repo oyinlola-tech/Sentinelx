@@ -84,9 +84,16 @@ def _ipv4(src: str, dst: str, protocol: int, payload: bytes, ttl: int = 64) -> b
     total_length = 20 + len(payload)
     header = struct.pack(
         "!BBHHHBBH4s4s",
-        0x45, 0, total_length, random.randint(0, 0xFFFF), 0x4000,
-        ttl, protocol, 0,
-        socket.inet_aton(src), socket.inet_aton(dst),
+        0x45,
+        0,
+        total_length,
+        random.randint(0, 0xFFFF),
+        0x4000,
+        ttl,
+        protocol,
+        0,
+        socket.inet_aton(src),
+        socket.inet_aton(dst),
     )
     checksum = _checksum(header)
     header = header[:10] + struct.pack("!H", checksum) + header[12:]
@@ -111,13 +118,26 @@ def build_tcp(
         flags: any combination of ``FSRPAUEC`` (fin, syn, rst, psh, ack, urg, ece, cwr).
     """
     flag_bits = TcpFlags(
-        fin="F" in flags, syn="S" in flags, rst="R" in flags, psh="P" in flags,
-        ack="A" in flags, urg="U" in flags, ece="E" in flags, cwr="C" in flags,
+        fin="F" in flags,
+        syn="S" in flags,
+        rst="R" in flags,
+        psh="P" in flags,
+        ack="A" in flags,
+        urg="U" in flags,
+        ece="E" in flags,
+        cwr="C" in flags,
     ).to_int()
     header = struct.pack(
         "!HHIIBBHHH",
-        src_port, dst_port, seq or random.randint(0, 2**32 - 1), ack,
-        5 << 4, flag_bits, 64240, 0, 0,
+        src_port,
+        dst_port,
+        seq or random.randint(0, 2**32 - 1),
+        ack,
+        5 << 4,
+        flag_bits,
+        64240,
+        0,
+        0,
     )
     return _ethernet(_ipv4(src, dst, 6, header + payload, ttl))
 
@@ -129,8 +149,14 @@ def build_udp(src: str, dst: str, src_port: int, dst_port: int, payload: bytes =
 
 
 def build_icmp(
-    src: str, dst: str, *, icmp_type: int = 8, code: int = 0,
-    identifier: int = 1, sequence: int = 1, payload: bytes = b"",
+    src: str,
+    dst: str,
+    *,
+    icmp_type: int = 8,
+    code: int = 0,
+    identifier: int = 1,
+    sequence: int = 1,
+    payload: bytes = b"",
 ) -> bytes:
     """Build an Ethernet/IPv4/ICMP frame. Type 8 is an echo request."""
     body = struct.pack("!BBHHH", icmp_type, code, 0, identifier, sequence) + payload
@@ -145,7 +171,12 @@ def _encode_dns_name(name: str) -> bytes:
 
 
 def build_dns_query(
-    src: str, dst: str, query_name: str, *, src_port: int = 40000, qtype: int = 1,
+    src: str,
+    dst: str,
+    query_name: str,
+    *,
+    src_port: int = 40000,
+    qtype: int = 1,
 ) -> bytes:
     """Build a DNS query frame."""
     header = struct.pack("!HHHHHH", random.randint(0, 0xFFFF), 0x0100, 1, 0, 0, 0)
@@ -154,7 +185,12 @@ def build_dns_query(
 
 
 def build_dns_response(
-    src: str, dst: str, query_name: str, *, dst_port: int = 40000, rcode: int = 0,
+    src: str,
+    dst: str,
+    query_name: str,
+    *,
+    dst_port: int = 40000,
+    rcode: int = 0,
 ) -> bytes:
     """Build a DNS response frame. ``rcode=3`` is NXDOMAIN."""
     flags = 0x8180 | (rcode & 0x0F)
@@ -164,7 +200,13 @@ def build_dns_response(
 
 
 def build_http_request(
-    src: str, dst: str, src_port: int, *, method: str = "GET", path: str = "/", host: str = "example.test",
+    src: str,
+    dst: str,
+    src_port: int,
+    *,
+    method: str = "GET",
+    path: str = "/",
+    host: str = "example.test",
 ) -> bytes:
     """Build an HTTP request frame carried over TCP."""
     body = (
@@ -206,7 +248,9 @@ def normal_traffic(seed: int = 7, packet_count: int = 600) -> Scenario:
 
         choice = rng.random()
         if choice < 0.25:
-            name = rng.choice(["www.example.com", "cdn.example.net", "api.service.test", "mail.corp.test"])
+            name = rng.choice(
+                ["www.example.com", "cdn.example.net", "api.service.test", "mail.corp.test"]
+            )
             packets.append((build_dns_query(client, resolver, name, src_port=port), now))
             packets.append((build_dns_response(resolver, client, name, dst_port=port), now + 0.01))
         elif choice < 0.9:
@@ -218,10 +262,41 @@ def normal_traffic(seed: int = 7, packet_count: int = 600) -> Scenario:
             packets.append((build_tcp(server, client, dst_port, port, flags="SA"), now + 0.012))
             packets.append((build_tcp(client, server, port, dst_port, flags="A"), now + 0.013))
             if dst_port == 80:
-                packets.append((build_http_request(client, server, port, path=rng.choice(["/", "/about", "/api/v1/items"])), now + 0.02))
+                packets.append(
+                    (
+                        build_http_request(
+                            client, server, port, path=rng.choice(["/", "/about", "/api/v1/items"])
+                        ),
+                        now + 0.02,
+                    )
+                )
             else:
-                packets.append((build_tcp(client, server, port, dst_port, flags="PA", payload=b"\x16\x03\x01" + bytes(48)), now + 0.02))
-            packets.append((build_tcp(server, client, dst_port, port, flags="PA", payload=bytes(rng.randint(200, 1400))), now + 0.05))
+                packets.append(
+                    (
+                        build_tcp(
+                            client,
+                            server,
+                            port,
+                            dst_port,
+                            flags="PA",
+                            payload=b"\x16\x03\x01" + bytes(48),
+                        ),
+                        now + 0.02,
+                    )
+                )
+            packets.append(
+                (
+                    build_tcp(
+                        server,
+                        client,
+                        dst_port,
+                        port,
+                        flags="PA",
+                        payload=bytes(rng.randint(200, 1400)),
+                    ),
+                    now + 0.05,
+                )
+            )
             packets.append((build_tcp(client, server, port, dst_port, flags="FA"), now + 0.3))
             packets.append((build_tcp(server, client, dst_port, port, flags="FA"), now + 0.31))
         else:
@@ -261,9 +336,13 @@ def tcp_port_scan(
         packets.append((build_tcp(attacker, target, 44000 + (index % 2000), port, flags="S"), now))
         # Most ports are closed and answer with RST; a couple are open.
         if index % 80 == 0:
-            packets.append((build_tcp(target, attacker, port, 44000 + (index % 2000), flags="SA"), now + 0.004))
+            packets.append(
+                (build_tcp(target, attacker, port, 44000 + (index % 2000), flags="SA"), now + 0.004)
+            )
         else:
-            packets.append((build_tcp(target, attacker, port, 44000 + (index % 2000), flags="RA"), now + 0.003))
+            packets.append(
+                (build_tcp(target, attacker, port, 44000 + (index % 2000), flags="RA"), now + 0.003)
+            )
 
     return Scenario(
         name="tcp_port_scan",
@@ -339,8 +418,22 @@ def ssh_brute_force(
         packets.append((build_tcp(attacker, target, src, port, flags="S"), now))
         packets.append((build_tcp(target, attacker, port, src, flags="SA"), now + 0.01))
         packets.append((build_tcp(attacker, target, src, port, flags="A"), now + 0.011))
-        packets.append((build_tcp(target, attacker, port, src, flags="PA", payload=b"SSH-2.0-OpenSSH_9.6\r\n"), now + 0.02))
-        packets.append((build_tcp(attacker, target, src, port, flags="PA", payload=b"SSH-2.0-libssh_0.10\r\n"), now + 0.03))
+        packets.append(
+            (
+                build_tcp(
+                    target, attacker, port, src, flags="PA", payload=b"SSH-2.0-OpenSSH_9.6\r\n"
+                ),
+                now + 0.02,
+            )
+        )
+        packets.append(
+            (
+                build_tcp(
+                    attacker, target, src, port, flags="PA", payload=b"SSH-2.0-libssh_0.10\r\n"
+                ),
+                now + 0.03,
+            )
+        )
         # Server tears the session down: a failed authentication.
         packets.append((build_tcp(target, attacker, port, src, flags="R"), now + 0.15))
     return Scenario(
@@ -376,7 +469,10 @@ def syn_flood(
 
 
 def icmp_flood(
-    attacker: str = "198.51.100.66", target: str = "192.168.10.90", count: int = 1200, seed: int = 29
+    attacker: str = "198.51.100.66",
+    target: str = "192.168.10.90",
+    count: int = 1200,
+    seed: int = 29,
 ) -> Scenario:
     """A high-rate ICMP echo flood."""
     rng = random.Random(seed)
@@ -384,7 +480,9 @@ def icmp_flood(
     now = BASE_TIME
     for index in range(count):
         now += rng.uniform(0.001, 0.004)
-        packets.append((build_icmp(attacker, target, sequence=index % 65535, payload=b"\x00" * 56), now))
+        packets.append(
+            (build_icmp(attacker, target, sequence=index % 65535, payload=b"\x00" * 56), now)
+        )
     return Scenario(
         name="icmp_flood",
         description=f"{count} ICMP echo requests at high rate.",
@@ -396,7 +494,10 @@ def icmp_flood(
 
 
 def http_flood(
-    attacker: str = "198.51.100.77", target: str = "192.168.10.100", count: int = 900, seed: int = 31
+    attacker: str = "198.51.100.77",
+    target: str = "192.168.10.100",
+    count: int = 900,
+    seed: int = 31,
 ) -> Scenario:
     """A layer-7 request flood against one web server."""
     rng = random.Random(seed)
@@ -405,7 +506,12 @@ def http_flood(
     for index in range(count):
         now += rng.uniform(0.001, 0.008)
         packets.append(
-            (build_http_request(attacker, target, 40000 + (index % 20000), path=f"/search?q={index}"), now)
+            (
+                build_http_request(
+                    attacker, target, 40000 + (index % 20000), path=f"/search?q={index}"
+                ),
+                now,
+            )
         )
     return Scenario(
         name="http_flood",
@@ -429,7 +535,12 @@ def dns_tunneling(
         now += rng.uniform(0.01, 0.05)
         label = "".join(rng.choice(alphabet) for _ in range(rng.randint(48, 60)))
         name = f"{label}.tunnel.example.test"
-        packets.append((build_dns_query(client, resolver, name, src_port=40000 + (index % 2000), qtype=16), now))
+        packets.append(
+            (
+                build_dns_query(client, resolver, name, src_port=40000 + (index % 2000), qtype=16),
+                now,
+            )
+        )
     return Scenario(
         name="dns_tunneling",
         description=f"{count} DNS TXT queries with long, high-entropy labels.",
@@ -453,7 +564,9 @@ def dns_flood(
         name = "".join(rng.choice(alphabet) for _ in range(rng.randint(10, 16))) + ".test"
         port = 40000 + (index % 2000)
         packets.append((build_dns_query(client, resolver, name, src_port=port), now))
-        packets.append((build_dns_response(resolver, client, name, dst_port=port, rcode=3), now + 0.005))
+        packets.append(
+            (build_dns_response(resolver, client, name, dst_port=port, rcode=3), now + 0.005)
+        )
     return Scenario(
         name="dns_flood",
         description=f"{count} DNS queries for algorithmically generated names, mostly NXDOMAIN.",
@@ -482,7 +595,9 @@ def mixed_intrusion(seed: int = 43) -> Scenario:
     brute = ssh_brute_force(attacker=attacker, target=target, attempts=40, seed=seed + 1)
     shift = offset - brute.frames[0].timestamp
     frames.extend(
-        RawFrame(data=f.data, timestamp=f.timestamp + shift, link_type=f.link_type, interface=f.interface)
+        RawFrame(
+            data=f.data, timestamp=f.timestamp + shift, link_type=f.link_type, interface=f.interface
+        )
         for f in brute.frames
     )
 
@@ -490,7 +605,9 @@ def mixed_intrusion(seed: int = 43) -> Scenario:
     flood = icmp_flood(attacker=attacker, target=target, count=600, seed=seed + 2)
     shift = offset - flood.frames[0].timestamp
     frames.extend(
-        RawFrame(data=f.data, timestamp=f.timestamp + shift, link_type=f.link_type, interface=f.interface)
+        RawFrame(
+            data=f.data, timestamp=f.timestamp + shift, link_type=f.link_type, interface=f.interface
+        )
         for f in flood.frames
     )
 
@@ -521,17 +638,33 @@ def dns_rate_spike(
     rng = random.Random(seed)
     clients = [f"192.168.30.{n}" for n in range(10, 30)]
     resolver = "192.168.30.1"
-    names = ["www.example.com", "api.example.com", "cdn.example.net", "mail.example.org", "time.example.com"]
+    names = [
+        "www.example.com",
+        "api.example.com",
+        "cdn.example.net",
+        "mail.example.org",
+        "time.example.com",
+    ]
     noisy = "192.168.30.99"
     packets: list[tuple[bytes, float]] = []
     for second in range(baseline_seconds + spike_seconds):
         spiking = second >= baseline_seconds
         rate = rng.randint(int(normal_qps * 0.8), int(normal_qps * 1.2))
         for _ in range(rate):
-            packets.append((build_dns_query(rng.choice(clients), resolver, rng.choice(names)), BASE_TIME + second + rng.random()))
+            packets.append(
+                (
+                    build_dns_query(rng.choice(clients), resolver, rng.choice(names)),
+                    BASE_TIME + second + rng.random(),
+                )
+            )
         if spiking:
             for index in range(spike_qps):
-                packets.append((build_dns_query(noisy, resolver, names[index % len(names)]), BASE_TIME + second + rng.random()))
+                packets.append(
+                    (
+                        build_dns_query(noisy, resolver, names[index % len(names)]),
+                        BASE_TIME + second + rng.random(),
+                    )
+                )
     packets.sort(key=lambda pair: pair[1])
     return Scenario(
         name="dns_rate_spike",
@@ -544,7 +677,11 @@ def dns_rate_spike(
 
 
 def slow_port_scan(
-    attacker: str = "203.0.113.61", target: str = "192.168.10.51", ports: int = 60, interval: float = 1.2, seed: int = 53
+    attacker: str = "203.0.113.61",
+    target: str = "192.168.10.51",
+    ports: int = 60,
+    interval: float = 1.2,
+    seed: int = 53,
 ) -> Scenario:
     """A deliberately slow vertical scan: one probe every ``interval`` seconds.
 
@@ -571,7 +708,11 @@ def slow_port_scan(
 
 
 def low_rate_brute_force(
-    attacker: str = "198.51.100.44", target: str = "192.168.10.10", attempts: int = 30, interval: float = 8.0, seed: int = 59
+    attacker: str = "198.51.100.44",
+    target: str = "192.168.10.10",
+    attempts: int = 30,
+    interval: float = 8.0,
+    seed: int = 59,
 ) -> Scenario:
     """Credential guessing throttled to one attempt every ``interval`` seconds.
 
@@ -585,7 +726,15 @@ def low_rate_brute_force(
         attempt = index // per_attempt
         session_start = base.frames[attempt * per_attempt].timestamp
         offset = frame.timestamp - session_start
-        frames.append(RawFrame(frame.data, BASE_TIME + attempt * interval + offset, frame.link_type, frame.interface, frame.wire_length))
+        frames.append(
+            RawFrame(
+                frame.data,
+                BASE_TIME + attempt * interval + offset,
+                frame.link_type,
+                frame.interface,
+                frame.wire_length,
+            )
+        )
     return Scenario(
         name="low_rate_brute_force",
         description=f"{attempts} SSH attempts, one every {interval:g}s (evasion case, expected to be missed).",

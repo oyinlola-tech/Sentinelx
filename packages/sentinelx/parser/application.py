@@ -40,16 +40,38 @@ _HTTP_METHODS: Final = frozenset(
 #: Headers worth keeping for detection. An allow-list, not a deny-list, so new
 #: header types never start leaking into storage by accident.
 _HTTP_HEADERS_OF_INTEREST: Final = frozenset(
-    {"host", "user-agent", "referer", "content-length", "content-type", "authorization",
-     "x-forwarded-for", "cookie", "connection", "accept"}
+    {
+        "host",
+        "user-agent",
+        "referer",
+        "content-length",
+        "content-type",
+        "authorization",
+        "x-forwarded-for",
+        "cookie",
+        "connection",
+        "accept",
+    }
 )
 #: Headers recorded as present/absent only - never with their value.
 _HTTP_SENSITIVE_HEADERS: Final = frozenset({"authorization", "cookie"})
 
 DNS_RECORD_TYPES: Final[dict[int, str]] = {
-    1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX", 16: "TXT",
-    28: "AAAA", 33: "SRV", 35: "NAPTR", 41: "OPT", 43: "DS", 48: "DNSKEY",
-    252: "AXFR", 255: "ANY",
+    1: "A",
+    2: "NS",
+    5: "CNAME",
+    6: "SOA",
+    12: "PTR",
+    15: "MX",
+    16: "TXT",
+    28: "AAAA",
+    33: "SRV",
+    35: "NAPTR",
+    41: "OPT",
+    43: "DS",
+    48: "DNSKEY",
+    252: "AXFR",
+    255: "ANY",
 }
 
 
@@ -319,7 +341,11 @@ _EXT_ALPN: Final = 0x0010
 _EXT_SUPPORTED_VERSIONS: Final = 0x002B
 
 _TLS_VERSIONS: Final[dict[int, str]] = {
-    0x0300: "SSLv3", 0x0301: "TLS1.0", 0x0302: "TLS1.1", 0x0303: "TLS1.2", 0x0304: "TLS1.3",
+    0x0300: "SSLv3",
+    0x0301: "TLS1.0",
+    0x0302: "TLS1.1",
+    0x0303: "TLS1.2",
+    0x0304: "TLS1.3",
 }
 
 

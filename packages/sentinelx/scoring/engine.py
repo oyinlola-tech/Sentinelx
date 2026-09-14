@@ -138,7 +138,9 @@ class RiskEngine:
             points = s.intel_weight * context.intel_score
             contributions["threat_intel"] = points
             sources = f" ({', '.join(context.intel_sources)})" if context.intel_sources else ""
-            rationale.append(f"+{points:.1f} threat intelligence reputation {context.intel_score:.0%}{sources}")
+            rationale.append(
+                f"+{points:.1f} threat intelligence reputation {context.intel_score:.0%}{sources}"
+            )
 
         port = detection.destination_port
         if (port is not None and port in SENSITIVE_PORTS) or (

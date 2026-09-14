@@ -76,9 +76,7 @@ IPPROTO_DSTOPTS: Final = 60
 
 #: IPv6 extension headers that share the ``next header`` / ``length`` shape and can
 #: therefore be skipped generically to reach the transport header.
-_IPV6_EXT_HEADERS: Final = frozenset(
-    {IPPROTO_HOPOPTS, IPPROTO_ROUTING, IPPROTO_DSTOPTS, 51, 135}
-)
+_IPV6_EXT_HEADERS: Final = frozenset({IPPROTO_HOPOPTS, IPPROTO_ROUTING, IPPROTO_DSTOPTS, 51, 135})
 
 _ETH_HEADER = struct.Struct("!6s6sH")
 _IPV4_HEADER = struct.Struct("!BBHHHBBH4s4s")
@@ -292,8 +290,16 @@ def decode_ipv4(data: bytes) -> IpInfo | None:
     if len(data) < 20:
         return None
     (
-        version_ihl, dscp_ecn, total_length, identification, flags_fragment,
-        ttl, protocol_number, _checksum, src_raw, dst_raw,
+        version_ihl,
+        dscp_ecn,
+        total_length,
+        identification,
+        flags_fragment,
+        ttl,
+        protocol_number,
+        _checksum,
+        src_raw,
+        dst_raw,
     ) = _IPV4_HEADER.unpack_from(data)
 
     if version_ihl >> 4 != 4:
@@ -367,8 +373,15 @@ def decode_arp(data: bytes) -> ArpInfo | None:
     if len(data) < _ARP_HEADER.size:
         return None
     (
-        hw_type, proto_type, hw_len, proto_len, operation,
-        sender_mac, sender_ip, target_mac, target_ip,
+        hw_type,
+        proto_type,
+        hw_len,
+        proto_len,
+        operation,
+        sender_mac,
+        sender_ip,
+        target_mac,
+        target_ip,
     ) = _ARP_HEADER.unpack_from(data)
     if hw_type != 1 or proto_type != ETHERTYPE_IPV4 or hw_len != 6 or proto_len != 4:
         return None

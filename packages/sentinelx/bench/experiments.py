@@ -51,7 +51,13 @@ from sentinelx.pipeline import Pipeline
 from sentinelx.telemetry.metrics import ProcessSampler
 from sentinelx.testing.scenarios import Scenario, get_scenario
 
-__all__ = ["EXPERIMENTS", "Experiment", "ExperimentResult", "decoder_microbenchmark", "run_experiments"]
+__all__ = [
+    "EXPERIMENTS",
+    "Experiment",
+    "ExperimentResult",
+    "decoder_microbenchmark",
+    "run_experiments",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,12 +74,22 @@ class Experiment:
 EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment("normal traffic", "1. normal traffic", "normal_traffic", {"packet_count": 6000}),
     Experiment("vertical SYN scan", "2. port scanning", "tcp_port_scan"),
-    Experiment("vertical scan in background traffic", "2. port scanning", "tcp_port_scan", background_packets=4000),
+    Experiment(
+        "vertical scan in background traffic",
+        "2. port scanning",
+        "tcp_port_scan",
+        background_packets=4000,
+    ),
     Experiment("horizontal sweep (445)", "2. port scanning", "horizontal_scan", {"port": 445}),
     Experiment("UDP scan", "2. port scanning", "udp_scan"),
     Experiment("SSH brute force", "3. brute force", "ssh_brute_force"),
     Experiment("RDP brute force", "3. brute force", "ssh_brute_force", {"port": 3389}),
-    Experiment("SSH brute force in background traffic", "3. brute force", "ssh_brute_force", background_packets=4000),
+    Experiment(
+        "SSH brute force in background traffic",
+        "3. brute force",
+        "ssh_brute_force",
+        background_packets=4000,
+    ),
     Experiment("SYN flood", "4. flooding", "syn_flood"),
     Experiment("ICMP flood", "4. flooding", "icmp_flood"),
     Experiment("HTTP flood", "4. flooding", "http_flood"),
@@ -82,7 +98,9 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment("DNS rate spike vs learned baseline", "5. DNS anomalies", "dns_rate_spike"),
     # Known limitations: these are expected to be missed with default thresholds.
     Experiment("slow port scan (evasion)", "6. evasion: expected misses", "slow_port_scan"),
-    Experiment("low-rate brute force (evasion)", "6. evasion: expected misses", "low_rate_brute_force"),
+    Experiment(
+        "low-rate brute force (evasion)", "6. evasion: expected misses", "low_rate_brute_force"
+    ),
 )
 
 
@@ -140,8 +158,12 @@ class ExperimentResult:
             "runs": len(runs),
             "benign": self.benign,
             "expected_detectors": sorted(self.expected_detectors),
-            "detection_rate": None if self.benign else round(sum(r.detected for r in runs) / len(runs), 4),
-            "detector_recall": None if self.benign or not recall_total else round(recall_hits / recall_total, 4),
+            "detection_rate": None
+            if self.benign
+            else round(sum(r.detected for r in runs) / len(runs), 4),
+            "detector_recall": None
+            if self.benign or not recall_total
+            else round(recall_hits / recall_total, 4),
             "detections": total_detections,
             "false_positive_detections": fps,
             "false_positive_rate": round(fps / total_detections, 4) if total_detections else 0.0,
@@ -161,7 +183,10 @@ def _interleave(attack: Scenario, background: Scenario) -> list[RawFrame]:
         return list(attack.frames)
     middle = background.frames[len(background.frames) // 2].timestamp
     shift = middle - attack.frames[0].timestamp
-    shifted = [RawFrame(f.data, f.timestamp + shift, f.link_type, f.interface, f.wire_length) for f in attack.frames]
+    shifted = [
+        RawFrame(f.data, f.timestamp + shift, f.link_type, f.interface, f.wire_length)
+        for f in attack.frames
+    ]
     return sorted([*background.frames, *shifted], key=lambda frame: frame.timestamp)
 
 
@@ -172,14 +197,18 @@ def _settings() -> Settings:
     return settings
 
 
-async def _run_once(experiment: Experiment, seed_offset: int, include_rules: bool) -> tuple[RunMeasurement, Scenario]:
+async def _run_once(
+    experiment: Experiment, seed_offset: int, include_rules: bool
+) -> tuple[RunMeasurement, Scenario]:
     params = dict(experiment.params)
     if "seed" not in params:
         params["seed"] = 1000 + seed_offset  # every run sees different, reproducible traffic
     scenario = get_scenario(experiment.scenario, **params)
     frames = list(scenario.frames)
     if experiment.background_packets:
-        background = get_scenario("normal_traffic", seed=2000 + seed_offset, packet_count=experiment.background_packets)
+        background = get_scenario(
+            "normal_traffic", seed=2000 + seed_offset, packet_count=experiment.background_packets
+        )
         frames = _interleave(scenario, background)
 
     settings = _settings()
@@ -190,11 +219,15 @@ async def _run_once(experiment: Experiment, seed_offset: int, include_rules: boo
         from sentinelx.services.rules import max_rule_window
         from sentinelx.signatures import RuleDetector, load_rules
 
-        for rule in load_rules(Path(settings.rules_directory), max_window_seconds=max_rule_window(settings)).rules:
+        for rule in load_rules(
+            Path(settings.rules_directory), max_window_seconds=max_rule_window(settings)
+        ).rules:
             pipeline.detection.add_detector(RuleDetector(rule, settings.detection))
     from sentinelx.anomaly import StatisticalAnomalyDetector
 
-    pipeline.detection.add_detector(StatisticalAnomalyDetector(settings.anomaly, settings.detection))
+    pipeline.detection.add_detector(
+        StatisticalAnomalyDetector(settings.anomaly, settings.detection)
+    )
     await pipeline.start()
 
     decoder = PacketDecoder()
@@ -242,16 +275,29 @@ async def _run_once(experiment: Experiment, seed_offset: int, include_rules: boo
     await pipeline.stop()
 
     measurement = RunMeasurement(
-        frames=len(frames), wall_seconds=wall, detections=detections, true_positive_detections=tp,
-        false_positive_detections=fp, detected=bool(fired), expected_fired=fired, time_to_detect=time_to_detect,
-        packets_to_detect=packets_to_detect, processing_latencies=latencies, cpu_percent=sample["cpu_percent"],
+        frames=len(frames),
+        wall_seconds=wall,
+        detections=detections,
+        true_positive_detections=tp,
+        false_positive_detections=fp,
+        detected=bool(fired),
+        expected_fired=fired,
+        time_to_detect=time_to_detect,
+        packets_to_detect=packets_to_detect,
+        processing_latencies=latencies,
+        cpu_percent=sample["cpu_percent"],
         rss_bytes=sample["memory_bytes"],
     )
     return measurement, scenario
 
 
-async def run_experiments(runs: int = 5, *, include_rules: bool = True, only: list[str] | None = None,
-                          progress: Any = None) -> list[ExperimentResult]:
+async def run_experiments(
+    runs: int = 5,
+    *,
+    include_rules: bool = True,
+    only: list[str] | None = None,
+    progress: Any = None,
+) -> list[ExperimentResult]:
     results = []
     for experiment in EXPERIMENTS:
         if only and experiment.scenario not in only and experiment.name not in only:
@@ -265,7 +311,11 @@ async def run_experiments(runs: int = 5, *, include_rules: bool = True, only: li
                 progress(experiment, index + 1, runs)
         if scenario is None:
             continue
-        results.append(ExperimentResult(experiment, measurements, set(scenario.expected_detectors), scenario.benign))
+        results.append(
+            ExperimentResult(
+                experiment, measurements, set(scenario.expected_detectors), scenario.benign
+            )
+        )
     return results
 
 
@@ -286,7 +336,10 @@ def decoder_microbenchmark(packets: int = 50_000, repeats: int = 3) -> dict[str,
             decoder.decode(frame.data, frame.timestamp)
         return len(frames) / (time.perf_counter() - started)
 
-    result: dict[str, Any] = {"packets": len(frames), "sentinelx_pps": round(max(ours() for _ in range(repeats)), 0)}
+    result: dict[str, Any] = {
+        "packets": len(frames),
+        "sentinelx_pps": round(max(ours() for _ in range(repeats)), 0),
+    }
     try:
         from scapy.layers.l2 import Ether
     except ImportError:  # pragma: no cover
@@ -302,7 +355,9 @@ def decoder_microbenchmark(packets: int = 50_000, repeats: int = 3) -> dict[str,
         return len(subset) / (time.perf_counter() - started)
 
     result["scapy_pps"] = round(max(scapy() for _ in range(repeats)), 0)
-    result["speedup"] = round(result["sentinelx_pps"] / result["scapy_pps"], 1) if result["scapy_pps"] else None
+    result["speedup"] = (
+        round(result["sentinelx_pps"] / result["scapy_pps"], 1) if result["scapy_pps"] else None
+    )
     return result
 
 
@@ -326,5 +381,9 @@ def environment() -> dict[str, Any]:
     }
 
 
-def run_sync(runs: int, include_rules: bool, only: list[str] | None, progress: Any = None) -> list[ExperimentResult]:
-    return asyncio.run(run_experiments(runs, include_rules=include_rules, only=only, progress=progress))
+def run_sync(
+    runs: int, include_rules: bool, only: list[str] | None, progress: Any = None
+) -> list[ExperimentResult]:
+    return asyncio.run(
+        run_experiments(runs, include_rules=include_rules, only=only, progress=progress)
+    )

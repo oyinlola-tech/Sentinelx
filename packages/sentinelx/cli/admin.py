@@ -33,23 +33,43 @@ def register(app: typer.Typer) -> None:
 
         async def main() -> Any:
             async with platform_context(settings, persist=False) as platform:
-                return {"rules": await platform.rules.list_rules(), "problems": platform.rules.load_problems}
+                return {
+                    "rules": await platform.rules.list_rules(),
+                    "problems": platform.rules.load_problems,
+                }
 
         result = run(main)
         if as_json:
             emit_json(result)
             return
-        console.print(table("Rules", ["ID", "Name", "Enabled", "Severity", "Action", "Within", "Origin", "Condition"], [
-            (r["rule_id"], r["name"], "yes" if r["enabled"] else "no", r.get("severity"), r.get("action"),
-             f"{r.get('within_seconds', 0):g}s", r["origin"], r.get("condition"))
-            for r in result["rules"]
-        ]))
+        console.print(
+            table(
+                "Rules",
+                ["ID", "Name", "Enabled", "Severity", "Action", "Within", "Origin", "Condition"],
+                [
+                    (
+                        r["rule_id"],
+                        r["name"],
+                        "yes" if r["enabled"] else "no",
+                        r.get("severity"),
+                        r.get("action"),
+                        f"{r.get('within_seconds', 0):g}s",
+                        r["origin"],
+                        r.get("condition"),
+                    )
+                    for r in result["rules"]
+                ],
+            )
+        )
         for problem in result["problems"]:
             err.print(f"[yellow]invalid rule skipped:[/] {problem}")
 
     @rules.command("validate")
     def rules_validate(
-        paths: Annotated[list[Path] | None, typer.Argument(help="Rule files or directories; default RULES_DIRECTORY.")] = None,
+        paths: Annotated[
+            list[Path] | None,
+            typer.Argument(help="Rule files or directories; default RULES_DIRECTORY."),
+        ] = None,
         as_json: JsonOption = False,
     ) -> None:
         """Validate rule files without loading them. Exit 1 if any are invalid (for CI)."""
@@ -76,9 +96,18 @@ def register(app: typer.Typer) -> None:
 
     @rules.command("test")
     def rules_test(
-        path: Annotated[Path, typer.Argument(exists=True, help="Rule file (all rules in it are tested).")],
-        pcap: Annotated[Path | None, typer.Option("--pcap", exists=True, dir_okay=False, help="Test against a capture instead.")] = None,
-        scenario: Annotated[str | None, typer.Option("--scenario", help="Test against one synthetic scenario.")] = None,
+        path: Annotated[
+            Path, typer.Argument(exists=True, help="Rule file (all rules in it are tested).")
+        ],
+        pcap: Annotated[
+            Path | None,
+            typer.Option(
+                "--pcap", exists=True, dir_okay=False, help="Test against a capture instead."
+            ),
+        ] = None,
+        scenario: Annotated[
+            str | None, typer.Option("--scenario", help="Test against one synthetic scenario.")
+        ] = None,
         as_json: JsonOption = False,
     ) -> None:
         """Run rules' embedded positive/negative tests, or test them against a PCAP. Exit 1 on failure."""
@@ -113,13 +142,40 @@ def register(app: typer.Typer) -> None:
         if as_json:
             emit_json(results)
         elif pcap or scenario:
-            console.print(table("Rule matches", ["Rule", "Target", "Packets", "Matched", "Detections", "Sources"], [
-                (r["rule"], r["target"], r["packets"], "yes" if r["matched"] else "no", r["detection_count"], ", ".join(r["sources"])) for r in results
-            ]))
+            console.print(
+                table(
+                    "Rule matches",
+                    ["Rule", "Target", "Packets", "Matched", "Detections", "Sources"],
+                    [
+                        (
+                            r["rule"],
+                            r["target"],
+                            r["packets"],
+                            "yes" if r["matched"] else "no",
+                            r["detection_count"],
+                            ", ".join(r["sources"]),
+                        )
+                        for r in results
+                    ],
+                )
+            )
         else:
-            console.print(table("Rule tests", ["Rule", "Scenario", "Expected", "Actual", "Result"], [
-                (r["rule_id"], r["scenario"], r["expected"], r["actual"], Text.from_markup("[green]pass[/]" if r["passed"] else "[red]FAIL[/]")) for r in results
-            ]))
+            console.print(
+                table(
+                    "Rule tests",
+                    ["Rule", "Scenario", "Expected", "Actual", "Result"],
+                    [
+                        (
+                            r["rule_id"],
+                            r["scenario"],
+                            r["expected"],
+                            r["actual"],
+                            Text.from_markup("[green]pass[/]" if r["passed"] else "[red]FAIL[/]"),
+                        )
+                        for r in results
+                    ],
+                )
+            )
         if failed:
             raise typer.Exit(1)
 
@@ -138,14 +194,24 @@ def register(app: typer.Typer) -> None:
         """Fields available in rule conditions."""
         from sentinelx.services.rules import RuleService
 
-        console.print(table("Rule fields", ["Field", "Kind", "Meaning"], [(f["name"], f["kind"], f["description"]) for f in RuleService.fields()]))
+        console.print(
+            table(
+                "Rule fields",
+                ["Field", "Kind", "Meaning"],
+                [(f["name"], f["kind"], f["description"]) for f in RuleService.fields()],
+            )
+        )
 
     # ----------------------------------------------------------------- config
     config = typer.Typer(help="Show or change settings.", invoke_without_command=True)
     app.add_typer(config, name="config", rich_help_panel="Configure")
 
     @config.callback()
-    def config_show(ctx: typer.Context, section: Annotated[str | None, typer.Option("--section")] = None, as_json: JsonOption = False) -> None:
+    def config_show(
+        ctx: typer.Context,
+        section: Annotated[str | None, typer.Option("--section")] = None,
+        as_json: JsonOption = False,
+    ) -> None:
         """Show the effective settings (secrets removed)."""
         if ctx.invoked_subcommand:
             return
@@ -166,15 +232,28 @@ def register(app: typer.Typer) -> None:
             emit_json(data)
             return
         console.print(safety_panel(settings.safety_banner()))
-        console.print(Syntax(json.dumps(data, indent=2), "json", theme="ansi_dark", background_color="default"))
-        console.print("[dim]Runtime-editable sections: " + ", ".join(sorted(EDITABLE)) + ". Change with: sentinelx config set SECTION KEY VALUE[/]")
+        console.print(
+            Syntax(
+                json.dumps(data, indent=2), "json", theme="ansi_dark", background_color="default"
+            )
+        )
+        console.print(
+            "[dim]Runtime-editable sections: "
+            + ", ".join(sorted(EDITABLE))
+            + ". Change with: sentinelx config set SECTION KEY VALUE[/]"
+        )
 
     @config.command("set")
     def config_set(
         section: str,
         key: str,
-        value: Annotated[str, typer.Argument(help="JSON value, e.g. 30, true, \"automatic\", [\"10.0.0.0/8\"]")],
-        confirm_prevention: Annotated[bool, typer.Option("--confirm-prevention", help="Required to enable automatic enforcement.")] = False,
+        value: Annotated[
+            str, typer.Argument(help='JSON value, e.g. 30, true, "automatic", ["10.0.0.0/8"]')
+        ],
+        confirm_prevention: Annotated[
+            bool,
+            typer.Option("--confirm-prevention", help="Required to enable automatic enforcement."),
+        ] = False,
     ) -> None:
         """Persist a runtime setting change (audited). Takes effect on the next start of the server."""
         settings = load_settings()
@@ -186,11 +265,18 @@ def register(app: typer.Typer) -> None:
 
         async def main() -> Any:
             async with platform_context(settings, persist=False) as platform:
-                return await platform.config.update(section, {key: parsed}, actor=actor(), source="cli",
-                                                    confirmation=PREVENTION_CONFIRMATION if confirm_prevention else None)
+                return await platform.config.update(
+                    section,
+                    {key: parsed},
+                    actor=actor(),
+                    source="cli",
+                    confirmation=PREVENTION_CONFIRMATION if confirm_prevention else None,
+                )
 
         if confirm_prevention:
-            err.print("[bold red]WARNING:[/] enabling prevention lets SentinelX modify this host's firewall automatically.")
+            err.print(
+                "[bold red]WARNING:[/] enabling prevention lets SentinelX modify this host's firewall automatically."
+            )
             if not typer.confirm("Type y to confirm you understand"):
                 raise typer.Exit(1)
         result = run(main)
@@ -208,7 +294,9 @@ def register(app: typer.Typer) -> None:
         from sentinelx.storage.migrate import current_revision, upgrade
 
         run(lambda: upgrade(settings.storage.database_url, revision))
-        console.print(f"[green]database at revision[/] {run(lambda: current_revision(settings.storage.database_url))}")
+        console.print(
+            f"[green]database at revision[/] {run(lambda: current_revision(settings.storage.database_url))}"
+        )
 
     @db.command("current")
     def db_current() -> None:
@@ -218,7 +306,9 @@ def register(app: typer.Typer) -> None:
 
         applied = run(lambda: current_revision(settings.storage.database_url))
         head = head_revision()
-        console.print(f"applied: {applied or 'none'}   latest: {head}   {'[green]up to date[/]' if applied == head else '[yellow]upgrade needed[/]'}")
+        console.print(
+            f"applied: {applied or 'none'}   latest: {head}   {'[green]up to date[/]' if applied == head else '[yellow]upgrade needed[/]'}"
+        )
 
     @db.command("purge")
     def db_purge() -> None:
@@ -241,13 +331,21 @@ def register(app: typer.Typer) -> None:
         from sentinelx.storage.repositories import UserRepository
 
         async def main() -> Any:
-            async with platform_context(settings, persist=False) as platform, platform.database.session() as session:
-                return [(u.id, u.username, u.role, "yes" if u.is_active else "no", u.last_login_at) for u in await UserRepository(session).all()]
+            async with (
+                platform_context(settings, persist=False) as platform,
+                platform.database.session() as session,
+            ):
+                return [
+                    (u.id, u.username, u.role, "yes" if u.is_active else "no", u.last_login_at)
+                    for u in await UserRepository(session).all()
+                ]
 
         console.print(table("Users", ["ID", "Username", "Role", "Active", "Last login"], run(main)))
 
     @users.command("create")
-    def users_create(username: str, role: Annotated[UserRole, typer.Option()] = UserRole.VIEWER) -> None:
+    def users_create(
+        username: str, role: Annotated[UserRole, typer.Option()] = UserRole.VIEWER
+    ) -> None:
         """Create a user. The password is read from a hidden prompt, never from arguments."""
         password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
         settings = load_settings()
@@ -255,7 +353,13 @@ def register(app: typer.Typer) -> None:
         async def main() -> None:
             async with platform_context(settings, persist=False) as platform:
                 await platform.auth.create_user(username, password, role)
-                await platform.audit.record(actor=actor(), action="CREATE_USER", target=username, source="cli", details={"role": role.value})
+                await platform.audit.record(
+                    actor=actor(),
+                    action="CREATE_USER",
+                    target=username,
+                    source="cli",
+                    details={"role": role.value},
+                )
 
         run(main)
         console.print(f"[green]created[/] {username} ({role.value})")
@@ -276,7 +380,9 @@ def register(app: typer.Typer) -> None:
 
                     raise AuthError(f"no user named {username!r}", status=404)
                 await platform.auth.set_password(user.id, password)
-                await platform.audit.record(actor=actor(), action="RESET_PASSWORD", target=username, source="cli")
+                await platform.audit.record(
+                    actor=actor(), action="RESET_PASSWORD", target=username, source="cli"
+                )
 
         run(main)
         console.print(f"[green]password reset[/] for {username}; sessions revoked")
@@ -284,8 +390,15 @@ def register(app: typer.Typer) -> None:
     # ----------------------------------------------------------------- metrics
     @app.command(rich_help_panel="Operate")
     def metrics(
-        url: Annotated[str, typer.Option(envvar="SENTINELX_API_URL", help="Running API base URL.")] = "http://127.0.0.1:8000",
-        token: Annotated[str, typer.Option(envvar="SENTINELX_METRICS_TOKEN", help="API__METRICS_TOKEN, when set on the server.")] = "",
+        url: Annotated[
+            str, typer.Option(envvar="SENTINELX_API_URL", help="Running API base URL.")
+        ] = "http://127.0.0.1:8000",
+        token: Annotated[
+            str,
+            typer.Option(
+                envvar="SENTINELX_METRICS_TOKEN", help="API__METRICS_TOKEN, when set on the server."
+            ),
+        ] = "",
         as_json: JsonOption = False,
     ) -> None:
         """Key Prometheus metrics from a running server (values are measured, not estimated)."""
@@ -298,32 +411,57 @@ def register(app: typer.Typer) -> None:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             err.print(f"[red]could not read metrics from {url}:[/] {exc}")
-            err.print("[dim]Is the server running (sentinelx start)? Remote scrapes need API__METRICS_TOKEN.[/]")
+            err.print(
+                "[dim]Is the server running (sentinelx start)? Remote scrapes need API__METRICS_TOKEN.[/]"
+            )
             raise typer.Exit(1) from None
         wanted = {
-            "sentinelx_packets_processed": "Packets processed", "sentinelx_packets_dropped": "Packets dropped",
-            "sentinelx_detections": "Detections", "sentinelx_incidents_opened": "Incidents opened",
-            "sentinelx_blocked_addresses": "Blocked addresses", "sentinelx_active_flows": "Active flows",
-            "sentinelx_detector_errors": "Detector errors", "sentinelx_safety_refusals": "Safety refusals",
-            "sentinelx_process_cpu_percent": "CPU %", "sentinelx_process_memory_bytes": "Memory bytes",
-            "sentinelx_websocket_clients": "WebSocket clients", "sentinelx_storage_errors": "Storage errors",
+            "sentinelx_packets_processed": "Packets processed",
+            "sentinelx_packets_dropped": "Packets dropped",
+            "sentinelx_detections": "Detections",
+            "sentinelx_incidents_opened": "Incidents opened",
+            "sentinelx_blocked_addresses": "Blocked addresses",
+            "sentinelx_active_flows": "Active flows",
+            "sentinelx_detector_errors": "Detector errors",
+            "sentinelx_safety_refusals": "Safety refusals",
+            "sentinelx_process_cpu_percent": "CPU %",
+            "sentinelx_process_memory_bytes": "Memory bytes",
+            "sentinelx_websocket_clients": "WebSocket clients",
+            "sentinelx_storage_errors": "Storage errors",
         }
         totals: dict[str, float] = {}
         latency: dict[str, tuple[float, float]] = {}
         for family in text_string_to_metric_families(response.text):
             for sample in family.samples:
-                if sample.name.removesuffix("_total") in wanted and not sample.name.endswith("_created"):
+                if sample.name.removesuffix("_total") in wanted and not sample.name.endswith(
+                    "_created"
+                ):
                     key = wanted[sample.name.removesuffix("_total")]
                     totals[key] = totals.get(key, 0.0) + sample.value
-                if sample.name in ("sentinelx_pipeline_latency_seconds_sum", "sentinelx_pipeline_latency_seconds_count"):
+                if sample.name in (
+                    "sentinelx_pipeline_latency_seconds_sum",
+                    "sentinelx_pipeline_latency_seconds_count",
+                ):
                     total, count = latency.get("pipeline", (0.0, 0.0))
-                    latency["pipeline"] = (total + sample.value, count) if sample.name.endswith("_sum") else (total, count + sample.value)
+                    latency["pipeline"] = (
+                        (total + sample.value, count)
+                        if sample.name.endswith("_sum")
+                        else (total, count + sample.value)
+                    )
         if "pipeline" in latency and latency["pipeline"][1]:
-            totals["Mean pipeline latency (ms)"] = round(1000 * latency["pipeline"][0] / latency["pipeline"][1], 4)
+            totals["Mean pipeline latency (ms)"] = round(
+                1000 * latency["pipeline"][0] / latency["pipeline"][1], 4
+            )
         if as_json:
             emit_json(totals)
             return
-        console.print(table(f"Metrics from {url}", ["Metric", "Value"], [(k, f"{v:,.2f}".rstrip("0").rstrip(".")) for k, v in totals.items()]))
+        console.print(
+            table(
+                f"Metrics from {url}",
+                ["Metric", "Value"],
+                [(k, f"{v:,.2f}".rstrip("0").rstrip(".")) for k, v in totals.items()],
+            )
+        )
 
     # ----------------------------------------------------------------- doctor
     @app.command(rich_help_panel="Operate")
@@ -335,7 +473,11 @@ def register(app: typer.Typer) -> None:
             checks.append({"check": name, "status": status, "detail": detail})
 
         version = sys.version_info
-        check("python", "ok" if version >= (3, 12) else "fail", f"{version.major}.{version.minor}.{version.micro}")
+        check(
+            "python",
+            "ok" if version >= (3, 12) else "fail",
+            f"{version.major}.{version.minor}.{version.micro}",
+        )
         try:
             settings = load_settings()
             check("configuration", "ok", f"environment={settings.environment}")
@@ -344,33 +486,58 @@ def register(app: typer.Typer) -> None:
             _print_checks(checks, as_json)
             raise typer.Exit(1) from None
 
-        check("safety posture", "warn" if settings.prevention_active else "ok", settings.safety_banner())
+        check(
+            "safety posture",
+            "warn" if settings.prevention_active else "ok",
+            settings.safety_banner(),
+        )
         from sentinelx.capture.live import has_capture_privileges, list_interfaces
 
         privileged = has_capture_privileges()
-        check("capture privileges", "ok" if privileged else "warn",
-              "CAP_NET_RAW available" if privileged else "no CAP_NET_RAW: live capture unavailable (replay still works). "
-              "Grant with: sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))")
+        check(
+            "capture privileges",
+            "ok" if privileged else "warn",
+            "CAP_NET_RAW available"
+            if privileged
+            else "no CAP_NET_RAW: live capture unavailable (replay still works). "
+            "Grant with: sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))",
+        )
         interfaces = list_interfaces()
         wanted = settings.capture.interface
         present = wanted == "any" or any(i["name"] == wanted for i in interfaces)
-        check("capture interface", "ok" if present else "fail", f"{wanted} ({len(interfaces)} interfaces found)")
+        check(
+            "capture interface",
+            "ok" if present else "fail",
+            f"{wanted} ({len(interfaces)} interfaces found)",
+        )
 
         for binary, backend in (("nft", "nftables"), ("iptables", "iptables")):
             found = shutil.which(binary)
             needed = settings.response.firewall_backend == backend
-            check(f"{backend} binary", "ok" if found else ("fail" if needed else "info"),
-                  found or ("missing - required by FIREWALL_BACKEND" if needed else "not installed"))
+            check(
+                f"{backend} binary",
+                "ok" if found else ("fail" if needed else "info"),
+                found or ("missing - required by FIREWALL_BACKEND" if needed else "not installed"),
+            )
         can_admin = os.geteuid() == 0 if hasattr(os, "geteuid") else False
         if settings.response.firewall_backend != "null":
-            check("firewall privileges", "ok" if can_admin else "warn",
-                  "running as root" if can_admin else "firewall changes need root or CAP_NET_ADMIN")
+            check(
+                "firewall privileges",
+                "ok" if can_admin else "warn",
+                "running as root" if can_admin else "firewall changes need root or CAP_NET_ADMIN",
+            )
 
         from sentinelx.services.rules import max_rule_window
         from sentinelx.signatures import load_rules
 
-        loaded = load_rules(Path(settings.rules_directory), max_window_seconds=max_rule_window(settings))
-        check("rules", "ok" if not loaded.problems else "fail", f"{len(loaded.rules)} valid, {len(loaded.problems)} invalid in {settings.rules_directory}")
+        loaded = load_rules(
+            Path(settings.rules_directory), max_window_seconds=max_rule_window(settings)
+        )
+        check(
+            "rules",
+            "ok" if not loaded.problems else "fail",
+            f"{len(loaded.rules)} valid, {len(loaded.problems)} invalid in {settings.rules_directory}",
+        )
 
         pcap_dir = Path(settings.capture.pcap_directory)
         try:
@@ -385,7 +552,11 @@ def register(app: typer.Typer) -> None:
         if len(settings.api.jwt_secret) < 32:
             check("jwt secret", "fail", "JWT_SECRET shorter than 32 characters")
         elif not os.environ.get("JWT_SECRET") and not os.environ.get("API__JWT_SECRET"):
-            check("jwt secret", "warn", "not set: an ephemeral secret is used and sessions end on restart")
+            check(
+                "jwt secret",
+                "warn",
+                "not set: an ephemeral secret is used and sessions end on restart",
+            )
         else:
             check("jwt secret", "ok", "set")
 
@@ -401,16 +572,27 @@ def register(app: typer.Typer) -> None:
                 if database.dialect != "sqlite":
                     applied = await current_revision(settings.storage.database_url)
                     head = head_revision()
-                    check("migrations", "ok" if applied == head else "fail",
-                          f"applied {applied or 'none'}, latest {head}" + ("" if applied == head else " - run: sentinelx db upgrade"))
+                    check(
+                        "migrations",
+                        "ok" if applied == head else "fail",
+                        f"applied {applied or 'none'}, latest {head}"
+                        + ("" if applied == head else " - run: sentinelx db upgrade"),
+                    )
             except Exception as exc:
                 check("database", "fail", str(exc))
             finally:
                 await database.close()
             state = SharedState(settings.storage)
             await state.connect()
-            check("redis", "ok" if not state.degraded else ("fail" if settings.storage.redis_required else "warn"),
-                  "connected" if not state.degraded else "unreachable: degraded to per-process limits")
+            check(
+                "redis",
+                "ok"
+                if not state.degraded
+                else ("fail" if settings.storage.redis_required else "warn"),
+                "connected"
+                if not state.degraded
+                else "unreachable: degraded to per-process limits",
+            )
             await state.close()
 
         run(services)
@@ -436,12 +618,28 @@ def _toggle_rule(rule_id: str, enabled: bool) -> None:
     except KeyError:
         err.print(f"no rule with id {rule_id!r}")
         raise typer.Exit(1) from None
-    console.print(f"[green]{'enabled' if enabled else 'disabled'}[/] {rule_id} (a running server picks this up on restart)")
+    console.print(
+        f"[green]{'enabled' if enabled else 'disabled'}[/] {rule_id} (a running server picks this up on restart)"
+    )
 
 
 def _print_checks(checks: list[dict[str, str]], as_json: bool) -> None:
     if as_json:
         emit_json(checks)
         return
-    style = {k: Text.from_markup(v) for k, v in {"ok": "[green]ok[/]", "warn": "[yellow]warn[/]", "fail": "[bold red]FAIL[/]", "info": "[dim]info[/]"}.items()}
-    console.print(table("sentinelx doctor", ["Check", "Status", "Detail"], [(c["check"], style[c["status"]], c["detail"]) for c in checks]))
+    style = {
+        k: Text.from_markup(v)
+        for k, v in {
+            "ok": "[green]ok[/]",
+            "warn": "[yellow]warn[/]",
+            "fail": "[bold red]FAIL[/]",
+            "info": "[dim]info[/]",
+        }.items()
+    }
+    console.print(
+        table(
+            "sentinelx doctor",
+            ["Check", "Status", "Detail"],
+            [(c["check"], style[c["status"]], c["detail"]) for c in checks],
+        )
+    )

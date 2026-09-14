@@ -26,7 +26,9 @@ class MemoryFirewall(FirewallAdapter):
     async def setup(self) -> None:
         return None
 
-    async def block(self, network: IPNetworkT, *, duration: int | None = None, comment: str = "") -> BlockEntry:
+    async def block(
+        self, network: IPNetworkT, *, duration: int | None = None, comment: str = ""
+    ) -> BlockEntry:
         entry = BlockEntry(
             network=str(network),
             expires_at=datetime.now(UTC) + timedelta(seconds=duration) if duration else None,
@@ -43,7 +45,9 @@ class MemoryFirewall(FirewallAdapter):
         self._record("unblock", self.backend, removed)
         return removed
 
-    async def rate_limit(self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None) -> BlockEntry:
+    async def rate_limit(
+        self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None
+    ) -> BlockEntry:
         entry = BlockEntry(
             network=str(network),
             expires_at=datetime.now(UTC) + timedelta(seconds=duration) if duration else None,
@@ -65,4 +69,9 @@ class MemoryFirewall(FirewallAdapter):
         self._entries.clear()
 
     async def health(self) -> dict[str, object]:
-        return {"backend": self.backend, "ok": True, "enforcing": False, "entries": len(self._entries)}
+        return {
+            "backend": self.backend,
+            "ok": True,
+            "enforcing": False,
+            "entries": len(self._entries),
+        }

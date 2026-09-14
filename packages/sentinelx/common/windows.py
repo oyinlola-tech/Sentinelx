@@ -114,7 +114,9 @@ class TimeSeriesCounter:
 
     __slots__ = ("_heads", "_max_entries", "_start", "_times", "durations", "retention")
 
-    def __init__(self, durations: tuple[float, ...] | list[float], max_entries: int = 200_000) -> None:
+    def __init__(
+        self, durations: tuple[float, ...] | list[float], max_entries: int = 200_000
+    ) -> None:
         cleaned = sorted({float(d) for d in durations if d > 0})
         if not cleaned:
             raise ValueError("at least one positive duration is required")
@@ -460,7 +462,9 @@ class EwmaBaseline:
         self.samples = 0
         self._initialised = False
 
-    def update(self, value: float, *, alpha: float | None = None, update_variance: bool = True) -> None:
+    def update(
+        self, value: float, *, alpha: float | None = None, update_variance: bool = True
+    ) -> None:
         """Fold a new observation into the baseline.
 
         Args:

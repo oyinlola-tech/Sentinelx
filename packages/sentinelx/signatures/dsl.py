@@ -117,7 +117,9 @@ FIELDS: Final[dict[str, FieldSpec]] = {
         _f("syn_count", K.COUNT, "bare SYNs sent"),
         _f("connection_attempts", K.COUNT, "new TCP connections started"),
         _f("failed_attempts", K.COUNT, "connection attempts refused with RST"),
-        _f("short_sessions", K.COUNT, "completed sessions torn down within seconds (auth failures)"),
+        _f(
+            "short_sessions", K.COUNT, "completed sessions torn down within seconds (auth failures)"
+        ),
         _f("rst_count", K.COUNT, "RSTs received"),
         _f("icmp_count", K.COUNT, "ICMP packets sent"),
         _f("dns_query_count", K.COUNT, "DNS queries sent"),
@@ -148,7 +150,9 @@ FIELDS: Final[dict[str, FieldSpec]] = {
 
 _NUMERIC_OPS: Final = frozenset({">", ">=", "<", "<="})
 _STRING_OPS: Final = frozenset({"contains", "startswith", "endswith"})
-_OPERATORS: Final = frozenset({"==", "!=", "in", "not in", "in_network", *_NUMERIC_OPS, *_STRING_OPS})
+_OPERATORS: Final = frozenset(
+    {"==", "!=", "in", "not in", "in_network", *_NUMERIC_OPS, *_STRING_OPS}
+)
 
 
 # ===================================================================== AST
@@ -251,7 +255,9 @@ class _Parser:
         node = self.or_expr()
         token = self.peek()
         if token.kind != "end":
-            raise ConditionSyntaxError(f"unexpected {token.text!r}; expected 'and', 'or' or end", token.position)
+            raise ConditionSyntaxError(
+                f"unexpected {token.text!r}; expected 'and', 'or' or end", token.position
+            )
         return node
 
     def _enter(self, position: int) -> None:
@@ -299,12 +305,15 @@ class _Parser:
         field_token = self.advance()
         if field_token.kind != "word" or field_token.text.lower() in {"and", "or", "not", "in"}:
             raise ConditionSyntaxError(
-                f"expected a field name, found {field_token.text or 'end of condition'!r}", field_token.position
+                f"expected a field name, found {field_token.text or 'end of condition'!r}",
+                field_token.position,
             )
         spec = FIELDS.get(field_token.text.lower())
         following = self.peek()
-        if spec is not None and spec.kind is FieldKind.BOOLEAN and (
-            following.kind in {"end", "rparen"} or following.text.lower() in {"and", "or"}
+        if (
+            spec is not None
+            and spec.kind is FieldKind.BOOLEAN
+            and (following.kind in {"end", "rparen"} or following.text.lower() in {"and", "or"})
         ):
             raise ConditionSyntaxError(
                 f"boolean field '{spec.name}' needs an explicit comparison: "
@@ -354,13 +363,17 @@ class _Parser:
                     raise ConditionSyntaxError("nested lists are not allowed", token.position)
                 items.append(item)
                 if len(items) > MAX_LIST_ITEMS:
-                    raise ConditionSyntaxError(f"list exceeds {MAX_LIST_ITEMS} items", token.position)
+                    raise ConditionSyntaxError(
+                        f"list exceeds {MAX_LIST_ITEMS} items", token.position
+                    )
                 separator = self.advance()
                 if separator.kind == "rbracket":
                     return tuple(items)
                 if separator.kind != "comma":
                     raise ConditionSyntaxError("expected ',' or ']' in list", separator.position)
-        raise ConditionSyntaxError(f"expected a value, found {token.text or 'end of condition'!r}", token.position)
+        raise ConditionSyntaxError(
+            f"expected a value, found {token.text or 'end of condition'!r}", token.position
+        )
 
 
 def parse_condition(text: str) -> Node:
@@ -404,7 +417,9 @@ def validate_semantics(node: Node) -> list[str]:
             continue
         op, value = comparison.operator, comparison.value
         if op in _NUMERIC_OPS and spec.kind not in (K.COUNT, K.NUMBER):
-            problems.append(f"{where}: '{op}' needs a numeric field, but {spec.name} is {spec.kind}")
+            problems.append(
+                f"{where}: '{op}' needs a numeric field, but {spec.name} is {spec.kind}"
+            )
         is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if op in _NUMERIC_OPS and not is_number:
             problems.append(f"{where}: '{op}' needs a number")
@@ -425,7 +440,11 @@ def validate_semantics(node: Node) -> list[str]:
                     problems.append(f"{where}: {network!r} is not a valid network")
         if spec.kind is K.BOOLEAN and op in {"==", "!="} and not isinstance(value, bool):
             problems.append(f"{where}: {spec.name} is boolean; compare with true or false")
-        if spec.kind in (K.COUNT, K.NUMBER) and op in {"==", "!="} and not isinstance(value, (int, float)):
+        if (
+            spec.kind in (K.COUNT, K.NUMBER)
+            and op in {"==", "!="}
+            and not isinstance(value, (int, float))
+        ):
             problems.append(f"{where}: {spec.name} is numeric; compare with a number")
     return problems
 
@@ -435,7 +454,9 @@ def validate_semantics(node: Node) -> list[str]:
 Resolver = Callable[[str], Any]
 
 
-def evaluate(node: Node, resolve: Resolver, matched: list[tuple[Comparison, Any]] | None = None) -> bool:
+def evaluate(
+    node: Node, resolve: Resolver, matched: list[tuple[Comparison, Any]] | None = None
+) -> bool:
     """Evaluate against lazily resolved field values.
 
     ``and``/``or`` short-circuit, and ``resolve`` is called only for fields that are
@@ -486,7 +507,9 @@ def _compare(node: Comparison, observed: Any) -> bool:
         if op == "in_network":
             address = parse_ip(str(observed))
             networks = expected if isinstance(expected, tuple) else (expected,)
-            return any(address.version == net.version and address in net for net in map(_network, networks))
+            return any(
+                address.version == net.version and address in net for net in map(_network, networks)
+            )
         if op in {"in", "not in"}:
             present = _normalise(observed) in {_normalise(item) for item in expected}
             return present if op == "in" else not present

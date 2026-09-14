@@ -68,7 +68,8 @@ class UserResponse(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str | None = Field(
-        default=None, description="Returned only to non-browser clients; browsers receive an httpOnly cookie."
+        default=None,
+        description="Returned only to non-browser clients; browsers receive an httpOnly cookie.",
     )
     token_type: Literal["bearer"] = "bearer"  # noqa: S105 - OAuth2 token type name, not a secret
     expires_at: str
@@ -109,7 +110,9 @@ class IncidentUpdateRequest(StrictModel):
 class BlockRequest(StrictModel):
     target: str = Field(min_length=2, max_length=64, description="IP address or CIDR prefix.")
     reason: str = Field(min_length=3, max_length=500)
-    duration_seconds: int | None = Field(default=None, ge=30, le=604_800, description="Omit for a permanent block.")
+    duration_seconds: int | None = Field(
+        default=None, ge=30, le=604_800, description="Omit for a permanent block."
+    )
     rate_limit: bool = False
 
 

@@ -72,16 +72,24 @@ class TestEnvironment:
 
 class TestRedaction:
     def test_sensitive_keys_are_redacted_recursively(self) -> None:
-        event = redact_secrets(None, "info", {"event": "x", "password": "p", "nested": {"api_key": "k", "ok": 1}})
+        event = redact_secrets(
+            None, "info", {"event": "x", "password": "p", "nested": {"api_key": "k", "ok": 1}}
+        )
         assert event["password"] == "[redacted]"
         assert event["nested"] == {"api_key": "[redacted]", "ok": 1}
 
     def test_inline_credentials_are_scrubbed_from_text(self) -> None:
-        event = redact_secrets(None, "info", {"event": "x", "dsn": "postgresql://u:hunter2@db/x", "h": "Bearer abc.def"})
+        event = redact_secrets(
+            None,
+            "info",
+            {"event": "x", "dsn": "postgresql://u:hunter2@db/x", "h": "Bearer abc.def"},
+        )
         assert "hunter2" not in json.dumps(event)
         assert "abc.def" not in json.dumps(event)
 
-    def test_configured_json_logger_never_emits_password(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_configured_json_logger_never_emits_password(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         configure_logging(TelemetrySettings(log_format="json"))
         get_logger("t").info("login", username="alice", password="hunter2")
         captured = capsys.readouterr().err

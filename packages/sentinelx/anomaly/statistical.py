@@ -112,12 +112,16 @@ class StatisticalAnomalyDetector(Detector):
     category = ThreatCategory.ANOMALY
     default_severity = Severity.MEDIUM
 
-    def __init__(self, anomaly: AnomalySettings | None = None, settings: DetectionSettings | None = None) -> None:
+    def __init__(
+        self, anomaly: AnomalySettings | None = None, settings: DetectionSettings | None = None
+    ) -> None:
         super().__init__(settings)
         self.anomaly = anomaly or AnomalySettings()
         self.interval = self.anomaly.sample_interval_seconds
         self.baselines: dict[str, EwmaBaseline] = {
-            metric: EwmaBaseline(alpha=self.anomaly.baseline_alpha, min_samples=self.anomaly.min_samples)
+            metric: EwmaBaseline(
+                alpha=self.anomaly.baseline_alpha, min_samples=self.anomaly.min_samples
+            )
             for metric in METRICS
         }
         self._current: IntervalSample | None = None
@@ -159,7 +163,11 @@ class StatisticalAnomalyDetector(Detector):
             value = values[metric]
             baseline = self.baselines[metric]
             score = baseline.anomaly_score(value, sigma_saturation=self.anomaly.sigma_saturation)
-            if baseline.ready and score >= self.anomaly.anomaly_threshold and value >= METRICS[metric][2]:
+            if (
+                baseline.ready
+                and score >= self.anomaly.anomaly_threshold
+                and value >= METRICS[metric][2]
+            ):
                 anomalous.add(metric)
                 # Strictly greater: METRICS is ordered most specific first, so on a
                 # tie the specific metric (DNS rate) is reported over the aggregate.
@@ -181,7 +189,12 @@ class StatisticalAnomalyDetector(Detector):
                 baseline.update(value)
 
     def _detection(
-        self, score: float, metric: str, value: float, sample: IntervalSample, context: FeatureContext
+        self,
+        score: float,
+        metric: str,
+        value: float,
+        sample: IntervalSample,
+        context: FeatureContext,
     ) -> Detection | None:
         baseline = self.baselines[metric]
         label, unit, _ = METRICS[metric]
@@ -195,17 +208,21 @@ class StatisticalAnomalyDetector(Detector):
 
         evidence = [
             Evidence(
-                key="metric", value=metric,
+                key="metric",
+                value=metric,
                 description=f"{label}: {value:,.1f} {unit} against a baseline of {baseline.mean:,.1f} {unit}",
                 weight=1.0,
             ),
             Evidence(
-                key="anomaly_score", value=round(score, 3), threshold=self.anomaly.anomaly_threshold,
+                key="anomaly_score",
+                value=round(score, 3),
+                threshold=self.anomaly.anomaly_threshold,
                 description=f"anomaly score {score:.2f} ({sigma:.1f} standard deviations above normal)",
                 weight=1.0,
             ),
             Evidence(
-                key="baseline", value=baseline.snapshot(),
+                key="baseline",
+                value=baseline.snapshot(),
                 description=(
                     f"baseline learned from {baseline.samples} intervals of {self.interval:g}s "
                     f"(mean {baseline.mean:,.1f}, stddev {baseline.stddev:,.1f})"
@@ -213,7 +230,8 @@ class StatisticalAnomalyDetector(Detector):
                 weight=0.4,
             ),
             Evidence(
-                key="top_contributor", value={"source": source, "share": round(share, 3)},
+                key="top_contributor",
+                value={"source": source, "share": round(share, 3)},
                 description=f"{source} produced {share:.0%} of this interval's {label[0].lower()}{label[1:]}",
                 weight=0.7,
             ),

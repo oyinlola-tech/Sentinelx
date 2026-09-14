@@ -119,7 +119,9 @@ class EventPersister:
             for event in batch:
                 if event.type is EventType.DETECTION_CREATED:
                     payload = event.payload
-                    if payload["detection_id"] in seen_detections or await detections.get(payload["detection_id"]):
+                    if payload["detection_id"] in seen_detections or await detections.get(
+                        payload["detection_id"]
+                    ):
                         continue
                     seen_detections.add(payload["detection_id"])
                     await detections.add(self._detection(payload, sensor))
@@ -129,19 +131,24 @@ class EventPersister:
                 payload = event.payload
                 if event.type in (EventType.INCIDENT_OPENED, EventType.INCIDENT_UPDATED):
                     await incidents.upsert(self._incident(payload, sensor))
-                    await detections.link_incident(list(payload.get("detection_ids", [])), payload["incident_id"])
+                    await detections.link_incident(
+                        list(payload.get("detection_ids", [])), payload["incident_id"]
+                    )
                 elif event.type is EventType.RESPONSE_DECIDED:
                     await actions.add(self._action(payload, sensor))
                 elif event.type is EventType.IP_BLOCKED:
                     expires = payload.get("expires_at")
                     await blocks.record_block(
-                        payload["network"], reason=str(payload.get("reason", "")),
+                        payload["network"],
+                        reason=str(payload.get("reason", "")),
                         expires_at=_dt(expires) if expires else None,
                         rate_limited=bool(payload.get("rate_limited")),
                         backend=str(payload.get("backend", "")),
                     )
                 elif event.type is EventType.IP_UNBLOCKED:
-                    await blocks.deactivate(payload["network"], removal_reason=str(payload.get("reason", "unblocked")))
+                    await blocks.deactivate(
+                        payload["network"], removal_reason=str(payload.get("reason", "unblocked"))
+                    )
                 elif event.type is EventType.PACKET_STATS:
                     summary, metric = self._stats(payload, sensor)
                     if summary is not None:
@@ -223,7 +230,9 @@ class EventPersister:
             sensor=sensor,
         )
 
-    def _stats(self, payload: dict[str, Any], sensor: str) -> tuple[TrafficSummary | None, SystemMetric | None]:
+    def _stats(
+        self, payload: dict[str, Any], sensor: str
+    ) -> tuple[TrafficSummary | None, SystemMetric | None]:
         """Roll per-second stats into one traffic summary per wall-clock minute.
 
         Only live capture is summarised; replay statistics describe a file, not the

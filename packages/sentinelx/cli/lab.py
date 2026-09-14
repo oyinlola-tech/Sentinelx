@@ -45,7 +45,9 @@ async def _rules_into(pipeline: Pipeline, settings: Settings) -> int:
     from sentinelx.services.rules import max_rule_window
     from sentinelx.signatures import RuleDetector, load_rules
 
-    result = load_rules(Path(settings.rules_directory), max_window_seconds=max_rule_window(settings))
+    result = load_rules(
+        Path(settings.rules_directory), max_window_seconds=max_rule_window(settings)
+    )
     for problem in result.problems:
         err.print(f"[yellow]rule skipped:[/] {problem}")
     for rule in result.rules:
@@ -53,18 +55,29 @@ async def _rules_into(pipeline: Pipeline, settings: Settings) -> int:
     if settings.anomaly.enabled:
         from sentinelx.anomaly import StatisticalAnomalyDetector
 
-        pipeline.detection.add_detector(StatisticalAnomalyDetector(settings.anomaly, settings.detection))
+        pipeline.detection.add_detector(
+            StatisticalAnomalyDetector(settings.anomaly, settings.detection)
+        )
     return len(result.rules)
 
 
 def register(app: typer.Typer) -> None:
     @app.command(rich_help_panel="Lab")
     def replay(
-        pcap: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True, help="pcap or pcapng file.")],
-        speed: Annotated[float, typer.Option(help="0 = as fast as possible, 1 = original timing.", min=0)] = 0.0,
+        pcap: Annotated[
+            Path,
+            typer.Argument(exists=True, dir_okay=False, readable=True, help="pcap or pcapng file."),
+        ],
+        speed: Annotated[
+            float, typer.Option(help="0 = as fast as possible, 1 = original timing.", min=0)
+        ] = 0.0,
         limit: Annotated[int | None, typer.Option(help="Stop after N packets.", min=1)] = None,
-        persist: Annotated[bool, typer.Option("--persist", help="Store results in the database under a replay id.")] = False,
-        report: Annotated[Path | None, typer.Option("--report", help="Write the full JSON report to this file.")] = None,
+        persist: Annotated[
+            bool, typer.Option("--persist", help="Store results in the database under a replay id.")
+        ] = False,
+        report: Annotated[
+            Path | None, typer.Option("--report", help="Write the full JSON report to this file.")
+        ] = None,
         as_json: JsonOption = False,
     ) -> None:
         """Run a capture through the exact live detection pipeline and report the results.
@@ -81,10 +94,24 @@ def register(app: typer.Typer) -> None:
             if as_json:
                 emit_json(stored)
             else:
-                console.print(table("Replay report (stored)", ["Metric", "Value"], [
-                    (key, stored.get(key)) for key in
-                    ("replay_id", "frames", "packets_per_second", "wall_seconds", "detection_count", "incident_count", "response_decisions")
-                ]))
+                console.print(
+                    table(
+                        "Replay report (stored)",
+                        ["Metric", "Value"],
+                        [
+                            (key, stored.get(key))
+                            for key in (
+                                "replay_id",
+                                "frames",
+                                "packets_per_second",
+                                "wall_seconds",
+                                "detection_count",
+                                "incident_count",
+                                "response_decisions",
+                            )
+                        ],
+                    )
+                )
             return
 
         async def main() -> tuple[RunReport, dict[str, Any], int]:
@@ -94,7 +121,11 @@ def register(app: typer.Typer) -> None:
             await pipeline.start()
             try:
                 with _ReplayProgress(metadata["packet_count"], quiet=as_json) as update:
-                    result = await pipeline.run(PcapFileCapture(pcap, speed=speed, limit=limit), progress=update, progress_interval=0.2)
+                    result = await pipeline.run(
+                        PcapFileCapture(pcap, speed=speed, limit=limit),
+                        progress=update,
+                        progress_interval=0.2,
+                    )
             finally:
                 await pipeline.stop()
             return result, metadata, rules
@@ -111,12 +142,28 @@ def register(app: typer.Typer) -> None:
 
     @app.command(rich_help_panel="Lab")
     def monitor(
-        interface: Annotated[str | None, typer.Option("--interface", "-i", help="Interface to capture (needs CAP_NET_RAW).")] = None,
-        pcap: Annotated[Path | None, typer.Option("--pcap", help="Monitor a capture at its original speed instead.")] = None,
-        scenario: Annotated[str | None, typer.Option("--scenario", help="Monitor a synthetic scenario (no privileges needed).")] = None,
-        bpf: Annotated[str, typer.Option("--bpf", help="Kernel BPF filter, e.g. 'tcp or udp'.")] = "",
+        interface: Annotated[
+            str | None,
+            typer.Option("--interface", "-i", help="Interface to capture (needs CAP_NET_RAW)."),
+        ] = None,
+        pcap: Annotated[
+            Path | None,
+            typer.Option("--pcap", help="Monitor a capture at its original speed instead."),
+        ] = None,
+        scenario: Annotated[
+            str | None,
+            typer.Option("--scenario", help="Monitor a synthetic scenario (no privileges needed)."),
+        ] = None,
+        bpf: Annotated[
+            str, typer.Option("--bpf", help="Kernel BPF filter, e.g. 'tcp or udp'.")
+        ] = "",
         duration: Annotated[float | None, typer.Option(help="Stop after N seconds.")] = None,
-        enforce: Annotated[bool, typer.Option("--enforce", help="Apply configured responses (still subject to DRY_RUN).")] = False,
+        enforce: Annotated[
+            bool,
+            typer.Option(
+                "--enforce", help="Apply configured responses (still subject to DRY_RUN)."
+            ),
+        ] = False,
     ) -> None:
         """Live terminal view of traffic, detections and incidents as they happen."""
         settings = load_settings()
@@ -131,8 +178,11 @@ def register(app: typer.Typer) -> None:
             elif pcap:
                 capture = PcapFileCapture(pcap, speed=1.0)
             else:
-                capture = LiveCapture(interface or settings.capture.interface, bpf_filter=bpf,
-                                      snapshot_length=settings.capture.snapshot_length)
+                capture = LiveCapture(
+                    interface or settings.capture.interface,
+                    bpf_filter=bpf,
+                    snapshot_length=settings.capture.snapshot_length,
+                )
             firewall = create_firewall(settings.response) if enforce else MemoryFirewall()
             if not enforce:
                 settings.response.dry_run = True
@@ -143,13 +193,20 @@ def register(app: typer.Typer) -> None:
             await pipeline.start()
             started = time.monotonic()
             try:
-                with Live(view.render(), console=console, refresh_per_second=4, transient=False) as live:
+                with Live(
+                    view.render(), console=console, refresh_per_second=4, transient=False
+                ) as live:
+
                     async def progress(stats: dict[str, Any]) -> None:
                         view.stats = stats
                         if duration and time.monotonic() - started >= duration:
                             capture.stop()
 
-                    task = asyncio.create_task(pipeline.run(capture, progress=progress, progress_interval=0.25, record_latency=False))
+                    task = asyncio.create_task(
+                        pipeline.run(
+                            capture, progress=progress, progress_interval=0.25, record_latency=False
+                        )
+                    )
                     seen = 0
                     while not task.done():
                         await asyncio.sleep(0.25)
@@ -167,7 +224,10 @@ def register(app: typer.Typer) -> None:
 
         run(main)
 
-    fixtures = typer.Typer(help="Synthetic traffic fixtures (written to files, never transmitted).", no_args_is_help=True)
+    fixtures = typer.Typer(
+        help="Synthetic traffic fixtures (written to files, never transmitted).",
+        no_args_is_help=True,
+    )
     app.add_typer(fixtures, name="fixtures", rich_help_panel="Lab")
 
     @fixtures.command("list")
@@ -176,18 +236,42 @@ def register(app: typer.Typer) -> None:
         rows: list[dict[str, Any]] = []
         for name in SCENARIOS:
             scenario = get_scenario(name)
-            rows.append({"name": name, "packets": scenario.packet_count, "benign": scenario.benign,
-                         "expected_detectors": sorted(scenario.expected_detectors), "description": scenario.description})
+            rows.append(
+                {
+                    "name": name,
+                    "packets": scenario.packet_count,
+                    "benign": scenario.benign,
+                    "expected_detectors": sorted(scenario.expected_detectors),
+                    "description": scenario.description,
+                }
+            )
         if as_json:
             emit_json(rows)
             return
-        console.print(table("Scenarios", ["Name", "Packets", "Expected detectors", "Description"],
-                            [(r["name"], r["packets"], ", ".join(r["expected_detectors"]) or "none (benign)", r["description"]) for r in rows]))
+        console.print(
+            table(
+                "Scenarios",
+                ["Name", "Packets", "Expected detectors", "Description"],
+                [
+                    (
+                        r["name"],
+                        r["packets"],
+                        ", ".join(r["expected_detectors"]) or "none (benign)",
+                        r["description"],
+                    )
+                    for r in rows
+                ],
+            )
+        )
 
     @fixtures.command("generate")
     def fixtures_generate(
-        names: Annotated[list[str] | None, typer.Argument(help="Scenario names; default all.")] = None,
-        output: Annotated[Path, typer.Option("--output", "-o", help="Directory for the pcap files.")] = Path("pcaps/fixtures"),
+        names: Annotated[
+            list[str] | None, typer.Argument(help="Scenario names; default all.")
+        ] = None,
+        output: Annotated[
+            Path, typer.Option("--output", "-o", help="Directory for the pcap files.")
+        ] = Path("pcaps/fixtures"),
     ) -> None:
         """Write scenario pcaps for replay, rule testing and benchmarks."""
         selected = names or sorted(SCENARIOS)
@@ -207,7 +291,10 @@ def register(app: typer.Typer) -> None:
 
     @anomaly.command("train")
     def anomaly_train(
-        pcaps: Annotated[list[Path], typer.Argument(exists=True, dir_okay=False, help="Captures of NORMAL traffic.")],
+        pcaps: Annotated[
+            list[Path],
+            typer.Argument(exists=True, dir_okay=False, help="Captures of NORMAL traffic."),
+        ],
         output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
         contamination: Annotated[float, typer.Option(min=0.001, max=0.4)] = 0.02,
     ) -> None:
@@ -233,11 +320,21 @@ def register(app: typer.Typer) -> None:
         target = output or Path(settings.anomaly.ml_model_path)
         save_model(bundle, target)
         console.print(f"[green]model saved[/] to {target} (mode 600)")
-        console.print(table("Model", ["Field", "Value"], [(k, v) for k, v in bundle.info().items() if k != "features"]))
-        console.print("[dim]Enable with ANOMALY__ML_ENABLED=true. Treat its output as leads, not verdicts.[/]")
+        console.print(
+            table(
+                "Model",
+                ["Field", "Value"],
+                [(k, v) for k, v in bundle.info().items() if k != "features"],
+            )
+        )
+        console.print(
+            "[dim]Enable with ANOMALY__ML_ENABLED=true. Treat its output as leads, not verdicts.[/]"
+        )
 
 
-async def _replay_persisted(settings: Settings, pcap: Path, speed: float, limit: int | None) -> dict[str, Any]:
+async def _replay_persisted(
+    settings: Settings, pcap: Path, speed: float, limit: int | None
+) -> dict[str, Any]:
     """Replay through the platform's replay service so results are stored under a replay id.
 
     The service only reads inside ``PCAP_DIRECTORY``, so a file elsewhere is copied in first.
@@ -254,7 +351,9 @@ async def _replay_persisted(settings: Settings, pcap: Path, speed: float, limit:
             await asyncio.to_thread(copy.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(shutil.copyfile, source, copy)
             source = copy
-        started = await service.start(str(source.relative_to(service.directory)), actor=actor(), speed=speed, limit=limit)
+        started = await service.start(
+            str(source.relative_to(service.directory)), actor=actor(), speed=speed, limit=limit
+        )
         await service.wait(started["replay_id"])
         record = await service.get(started["replay_id"])
         if record is None or record["status"] != "completed":
@@ -285,8 +384,15 @@ class _ReplayProgress:
         )
 
         self.quiet = quiet
-        self.progress = Progress(TextColumn("[bold]replaying"), BarColumn(), MofNCompleteColumn(), TextColumn("{task.fields[detail]}"),
-                                 TimeElapsedColumn(), console=err, transient=True)
+        self.progress = Progress(
+            TextColumn("[bold]replaying"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("{task.fields[detail]}"),
+            TimeElapsedColumn(),
+            console=err,
+            transient=True,
+        )
         self.task = self.progress.add_task("replay", total=total or None, detail="")
 
     def __enter__(self) -> Any:
@@ -294,8 +400,11 @@ class _ReplayProgress:
             self.progress.start()
 
         def update(stats: dict[str, Any]) -> None:
-            self.progress.update(self.task, completed=stats["frames"],
-                                 detail=f"{stats['packets_per_second']:,.0f} pkt/s  {stats['detections']} detections")
+            self.progress.update(
+                self.task,
+                completed=stats["frames"],
+                detail=f"{stats['packets_per_second']:,.0f} pkt/s  {stats['detections']} detections",
+            )
 
         return update
 
@@ -310,25 +419,54 @@ def _print_report(result: RunReport, metadata: dict[str, Any], rule_count: int) 
     summary.add_column(style="dim")
     summary.add_column()
     rows = [
-        ("File", f"{metadata['filename']}  ({metadata['packet_count']:,} packets over {metadata['duration_seconds']:.1f}s)"),
+        (
+            "File",
+            f"{metadata['filename']}  ({metadata['packet_count']:,} packets over {metadata['duration_seconds']:.1f}s)",
+        ),
         ("Processed", f"{data['frames']:,} frames in {data['wall_seconds']:.2f}s"),
         ("Throughput", f"{data['packets_per_second']:,.0f} packets/s (measured)"),
-        ("Latency", f"p50 {data['latency']['per_packet_p50_ms']} ms, p99 {data['latency']['per_packet_p99_ms']} ms per packet; "
-                    f"{data['latency']['detection_mean_ms']} ms mean to a response decision"),
-        ("Resources", f"CPU mean {data['resources']['cpu_percent_mean']}% (max {data['resources']['cpu_percent_max']}%), "
-                      f"peak RSS {data['resources']['memory_peak_mb']} MB"),
-        ("Detectors", f"{len(result.detections)} detections, {len(result.incidents)} incidents, {rule_count} custom rules loaded"),
+        (
+            "Latency",
+            f"p50 {data['latency']['per_packet_p50_ms']} ms, p99 {data['latency']['per_packet_p99_ms']} ms per packet; "
+            f"{data['latency']['detection_mean_ms']} ms mean to a response decision",
+        ),
+        (
+            "Resources",
+            f"CPU mean {data['resources']['cpu_percent_mean']}% (max {data['resources']['cpu_percent_max']}%), "
+            f"peak RSS {data['resources']['memory_peak_mb']} MB",
+        ),
+        (
+            "Detectors",
+            f"{len(result.detections)} detections, {len(result.incidents)} incidents, {rule_count} custom rules loaded",
+        ),
         ("Decode failures", str(data["decode_failures"])),
     ]
     for label, value in rows:
         summary.add_row(label, value)
     console.print(Panel(summary, title="Replay report", expand=False))
     if result.detections:
-        console.print(table("Detections", ["Severity", "Risk", "Threat", "Source", "Detector", "Decision"], [
-            (severity_text(r.detection.severity.value), risk_text(r.risk.score), r.detection.title, r.detection.source_ip, r.detection.detector,
-             ", ".join(f"{d.action.value}:{d.outcome}" for d in r.decisions if d.action.is_preventive) or "alert")
-            for r in result.detections
-        ]))
+        console.print(
+            table(
+                "Detections",
+                ["Severity", "Risk", "Threat", "Source", "Detector", "Decision"],
+                [
+                    (
+                        severity_text(r.detection.severity.value),
+                        risk_text(r.risk.score),
+                        r.detection.title,
+                        r.detection.source_ip,
+                        r.detection.detector,
+                        ", ".join(
+                            f"{d.action.value}:{d.outcome}"
+                            for d in r.decisions
+                            if d.action.is_preventive
+                        )
+                        or "alert",
+                    )
+                    for r in result.detections
+                ],
+            )
+        )
     for incident in result.incidents.values():
         body = Text()
         body.append(f"{incident.title}  ", style="bold")
@@ -336,7 +474,9 @@ def _print_report(result: RunReport, metadata: dict[str, Any], rule_count: int) 
         body.append(f"/100\n{incident.summary}\n")
         for line in incident.risk.rationale:
             body.append(f"  {line}\n", style="dim")
-        console.print(Panel(body, title=f"Incident ({incident.detection_count} detections)", expand=False))
+        console.print(
+            Panel(body, title=f"Incident ({incident.detection_count} detections)", expand=False)
+        )
     console.print("[dim]Replay responses are always simulated; no firewall changes were made.[/]")
 
 
@@ -369,13 +509,29 @@ class _MonitorView:
             f"detections {stats.get('detections', 0)}",
             f"incidents {stats.get('incidents', 0)}",
             f"dropped {stats.get('dropped', 0)}",
-            "protocols " + " ".join(f"{k}:{v:.0%}" for k, v in (stats.get("protocols") or {}).items() if v),
+            "protocols "
+            + " ".join(f"{k}:{v:.0%}" for k, v in (stats.get("protocols") or {}).items() if v),
         )
-        detection_table = table("Latest detections", ["Severity", "Risk", "Threat", "Source", "Evidence"], [
-            (severity_text(r.detection.severity.value), risk_text(r.risk.score), r.detection.title, r.detection.source_ip,
-             r.detection.evidence[0].description[:60] if r.detection.evidence else "")
-            for r in reversed(self.detections)
-        ])
-        packets = Panel(Text("\n".join(self.recent_packets) or "waiting for traffic...", style="dim"), title="Sampled packets", expand=False)
+        detection_table = table(
+            "Latest detections",
+            ["Severity", "Risk", "Threat", "Source", "Evidence"],
+            [
+                (
+                    severity_text(r.detection.severity.value),
+                    risk_text(r.risk.score),
+                    r.detection.title,
+                    r.detection.source_ip,
+                    r.detection.evidence[0].description[:60] if r.detection.evidence else "",
+                )
+                for r in reversed(self.detections)
+            ],
+        )
+        packets = Panel(
+            Text("\n".join(self.recent_packets) or "waiting for traffic...", style="dim"),
+            title="Sampled packets",
+            expand=False,
+        )
         footer = Text("finished" if stats.get("final") else "Ctrl-C to stop", style="dim")
-        return Group(safety_panel(self.settings.safety_banner()), header, detection_table, packets, footer)
+        return Group(
+            safety_panel(self.settings.safety_banner()), header, detection_table, packets, footer
+        )

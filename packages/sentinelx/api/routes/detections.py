@@ -40,15 +40,27 @@ async def list_detections(
 ) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     filters = DetectionFilter(
-        severities=[s.value for s in severity], detectors=detector, categories=[c.value for c in category],
-        statuses=list(status), source_ip=source_ip, destination_ip=destination_ip, protocol=protocol,
-        incident_id=incident_id, replay_id=replay_id, since=since, until=until, min_risk=min_risk, search=q,
+        severities=[s.value for s in severity],
+        detectors=detector,
+        categories=[c.value for c in category],
+        statuses=list(status),
+        source_ip=source_ip,
+        destination_ip=destination_ip,
+        protocol=protocol,
+        incident_id=incident_id,
+        replay_id=replay_id,
+        since=since,
+        until=until,
+        min_risk=min_risk,
+        search=q,
     )
     return await queries.detections(filters, limit=limit, offset=offset, order=order)
 
 
 @router.get("/detections/{detection_id}", tags=["detections"])
-async def get_detection(detection_id: str, principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
+async def get_detection(
+    detection_id: str, principal: Viewer, platform: PlatformDep
+) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     detection = await queries.detection(detection_id)
     if detection is None:
@@ -56,15 +68,30 @@ async def get_detection(detection_id: str, principal: Viewer, platform: Platform
     return detection
 
 
-@router.patch("/detections/{detection_id}", tags=["detections"], summary="Triage: acknowledge, resolve or mark false positive")
-async def update_detection(detection_id: str, body: DetectionStatusRequest, principal: Analyst, request: Request,
-                           platform: PlatformDep) -> dict[str, Any]:
+@router.patch(
+    "/detections/{detection_id}",
+    tags=["detections"],
+    summary="Triage: acknowledge, resolve or mark false positive",
+)
+async def update_detection(
+    detection_id: str,
+    body: DetectionStatusRequest,
+    principal: Analyst,
+    request: Request,
+    platform: PlatformDep,
+) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     detection = await queries.set_detection_status(detection_id, body.status, principal.username)
     if detection is None:
         raise HTTPException(status_code=404, detail="detection not found")
-    await platform.audit.record(actor=principal.username, action="TRIAGE_DETECTION", target=detection_id,
-                                source="api", client_ip=client_ip(request), details={"status": body.status})
+    await platform.audit.record(
+        actor=principal.username,
+        action="TRIAGE_DETECTION",
+        target=detection_id,
+        source="api",
+        client_ip=client_ip(request),
+        details={"status": body.status},
+    )
     return detection
 
 
@@ -82,13 +109,20 @@ async def list_incidents(
 ) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     return await queries.incidents(
-        statuses=[s.value for s in status], severities=[s.value for s in severity], min_risk=min_risk,
-        replay_id=replay_id, since=since, limit=limit, offset=offset,
+        statuses=[s.value for s in status],
+        severities=[s.value for s in severity],
+        min_risk=min_risk,
+        replay_id=replay_id,
+        since=since,
+        limit=limit,
+        offset=offset,
     )
 
 
 @router.get("/incidents/{incident_id}", tags=["incidents"])
-async def get_incident(incident_id: str, principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
+async def get_incident(
+    incident_id: str, principal: Viewer, platform: PlatformDep
+) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     incident = await queries.incident(incident_id)
     if incident is None:
@@ -97,8 +131,13 @@ async def get_incident(incident_id: str, principal: Viewer, platform: PlatformDe
 
 
 @router.patch("/incidents/{incident_id}", tags=["incidents"])
-async def update_incident(incident_id: str, body: IncidentUpdateRequest, principal: Analyst, request: Request,
-                          platform: PlatformDep) -> dict[str, Any]:
+async def update_incident(
+    incident_id: str,
+    body: IncidentUpdateRequest,
+    principal: Analyst,
+    request: Request,
+    platform: PlatformDep,
+) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     changes = body.model_dump(exclude_none=True, mode="json")
     if not changes:
@@ -106,19 +145,35 @@ async def update_incident(incident_id: str, body: IncidentUpdateRequest, princip
     incident = await queries.update_incident(incident_id, **changes)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
-    await platform.audit.record(actor=principal.username, action="UPDATE_INCIDENT", target=incident_id,
-                                source="api", client_ip=client_ip(request),
-                                details={k: v for k, v in changes.items() if k != "notes"} | ({"notes_changed": True} if "notes" in changes else {}))
+    await platform.audit.record(
+        actor=principal.username,
+        action="UPDATE_INCIDENT",
+        target=incident_id,
+        source="api",
+        client_ip=client_ip(request),
+        details={k: v for k, v in changes.items() if k != "notes"}
+        | ({"notes_changed": True} if "notes" in changes else {}),
+    )
     return incident
 
 
-@router.get("/alerts", tags=["alerts"], summary="Items needing attention: high-risk untriaged detections and pending approvals")
-async def alerts(principal: Viewer, platform: PlatformDep, hours: int = Query(default=24, ge=1, le=720)) -> dict[str, Any]:
+@router.get(
+    "/alerts",
+    tags=["alerts"],
+    summary="Items needing attention: high-risk untriaged detections and pending approvals",
+)
+async def alerts(
+    principal: Viewer, platform: PlatformDep, hours: int = Query(default=24, ge=1, le=720)
+) -> dict[str, Any]:
     pipeline, _, _, queries = platform.require()
     threshold = platform.settings.response.webhook_min_risk
     detections = await queries.detections(
-        DetectionFilter(statuses=["new"], min_risk=threshold, since=datetime.now(UTC) - timedelta(hours=hours)),
-        limit=100, offset=0, order="risk",
+        DetectionFilter(
+            statuses=["new"], min_risk=threshold, since=datetime.now(UTC) - timedelta(hours=hours)
+        ),
+        limit=100,
+        offset=0,
+        order="risk",
     )
     return {
         "risk_threshold": threshold,
@@ -128,7 +183,11 @@ async def alerts(principal: Viewer, platform: PlatformDep, hours: int = Query(de
 
 
 @router.get("/threats", tags=["threats"], summary="Detections grouped by source address")
-async def threats(principal: Viewer, platform: PlatformDep, hours: int = Query(default=24, ge=1, le=720),
-                  limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+async def threats(
+    principal: Viewer,
+    platform: PlatformDep,
+    hours: int = Query(default=24, ge=1, le=720),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[dict[str, Any]]:
     _, _, _, queries = platform.require()
     return await queries.threats(since=datetime.now(UTC) - timedelta(hours=hours), limit=limit)

@@ -99,7 +99,9 @@ def load_network_file(path: Path) -> list[tuple[IPNetworkT, str]]:
 
 
 class _NetworkListProvider(ThreatIntelProvider):
-    def __init__(self, entries: list[tuple[str, str]] | None = None, path: Path | None = None) -> None:
+    def __init__(
+        self, entries: list[tuple[str, str]] | None = None, path: Path | None = None
+    ) -> None:
         self._entries: list[tuple[IPNetworkT, str]] = []
         self.path = path
         for value, label in entries or []:
@@ -130,7 +132,11 @@ class _NetworkListProvider(ThreatIntelProvider):
         return None
 
     def describe(self) -> dict[str, object]:
-        return {**super().describe(), "entries": len(self._entries), "path": str(self.path) if self.path else None}
+        return {
+            **super().describe(),
+            "entries": len(self._entries),
+            "path": str(self.path) if self.path else None,
+        }
 
 
 class LocalDenylistProvider(_NetworkListProvider):
@@ -184,7 +190,9 @@ class HttpReputationProvider(ThreatIntelProvider):
 
     name = "http_reputation"
 
-    def __init__(self, url: str, api_key: str = "", timeout: float = 3.0, cache_seconds: float = 3600.0):
+    def __init__(
+        self, url: str, api_key: str = "", timeout: float = 3.0, cache_seconds: float = 3600.0
+    ):
         if not url.startswith("https://"):
             raise ValueError("reputation provider URL must use https")
         self.url = url.rstrip("/")
@@ -226,7 +234,10 @@ class HttpReputationProvider(ThreatIntelProvider):
             return None
         categories = tuple(str(c) for c in body.get("categories", []) if isinstance(c, str))
         return IntelVerdict(
-            provider=self.name, address=address, score=score, categories=categories,
+            provider=self.name,
+            address=address,
+            score=score,
+            categories=categories,
             description=f"external reputation score {score:.0%}",
         )
 
@@ -239,12 +250,16 @@ class ThreatIntelService:
     contributing provider is recorded so the risk rationale can cite them.
     """
 
-    def __init__(self, providers: list[ThreatIntelProvider] | None = None, timeout: float = 2.0) -> None:
+    def __init__(
+        self, providers: list[ThreatIntelProvider] | None = None, timeout: float = 2.0
+    ) -> None:
         self.providers = providers or []
         self.timeout = timeout
         self.failures: dict[str, int] = {}
 
-    async def evaluate(self, address: str) -> tuple[float, tuple[str, ...], bool, list[IntelVerdict]]:
+    async def evaluate(
+        self, address: str
+    ) -> tuple[float, tuple[str, ...], bool, list[IntelVerdict]]:
         """Return ``(score, provider names, trusted, verdicts)`` for an address."""
         if not self.providers:
             return 0.0, (), False, []
@@ -259,12 +274,18 @@ class ThreatIntelService:
             return 0.0, (), False, verdicts
         return max(v.score for v in bad), tuple(v.provider for v in bad), False, verdicts
 
-    async def _safe_lookup(self, provider: ThreatIntelProvider, address: str) -> IntelVerdict | None:
+    async def _safe_lookup(
+        self, provider: ThreatIntelProvider, address: str
+    ) -> IntelVerdict | None:
         try:
             return await asyncio.wait_for(provider.lookup(address), timeout=self.timeout)
         except (ThreatIntelError, TimeoutError, ValueError) as exc:
             self.failures[provider.name] = self.failures.get(provider.name, 0) + 1
-            log.warning("threat_intel_lookup_failed", provider=provider.name, error=str(exc) or type(exc).__name__)
+            log.warning(
+                "threat_intel_lookup_failed",
+                provider=provider.name,
+                error=str(exc) or type(exc).__name__,
+            )
             return None
 
     def get(self, name: str) -> ThreatIntelProvider | None:

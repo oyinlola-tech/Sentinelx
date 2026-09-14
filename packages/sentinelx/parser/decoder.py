@@ -351,7 +351,9 @@ class PacketDecoder:
         except ValueError:
             return Direction.UNKNOWN
 
-        src_home = any(source.version == net.version and source in net for net in self._home_networks)
+        src_home = any(
+            source.version == net.version and source in net for net in self._home_networks
+        )
         dst_home = any(
             destination.version == net.version and destination in net for net in self._home_networks
         )

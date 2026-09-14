@@ -95,29 +95,112 @@ class NftablesAdapter(FirewallAdapter):
         fam, table = self.family, self.table
         await nft("add", "table", fam, table)
         for name, kind in (
-            (self.block_v4, "ipv4_addr"), (self.block_v6, "ipv6_addr"),
-            (self.limit_v4, "ipv4_addr"), (self.limit_v6, "ipv6_addr"),
+            (self.block_v4, "ipv4_addr"),
+            (self.block_v6, "ipv6_addr"),
+            (self.limit_v4, "ipv4_addr"),
+            (self.limit_v6, "ipv6_addr"),
         ):
-            await nft("add", "set", fam, table, name, "{", "type", kind, ";", "flags", "interval,timeout", ";", "}")
+            await nft(
+                "add",
+                "set",
+                fam,
+                table,
+                name,
+                "{",
+                "type",
+                kind,
+                ";",
+                "flags",
+                "interval,timeout",
+                ";",
+                "}",
+            )
         for chain, hook in (("input", "input"), ("forward", "forward")):
             await nft(
-                "add", "chain", fam, table, chain,
-                "{", "type", "filter", "hook", hook, "priority", "-10", ";", "policy", "accept", ";", "}",
+                "add",
+                "chain",
+                fam,
+                table,
+                chain,
+                "{",
+                "type",
+                "filter",
+                "hook",
+                hook,
+                "priority",
+                "-10",
+                ";",
+                "policy",
+                "accept",
+                ";",
+                "}",
             )
             # Flush then re-add so repeated setup never duplicates rules.
             await nft("flush", "chain", fam, table, chain)
-            await nft("add", "rule", fam, table, chain, "ip", "saddr", f"@{self.block_v4}", "counter", "drop")
-            await nft("add", "rule", fam, table, chain, "ip6", "saddr", f"@{self.block_v6}", "counter", "drop")
+            await nft(
+                "add",
+                "rule",
+                fam,
+                table,
+                chain,
+                "ip",
+                "saddr",
+                f"@{self.block_v4}",
+                "counter",
+                "drop",
+            )
+            await nft(
+                "add",
+                "rule",
+                fam,
+                table,
+                chain,
+                "ip6",
+                "saddr",
+                f"@{self.block_v6}",
+                "counter",
+                "drop",
+            )
             rate = f"{self.rate_limit_pps}/second"
-            await nft("add", "rule", fam, table, chain, "ip", "saddr", f"@{self.limit_v4}",
-                      "limit", "rate", "over", rate, "counter", "drop")
-            await nft("add", "rule", fam, table, chain, "ip6", "saddr", f"@{self.limit_v6}",
-                      "limit", "rate", "over", rate, "counter", "drop")
+            await nft(
+                "add",
+                "rule",
+                fam,
+                table,
+                chain,
+                "ip",
+                "saddr",
+                f"@{self.limit_v4}",
+                "limit",
+                "rate",
+                "over",
+                rate,
+                "counter",
+                "drop",
+            )
+            await nft(
+                "add",
+                "rule",
+                fam,
+                table,
+                chain,
+                "ip6",
+                "saddr",
+                f"@{self.limit_v6}",
+                "limit",
+                "rate",
+                "over",
+                rate,
+                "counter",
+                "drop",
+            )
         log.info("nftables_ready", table=table, family=fam)
 
     # ----------------------------------------------------------- operations
 
-    async def block(self, network: IPNetworkT, *, duration: int | None = None, comment: str = "") -> BlockEntry:
+    async def block(
+        self, network: IPNetworkT, *, duration: int | None = None, comment: str = ""
+    ) -> BlockEntry:
         target_set = self.block_v4 if network.version == 4 else self.block_v6
         await self._add_element(target_set, network, duration, "block")
         self._comments[str(network)] = comment
@@ -127,11 +210,17 @@ class NftablesAdapter(FirewallAdapter):
             comment=comment,
         )
 
-    async def rate_limit(self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None) -> BlockEntry:
+    async def rate_limit(
+        self, network: IPNetworkT, *, packets_per_second: int, duration: int | None = None
+    ) -> BlockEntry:
         if packets_per_second != self.rate_limit_pps:
             # The rate lives in the rule, not per element; changing it per source
             # would need one rule per source, which defeats the set design.
-            log.warning("rate_limit_uses_configured_rate", requested=packets_per_second, applied=self.rate_limit_pps)
+            log.warning(
+                "rate_limit_uses_configured_rate",
+                requested=packets_per_second,
+                applied=self.rate_limit_pps,
+            )
         target_set = self.limit_v4 if network.version == 4 else self.limit_v6
         await self._add_element(target_set, network, duration, "rate_limit")
         return BlockEntry(
@@ -141,7 +230,9 @@ class NftablesAdapter(FirewallAdapter):
             rate_limited=True,
         )
 
-    async def _add_element(self, set_name: str, network: IPNetworkT, duration: int | None, operation: str) -> None:
+    async def _add_element(
+        self, set_name: str, network: IPNetworkT, duration: int | None, operation: str
+    ) -> None:
         tokens = ["{", _element(network)]
         if duration:
             tokens += ["timeout", f"{int(duration)}s"]
@@ -155,10 +246,22 @@ class NftablesAdapter(FirewallAdapter):
 
     async def unblock(self, network: IPNetworkT) -> bool:
         removed = False
-        sets = (self.block_v4, self.limit_v4) if network.version == 4 else (self.block_v6, self.limit_v6)
+        sets = (
+            (self.block_v4, self.limit_v4)
+            if network.version == 4
+            else (self.block_v6, self.limit_v6)
+        )
         for set_name in sets:
             result = await self._runner.run(
-                "delete", "element", self.family, self.table, set_name, "{", _element(network), "}", check=False
+                "delete",
+                "element",
+                self.family,
+                self.table,
+                set_name,
+                "{",
+                _element(network),
+                "}",
+                check=False,
             )
             removed = removed or result.ok
         self._comments.pop(str(network), None)
@@ -167,15 +270,24 @@ class NftablesAdapter(FirewallAdapter):
 
     async def list_blocked(self) -> list[BlockEntry]:
         entries: list[BlockEntry] = []
-        for set_name, limited in ((self.block_v4, False), (self.block_v6, False), (self.limit_v4, True), (self.limit_v6, True)):
-            result = await self._runner.run("-j", "list", "set", self.family, self.table, set_name, check=False)
+        for set_name, limited in (
+            (self.block_v4, False),
+            (self.block_v6, False),
+            (self.limit_v4, True),
+            (self.limit_v6, True),
+        ):
+            result = await self._runner.run(
+                "-j", "list", "set", self.family, self.table, set_name, check=False
+            )
             if not result.ok:
                 continue
             for network, expires in self._parse_elements(result.stdout):
                 entries.append(
                     BlockEntry(
                         network=network,
-                        expires_at=datetime.now(UTC) + timedelta(seconds=expires) if expires else None,
+                        expires_at=datetime.now(UTC) + timedelta(seconds=expires)
+                        if expires
+                        else None,
                         comment=self._comments.get(network, "rate limit" if limited else ""),
                         rate_limited=limited,
                     )

@@ -14,7 +14,9 @@ from sentinelx.pipeline import Pipeline
 from sentinelx.testing import get_scenario, write_pcap
 
 
-def make_pipeline(settings: Settings, bus: EventBus | None = None) -> tuple[Pipeline, MemoryFirewall, list[dict[str, object]]]:
+def make_pipeline(
+    settings: Settings, bus: EventBus | None = None
+) -> tuple[Pipeline, MemoryFirewall, list[dict[str, object]]]:
     firewall = MemoryFirewall()
     audit: list[dict[str, object]] = []
 
@@ -26,7 +28,9 @@ def make_pipeline(settings: Settings, bus: EventBus | None = None) -> tuple[Pipe
     return pipeline, firewall, audit
 
 
-async def test_mixed_intrusion_produces_one_incident_and_publishes_events(settings: Settings) -> None:
+async def test_mixed_intrusion_produces_one_incident_and_publishes_events(
+    settings: Settings,
+) -> None:
     bus = EventBus()
     pipeline, firewall, _ = make_pipeline(settings, bus)
     await pipeline.start()
@@ -44,11 +48,18 @@ async def test_mixed_intrusion_produces_one_incident_and_publishes_events(settin
     consumer.cancel()
     await pipeline.stop()
 
-    assert {r.detection.detector for r in report.detections} >= {"tcp_port_scan", "ssh_brute_force", "icmp_flood"}
+    assert {r.detection.detector for r in report.detections} >= {
+        "tcp_port_scan",
+        "ssh_brute_force",
+        "icmp_flood",
+    }
     assert len(report.incidents) == 1
     incident = next(iter(report.incidents.values()))
     assert incident.title == "Potential host compromise attempt" and incident.risk.score >= 90
-    assert EventType.DETECTION_CREATED.value in received and EventType.INCIDENT_OPENED.value in received
+    assert (
+        EventType.DETECTION_CREATED.value in received
+        and EventType.INCIDENT_OPENED.value in received
+    )
     assert EventType.PACKET_STATS.value in received
     assert firewall.operations == []  # default posture never blocks
 
@@ -75,13 +86,18 @@ async def test_replay_matches_in_memory_run(settings: Settings, tmp_path: Path) 
     direct_report = await direct.run(MockCapture(scenario.frames))
     await direct.stop()
 
-    replayed, _, _ = make_pipeline(Settings(storage={"database_url": "sqlite+aiosqlite:///:memory:"}))
+    replayed, _, _ = make_pipeline(
+        Settings(storage={"database_url": "sqlite+aiosqlite:///:memory:"})
+    )
     await replayed.start()
     replay_report = await replayed.run(PcapFileCapture(path))
     await replayed.stop()
 
     def signature(report) -> list[tuple[str, str, str]]:  # type: ignore[no-untyped-def]
-        return [(r.detection.detector, r.detection.source_ip, r.detection.severity.value) for r in report.detections]
+        return [
+            (r.detection.detector, r.detection.source_ip, r.detection.severity.value)
+            for r in report.detections
+        ]
 
     assert signature(direct_report) == signature(replay_report)
     assert replay_report.frames == len(scenario.frames)
@@ -90,7 +106,9 @@ async def test_replay_matches_in_memory_run(settings: Settings, tmp_path: Path) 
 async def test_benign_traffic_report_is_clean_and_measured(settings: Settings) -> None:
     pipeline, _, _ = make_pipeline(settings)
     await pipeline.start()
-    report = await pipeline.run(MockCapture(get_scenario("normal_traffic", packet_count=2000).frames))
+    report = await pipeline.run(
+        MockCapture(get_scenario("normal_traffic", packet_count=2000).frames)
+    )
     await pipeline.stop()
     data = report.as_dict()
     assert data["detection_count"] == 0 and data["incident_count"] == 0

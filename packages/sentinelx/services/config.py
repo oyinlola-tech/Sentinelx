@@ -50,9 +50,18 @@ EDITABLE: dict[str, set[str]] = {
     "correlation": set(CorrelationSettings.model_fields),
     "anomaly": {"enabled", "anomaly_threshold", "min_samples", "sigma_saturation", "ml_min_score"},
     "response": {
-        "mode", "dry_run", "default_block_seconds", "max_block_seconds", "max_blocked_addresses",
-        "max_block_prefix_hosts", "allowlist_networks", "management_addresses", "webhook_url",
-        "webhook_min_risk", "webhook_timeout_seconds", "rate_limit_packets_per_second",
+        "mode",
+        "dry_run",
+        "default_block_seconds",
+        "max_block_seconds",
+        "max_blocked_addresses",
+        "max_block_prefix_hosts",
+        "allowlist_networks",
+        "management_addresses",
+        "webhook_url",
+        "webhook_min_risk",
+        "webhook_timeout_seconds",
+        "rate_limit_packets_per_second",
     },
     "storage": {"retention_days", "audit_retention_days", "metrics_retention_days"},
     "telemetry": {"log_level"},
@@ -61,13 +70,19 @@ EDITABLE: dict[str, set[str]] = {
 
 #: Windows sized at construction; changing them rebuilds traffic state.
 WINDOW_FIELDS = {
-    "port_scan_window_seconds", "brute_force_window_seconds", "connection_rate_window_seconds",
-    "icmp_flood_window_seconds", "dns_window_seconds", "http_flood_window_seconds",
+    "port_scan_window_seconds",
+    "brute_force_window_seconds",
+    "connection_rate_window_seconds",
+    "icmp_flood_window_seconds",
+    "dns_window_seconds",
+    "http_flood_window_seconds",
 }
 
 
 class ConfigService:
-    def __init__(self, settings: Settings, database: Database, audit: AuditService, bus: EventBus) -> None:
+    def __init__(
+        self, settings: Settings, database: Database, audit: AuditService, bus: EventBus
+    ) -> None:
         self.settings = settings
         self.database = database
         self.audit = audit
@@ -106,10 +121,20 @@ class ConfigService:
             except (ConfigurationError, ValidationError) as exc:
                 log.error("stored_setting_invalid", section=section, error=str(exc))
         if stored:
-            log.info("setting_overrides_loaded", sections=sorted(stored), banner=self.settings.safety_banner())
+            log.info(
+                "setting_overrides_loaded",
+                sections=sorted(stored),
+                banner=self.settings.safety_banner(),
+            )
 
     async def update(
-        self, section: str, changes: dict[str, Any], *, actor: str, source: str, confirmation: str | None = None
+        self,
+        section: str,
+        changes: dict[str, Any],
+        *,
+        actor: str,
+        source: str,
+        confirmation: str | None = None,
     ) -> dict[str, Any]:
         """Validate, apply, persist and audit a change to one section.
 
@@ -118,7 +143,11 @@ class ConfigService:
                 values, or enabling prevention without the confirmation phrase.
         """
         before_banner = self.settings.safety_banner()
-        before = getattr(self.settings, section).model_dump(mode="json") if hasattr(self.settings, section) else {}
+        before = (
+            getattr(self.settings, section).model_dump(mode="json")
+            if hasattr(self.settings, section)
+            else {}
+        )
         enabling = self._would_enable_prevention(section, changes)
         if enabling and confirmation != PREVENTION_CONFIRMATION:
             raise ConfigurationError(
@@ -128,7 +157,9 @@ class ConfigService:
         try:
             applied = self._apply(section, changes, allow_prevention=enabling)
         except ValidationError as exc:
-            problems = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+            problems = "; ".join(
+                f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()
+            )
             raise ConfigurationError(f"invalid {section} settings: {problems}") from exc
 
         async with self.database.session() as session:
@@ -136,16 +167,27 @@ class ConfigService:
             existing = (await repo.all()).get(section, {})
             await repo.set(section, {**existing, **applied}, actor)
 
-        diff = {key: {"from": before.get(key), "to": value} for key, value in applied.items() if before.get(key) != value}
+        diff = {
+            key: {"from": before.get(key), "to": value}
+            for key, value in applied.items()
+            if before.get(key) != value
+        }
         await self.audit.record(
             actor=actor,
             action="ENABLE_PREVENTION" if enabling else "UPDATE_SETTINGS",
-            target=section, source=source, details={"changes": diff},
+            target=section,
+            source=source,
+            details={"changes": diff},
         )
         after_banner = self.settings.safety_banner()
         if before_banner != after_banner:
-            log.warning("safety_posture_changed", before=before_banner, after=after_banner, actor=actor)
-        await self.bus.publish(EventType.CONFIG_CHANGED, {"section": section, "changes": diff, "safety": after_banner, "actor": actor})
+            log.warning(
+                "safety_posture_changed", before=before_banner, after=after_banner, actor=actor
+            )
+        await self.bus.publish(
+            EventType.CONFIG_CHANGED,
+            {"section": section, "changes": diff, "safety": after_banner, "actor": actor},
+        )
         return self.view()
 
     def _would_enable_prevention(self, section: str, changes: dict[str, Any]) -> bool:
@@ -153,18 +195,32 @@ class ConfigService:
             return False
         mode = ResponseMode(changes.get("mode", self.settings.response.mode))
         dry_run = changes.get("dry_run", self.settings.response.dry_run)
-        return mode is ResponseMode.AUTOMATIC and dry_run is False and not self.settings.prevention_active
+        return (
+            mode is ResponseMode.AUTOMATIC
+            and dry_run is False
+            and not self.settings.prevention_active
+        )
 
-    def _apply(self, section: str, changes: dict[str, Any], *, allow_prevention: bool) -> dict[str, Any]:
+    def _apply(
+        self, section: str, changes: dict[str, Any], *, allow_prevention: bool
+    ) -> dict[str, Any]:
         if section not in EDITABLE:
             raise ConfigurationError(f"section '{section}' cannot be changed at runtime")
         illegal = sorted(set(changes) - EDITABLE[section])
         if illegal:
-            raise ConfigurationError(f"not editable at runtime (set via environment and restart): {', '.join(illegal)}")
+            raise ConfigurationError(
+                f"not editable at runtime (set via environment and restart): {', '.join(illegal)}"
+            )
         current: BaseModel = getattr(self.settings, section)
         validated = type(current).model_validate({**current.model_dump(), **changes})
-        if isinstance(validated, ResponseSettings) and validated.prevention_active and not allow_prevention:
-            raise ConfigurationError("stored settings would enable prevention; refusing to apply them without confirmation")
+        if (
+            isinstance(validated, ResponseSettings)
+            and validated.prevention_active
+            and not allow_prevention
+        ):
+            raise ConfigurationError(
+                "stored settings would enable prevention; refusing to apply them without confirmation"
+            )
         applied = {}
         for key in changes:
             value = getattr(validated, key)

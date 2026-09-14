@@ -119,13 +119,25 @@ class RunReport:
             "detections_by_severity": _count(r.detection.severity.value for r in self.detections),
             "response_decisions": _count(f"{d.action.value}:{d.outcome}" for d in decisions),
             "latency": {
-                "per_packet_mean_ms": round(1000 * sum(self.processing_latencies) / len(self.processing_latencies), 4)
-                if self.processing_latencies else 0.0,
-                "per_packet_p50_ms": round(1000 * self._percentile(self.processing_latencies, 50), 4),
-                "per_packet_p99_ms": round(1000 * self._percentile(self.processing_latencies, 99), 4),
-                "detection_mean_ms": round(1000 * sum(detection_latency) / len(detection_latency), 3)
-                if detection_latency else 0.0,
-                "detection_max_ms": round(1000 * max(detection_latency), 3) if detection_latency else 0.0,
+                "per_packet_mean_ms": round(
+                    1000 * sum(self.processing_latencies) / len(self.processing_latencies), 4
+                )
+                if self.processing_latencies
+                else 0.0,
+                "per_packet_p50_ms": round(
+                    1000 * self._percentile(self.processing_latencies, 50), 4
+                ),
+                "per_packet_p99_ms": round(
+                    1000 * self._percentile(self.processing_latencies, 99), 4
+                ),
+                "detection_mean_ms": round(
+                    1000 * sum(detection_latency) / len(detection_latency), 3
+                )
+                if detection_latency
+                else 0.0,
+                "detection_max_ms": round(1000 * max(detection_latency), 3)
+                if detection_latency
+                else 0.0,
             },
             "resources": {
                 "cpu_percent_mean": round(sum(cpu) / len(cpu), 1) if cpu else 0.0,
@@ -197,7 +209,11 @@ class Pipeline:
         await self.bus.start()
         await self.response.start()
         self.started_at = time.monotonic()
-        log.info("pipeline_started", sensor=self.settings.sensor_name, banner=self.settings.safety_banner())
+        log.info(
+            "pipeline_started",
+            sensor=self.settings.sensor_name,
+            banner=self.settings.safety_banner(),
+        )
 
     async def stop(self) -> None:
         if self.capture is not None:
@@ -249,7 +265,10 @@ class Pipeline:
             correlated_detectors=self.correlation.correlated_detector_count(detection),
         )
         risk = self.risk.assess(detection, context)
-        await self.bus.publish(EventType.DETECTION_CREATED, {**detection_to_dict(detection, risk), "replay_id": self.replay_id})
+        await self.bus.publish(
+            EventType.DETECTION_CREATED,
+            {**detection_to_dict(detection, risk), "replay_id": self.replay_id},
+        )
 
         incident: Incident | None = None
         result = self.correlation.correlate(detection, risk)
@@ -265,14 +284,20 @@ class Pipeline:
                     EventType.SEVERITY_CHANGED,
                     {
                         "incident_id": incident.incident_id,
-                        "previous": result.previous_severity.value if result.previous_severity else None,
+                        "previous": result.previous_severity.value
+                        if result.previous_severity
+                        else None,
                         "current": incident.severity.value,
                         "risk": incident.risk.score,
                     },
                 )
 
         decisions = await self.response.handle_detection(detection, risk)
-        if incident is not None and result is not None and (result.created or result.severity_changed):
+        if (
+            incident is not None
+            and result is not None
+            and (result.created or result.severity_changed)
+        ):
             decisions.extend(await self.response.handle_incident(incident))
 
         return DetectionRecord(
@@ -331,17 +356,21 @@ class Pipeline:
                     if max_packets is not None and report.frames >= max_packets:
                         report.stopped_early = True
                         break
-                metrics.packets_captured.labels(source=capture.source_kind, interface=capture.interface).inc(
-                    capture.stats.received
-                )
+                metrics.packets_captured.labels(
+                    source=capture.source_kind, interface=capture.interface
+                ).inc(capture.stats.received)
                 if capture.stats.total_dropped:
-                    metrics.packets_dropped.labels(reason="capture").inc(capture.stats.total_dropped)
+                    metrics.packets_dropped.labels(reason="capture").inc(
+                        capture.stats.total_dropped
+                    )
         finally:
             report.wall_seconds = time.perf_counter() - wall_start
             report.finished_at = datetime.now(UTC)
             report.packets_decoded = self.decoder.decoded
             report.decode_failures = self.decoder.failed
-            report.capture_span_seconds = (last_ts - first_ts) if first_ts is not None and last_ts is not None else 0.0
+            report.capture_span_seconds = (
+                (last_ts - first_ts) if first_ts is not None and last_ts is not None else 0.0
+            )
             sample = self._sampler.sample()
             report.cpu_percent_samples.append(sample["cpu_percent"])
             report.memory_peak_bytes = max(report.memory_peak_bytes, sample["memory_bytes"])
@@ -394,7 +423,9 @@ class Pipeline:
             "sensor": self.settings.sensor_name,
             "running": self.capture is not None,
             "capture": self.capture.describe() if self.capture else None,
-            "uptime_seconds": round(time.monotonic() - self.started_at, 1) if self.started_at else 0.0,
+            "uptime_seconds": round(time.monotonic() - self.started_at, 1)
+            if self.started_at
+            else 0.0,
             "safety": self.settings.safety_banner(),
             "decoder": self.decoder.stats(),
             "features": self.extractor.state(),

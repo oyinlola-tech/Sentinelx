@@ -35,39 +35,62 @@ Authenticated = Annotated[Principal, Depends(current_principal)]
 
 def _user(user: User) -> UserResponse:
     return UserResponse(
-        id=user.id, username=user.username, role=UserRole(user.role), is_active=user.is_active,
+        id=user.id,
+        username=user.username,
+        role=UserRole(user.role),
+        is_active=user.is_active,
         must_change_password=user.must_change_password,
         last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
         created_at=user.created_at.isoformat() if user.created_at else None,
     )
 
 
-def _token_response(request: Request, response: Response, pair: TokenPair, platform: PlatformDep) -> TokenResponse:
+def _token_response(
+    request: Request, response: Response, pair: TokenPair, platform: PlatformDep
+) -> TokenResponse:
     principal = pair.principal
     browser = request.headers.get("x-sentinelx-client") == "dashboard"
-    csrf = set_auth_cookies(response, pair, secure=platform.settings.api.cookie_secure) if browser else None
+    csrf = (
+        set_auth_cookies(response, pair, secure=platform.settings.api.cookie_secure)
+        if browser
+        else None
+    )
     return TokenResponse(
         access_token=pair.access_token,
         # A browser gets the refresh token only as an httpOnly cookie; returning it
         # in the body would make it readable by any script on the page.
         refresh_token=None if browser else pair.refresh_token,
         expires_at=pair.access_expires_at.isoformat(),
-        user=UserResponse(id=principal.user_id, username=principal.username, role=principal.role,
-                          must_change_password=principal.must_change_password),
+        user=UserResponse(
+            id=principal.user_id,
+            username=principal.username,
+            role=principal.role,
+            must_change_password=principal.must_change_password,
+        ),
         csrf_token=csrf,
     )
 
 
 @router.post("/auth/login", response_model=TokenResponse, summary="Exchange credentials for tokens")
-async def login(body: LoginRequest, request: Request, response: Response, platform: PlatformDep) -> TokenResponse:
+async def login(
+    body: LoginRequest, request: Request, response: Response, platform: PlatformDep
+) -> TokenResponse:
     ip = client_ip(request)
     try:
         pair = await platform.auth.login(body.username, body.password, client_ip=ip)
     except AuthError as exc:
-        await platform.audit.record(actor=body.username[:64], action="LOGIN_FAILED", source="api", outcome="failure",
-                                    client_ip=ip, reason=str(exc))
+        await platform.audit.record(
+            actor=body.username[:64],
+            action="LOGIN_FAILED",
+            source="api",
+            outcome="failure",
+            client_ip=ip,
+            reason=str(exc),
+        )
         raise
-    await platform.audit.record(actor=pair.principal.username, action="LOGIN", source="api", client_ip=ip)
+    await platform.audit.record(
+        actor=pair.principal.username, action="LOGIN", source="api", client_ip=ip
+    )
     return _token_response(request, response, pair, platform)
 
 
@@ -89,10 +112,18 @@ async def refresh(request: Request, response: Response, platform: PlatformDep) -
     return _token_response(request, response, pair, platform)
 
 
-@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Revoke all refresh tokens for the user")
-async def logout(principal: Authenticated, request: Request, response: Response, platform: PlatformDep) -> Response:
+@router.post(
+    "/auth/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke all refresh tokens for the user",
+)
+async def logout(
+    principal: Authenticated, request: Request, response: Response, platform: PlatformDep
+) -> Response:
     await platform.auth.logout(principal)
-    await platform.audit.record(actor=principal.username, action="LOGOUT", source="api", client_ip=client_ip(request))
+    await platform.audit.record(
+        actor=principal.username, action="LOGOUT", source="api", client_ip=client_ip(request)
+    )
     clear_auth_cookies(response)
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
@@ -108,10 +139,17 @@ async def me(principal: Authenticated, platform: PlatformDep) -> UserResponse:
 
 
 @router.post("/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
-async def change_password(body: ChangePasswordRequest, principal: Authenticated, request: Request, platform: PlatformDep) -> Response:
+async def change_password(
+    body: ChangePasswordRequest, principal: Authenticated, request: Request, platform: PlatformDep
+) -> Response:
     await platform.auth.change_password(principal, body.current_password, body.new_password)
-    await platform.audit.record(actor=principal.username, action="CHANGE_PASSWORD", target=principal.username,
-                                source="api", client_ip=client_ip(request))
+    await platform.audit.record(
+        actor=principal.username,
+        action="CHANGE_PASSWORD",
+        target=principal.username,
+        source="api",
+        client_ip=client_ip(request),
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -130,17 +168,31 @@ async def list_users(principal: Admin, platform: PlatformDep) -> list[UserRespon
 
 
 @router.post("/users", response_model=UserResponse, status_code=201, tags=["users"])
-async def create_user(body: UserCreateRequest, principal: Admin, request: Request, platform: PlatformDep) -> UserResponse:
+async def create_user(
+    body: UserCreateRequest, principal: Admin, request: Request, platform: PlatformDep
+) -> UserResponse:
     user = await platform.auth.create_user(body.username, body.password, body.role)
-    await platform.audit.record(actor=principal.username, action="CREATE_USER", target=user.username, source="api",
-                                client_ip=client_ip(request), details={"role": body.role.value})
+    await platform.audit.record(
+        actor=principal.username,
+        action="CREATE_USER",
+        target=user.username,
+        source="api",
+        client_ip=client_ip(request),
+        details={"role": body.role.value},
+    )
     return _user(user)
 
 
 @router.patch("/users/{user_id}", response_model=UserResponse, tags=["users"])
-async def update_user(user_id: int, body: UserUpdateRequest, principal: Admin, request: Request, platform: PlatformDep) -> UserResponse:
-    if user_id == principal.user_id and (body.role not in (None, UserRole.ADMIN) or body.is_active is False):
-        raise HTTPException(status_code=422, detail="you cannot demote or deactivate your own account")
+async def update_user(
+    user_id: int, body: UserUpdateRequest, principal: Admin, request: Request, platform: PlatformDep
+) -> UserResponse:
+    if user_id == principal.user_id and (
+        body.role not in (None, UserRole.ADMIN) or body.is_active is False
+    ):
+        raise HTTPException(
+            status_code=422, detail="you cannot demote or deactivate your own account"
+        )
     async with platform.database.session() as session:
         users = UserRepository(session)
         user = await users.get(user_id)
@@ -158,8 +210,14 @@ async def update_user(user_id: int, body: UserUpdateRequest, principal: Admin, r
             if not body.is_active:
                 await users.revoke_tokens(user.id)
         result = _user(user)
-    await platform.audit.record(actor=principal.username, action="UPDATE_USER", target=result.username, source="api",
-                                client_ip=client_ip(request), details=changes)
+    await platform.audit.record(
+        actor=principal.username,
+        action="UPDATE_USER",
+        target=result.username,
+        source="api",
+        client_ip=client_ip(request),
+        details=changes,
+    )
     return result
 
 
@@ -168,15 +226,28 @@ async def _admin_count(users: UserRepository) -> int:
 
 
 @router.post("/users/{user_id}/reset-password", status_code=204, tags=["users"])
-async def reset_password(user_id: int, body: PasswordResetRequest, principal: Admin, request: Request, platform: PlatformDep) -> Response:
+async def reset_password(
+    user_id: int,
+    body: PasswordResetRequest,
+    principal: Admin,
+    request: Request,
+    platform: PlatformDep,
+) -> Response:
     await platform.auth.set_password(user_id, body.new_password)
-    await platform.audit.record(actor=principal.username, action="RESET_PASSWORD", target=str(user_id), source="api",
-                                client_ip=client_ip(request))
+    await platform.audit.record(
+        actor=principal.username,
+        action="RESET_PASSWORD",
+        target=str(user_id),
+        source="api",
+        client_ip=client_ip(request),
+    )
     return Response(status_code=204)
 
 
 @router.delete("/users/{user_id}", status_code=204, tags=["users"])
-async def delete_user(user_id: int, principal: Admin, request: Request, platform: PlatformDep) -> Response:
+async def delete_user(
+    user_id: int, principal: Admin, request: Request, platform: PlatformDep
+) -> Response:
     if user_id == principal.user_id:
         raise HTTPException(status_code=422, detail="you cannot delete your own account")
     async with platform.database.session() as session:
@@ -188,6 +259,11 @@ async def delete_user(user_id: int, principal: Admin, request: Request, platform
             raise HTTPException(status_code=422, detail="cannot delete the last administrator")
         username = user.username
         await users.delete(user)
-    await platform.audit.record(actor=principal.username, action="DELETE_USER", target=username, source="api",
-                                client_ip=client_ip(request))
+    await platform.audit.record(
+        actor=principal.username,
+        action="DELETE_USER",
+        target=username,
+        source="api",
+        client_ip=client_ip(request),
+    )
     return Response(status_code=204)

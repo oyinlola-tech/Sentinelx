@@ -21,8 +21,6 @@ def alembic_config(database_url: str) -> Config:
     return config
 
 
-
-
 async def upgrade(database_url: str, revision: str = "head") -> None:
     # env.py calls asyncio.run(), which cannot nest inside a running loop.
     await asyncio.to_thread(command.upgrade, alembic_config(database_url), revision)
@@ -47,6 +45,8 @@ async def current_revision(database_url: str) -> str | None:
     engine = create_async_engine(normalise_database_url(database_url))
     try:
         async with engine.connect() as connection:
-            return await connection.run_sync(lambda sync: MigrationContext.configure(sync).get_current_revision())
+            return await connection.run_sync(
+                lambda sync: MigrationContext.configure(sync).get_current_revision()
+            )
     finally:
         await engine.dispose()

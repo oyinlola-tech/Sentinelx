@@ -44,12 +44,25 @@ __all__ = ["ReplayService"]
 
 log = get_logger(__name__)
 
-_PCAP_MAGICS = (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d", b"\x0a\x0d\x0d\x0a")
+_PCAP_MAGICS = (
+    b"\xd4\xc3\xb2\xa1",
+    b"\xa1\xb2\xc3\xd4",
+    b"\x4d\x3c\xb2\xa1",
+    b"\xa1\xb2\x3c\x4d",
+    b"\x0a\x0d\x0d\x0a",
+)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class ReplayService:
-    def __init__(self, settings: Settings, database: Database, bus: EventBus, rules: RuleService, audit: AuditService) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        database: Database,
+        bus: EventBus,
+        rules: RuleService,
+        audit: AuditService,
+    ) -> None:
         self.settings = settings
         self.database = database
         self.bus = bus
@@ -83,17 +96,23 @@ class ReplayService:
             if path.suffix.lower() not in {".pcap", ".pcapng", ".cap"} or not path.is_file():
                 continue
             stat = path.stat()
-            files.append({
-                "path": str(path.relative_to(self.directory)),
-                "filename": path.name,
-                "size_bytes": stat.st_size,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
-            })
+            files.append(
+                {
+                    "path": str(path.relative_to(self.directory)),
+                    "filename": path.name,
+                    "size_bytes": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+                }
+            )
         return files
 
     async def store_upload(self, filename: str, chunks: Any, *, actor: str) -> dict[str, Any]:
         """Stream an upload to disk, validating the magic number and size limit."""
-        limit = min(self.settings.api.max_upload_mb, self.settings.capture.max_pcap_size_mb) * 1024 * 1024
+        limit = (
+            min(self.settings.api.max_upload_mb, self.settings.capture.max_pcap_size_mb)
+            * 1024
+            * 1024
+        )
         uploads = self.directory / "uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         stem = _SAFE_NAME.sub("_", Path(filename).stem)[:60] or "capture"
@@ -118,8 +137,13 @@ class ReplayService:
             raise
         target.chmod(0o640)
         relative = str(target.relative_to(self.directory))
-        await self.audit.record(actor=actor, action="UPLOAD_PCAP", target=relative, source="api",
-                                details={"original_name": filename[:200], "size_bytes": written})
+        await self.audit.record(
+            actor=actor,
+            action="UPLOAD_PCAP",
+            target=relative,
+            source="api",
+            details={"original_name": filename[:200], "size_bytes": written},
+        )
         return {"path": relative, **metadata}
 
     async def inspect(self, relative: str) -> dict[str, Any]:
@@ -129,7 +153,9 @@ class ReplayService:
 
     # ----------------------------------------------------------------- replay
 
-    async def start(self, relative: str, *, actor: str, speed: float = 0.0, limit: int | None = None) -> dict[str, Any]:
+    async def start(
+        self, relative: str, *, actor: str, speed: float = 0.0, limit: int | None = None
+    ) -> dict[str, Any]:
         path = self.resolve(relative)
         if sum(1 for task in self._tasks.values() if not task.done()) >= self.max_concurrent:
             raise PcapError(f"at most {self.max_concurrent} replays may run at once")
@@ -139,11 +165,26 @@ class ReplayService:
         options = {"speed": speed, "limit": limit}
         async with self.database.session() as session:
             await ReplayRepository(session).add(
-                ReplayRecord(replay_id=replay_id, filename=relative, status="queued", created_by=actor, options=options)
+                ReplayRecord(
+                    replay_id=replay_id,
+                    filename=relative,
+                    status="queued",
+                    created_by=actor,
+                    options=options,
+                )
             )
-        await self.audit.record(actor=actor, action="START_REPLAY", target=relative, source="api", details=options)
-        self._tasks[replay_id] = asyncio.create_task(self._run(replay_id, path, speed, limit), name=f"replay-{replay_id[:8]}")
-        return {"replay_id": replay_id, "status": "queued", "filename": relative, "options": options}
+        await self.audit.record(
+            actor=actor, action="START_REPLAY", target=relative, source="api", details=options
+        )
+        self._tasks[replay_id] = asyncio.create_task(
+            self._run(replay_id, path, speed, limit), name=f"replay-{replay_id[:8]}"
+        )
+        return {
+            "replay_id": replay_id,
+            "status": "queued",
+            "filename": relative,
+            "options": options,
+        }
 
     def _isolated_pipeline(self, replay_id: str) -> Pipeline:
         replay_settings = self.settings.model_copy(deep=True)
@@ -151,7 +192,9 @@ class ReplayService:
         replay_settings.response.dry_run = True
         replay_settings.response.firewall_backend = "null"
         if replay_settings.response.mode is ResponseMode.MANUAL_APPROVAL:
-            replay_settings.response.mode = ResponseMode.AUTOMATIC  # show decisions instead of queueing approvals
+            replay_settings.response.mode = (
+                ResponseMode.AUTOMATIC
+            )  # show decisions instead of queueing approvals
         pipeline = Pipeline(replay_settings, bus=self.bus, firewall=MemoryFirewall())
         pipeline.replay_id = replay_id
         return pipeline
@@ -171,25 +214,64 @@ class ReplayService:
             await self._update(replay_id, progress=payload)
 
         try:
-            report = await pipeline.run(PcapFileCapture(path, speed=speed, limit=limit), progress=progress, progress_interval=0.5)
+            report = await pipeline.run(
+                PcapFileCapture(path, speed=speed, limit=limit),
+                progress=progress,
+                progress_interval=0.5,
+            )
             summary = report.as_dict()
-            summary["detections"] = [detection_to_dict(r.detection, r.risk) for r in report.detections[:500]]
+            summary["detections"] = [
+                detection_to_dict(r.detection, r.risk) for r in report.detections[:500]
+            ]
             summary["incidents"] = [incident_to_dict(i) for i in report.incidents.values()]
-            summary["decisions"] = [decision_payload(d) for r in report.detections for d in r.decisions if d.action.is_preventive][:500]
-            summary["safety_note"] = "Replay responses are always simulated; no firewall changes were made."
-            await self._update(replay_id, status="completed", finished_at=datetime.now(UTC), report=summary)
-            await self.bus.publish(EventType.REPLAY_COMPLETED, {"replay_id": replay_id, "status": "completed",
-                                                                **{k: v for k, v in summary.items() if k not in {"detections", "incidents", "decisions"}}})
-            log.info("replay_completed", replay_id=replay_id, frames=report.frames, detections=len(report.detections))
+            summary["decisions"] = [
+                decision_payload(d)
+                for r in report.detections
+                for d in r.decisions
+                if d.action.is_preventive
+            ][:500]
+            summary["safety_note"] = (
+                "Replay responses are always simulated; no firewall changes were made."
+            )
+            await self._update(
+                replay_id, status="completed", finished_at=datetime.now(UTC), report=summary
+            )
+            await self.bus.publish(
+                EventType.REPLAY_COMPLETED,
+                {
+                    "replay_id": replay_id,
+                    "status": "completed",
+                    **{
+                        k: v
+                        for k, v in summary.items()
+                        if k not in {"detections", "incidents", "decisions"}
+                    },
+                },
+            )
+            log.info(
+                "replay_completed",
+                replay_id=replay_id,
+                frames=report.frames,
+                detections=len(report.detections),
+            )
         except asyncio.CancelledError:
             await self._update(replay_id, status="cancelled", finished_at=datetime.now(UTC))
-            await self.bus.publish(EventType.REPLAY_COMPLETED, {"replay_id": replay_id, "status": "cancelled"})
+            await self.bus.publish(
+                EventType.REPLAY_COMPLETED, {"replay_id": replay_id, "status": "cancelled"}
+            )
             raise
         except Exception as exc:
-            message = str(exc) if isinstance(exc, PcapError) else f"{type(exc).__name__}: replay failed"
+            message = (
+                str(exc) if isinstance(exc, PcapError) else f"{type(exc).__name__}: replay failed"
+            )
             log.exception("replay_failed", replay_id=replay_id)
-            await self._update(replay_id, status="failed", finished_at=datetime.now(UTC), error=message)
-            await self.bus.publish(EventType.REPLAY_COMPLETED, {"replay_id": replay_id, "status": "failed", "error": message})
+            await self._update(
+                replay_id, status="failed", finished_at=datetime.now(UTC), error=message
+            )
+            await self.bus.publish(
+                EventType.REPLAY_COMPLETED,
+                {"replay_id": replay_id, "status": "failed", "error": message},
+            )
         finally:
             await pipeline.response.stop()
             if pipeline.detection in self.rules.engines:
@@ -248,5 +330,18 @@ def replay_to_dict(record: ReplayRecord, *, include_report: bool = True) -> dict
     if include_report:
         data["report"] = record.report
     else:
-        data["summary"] = {k: record.report.get(k) for k in ("frames", "detection_count", "incident_count", "packets_per_second", "wall_seconds")} if record.report else None
+        data["summary"] = (
+            {
+                k: record.report.get(k)
+                for k in (
+                    "frames",
+                    "detection_count",
+                    "incident_count",
+                    "packets_per_second",
+                    "wall_seconds",
+                )
+            }
+            if record.report
+            else None
+        )
     return data

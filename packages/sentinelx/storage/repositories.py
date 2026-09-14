@@ -79,7 +79,9 @@ class UserRepository:
         return await self.session.get(User, user_id)
 
     async def by_username(self, username: str) -> User | None:
-        result = await self.session.execute(select(User).where(func.lower(User.username) == username.lower()))
+        result = await self.session.execute(
+            select(User).where(func.lower(User.username) == username.lower())
+        )
         return result.scalar_one_or_none()
 
     async def count(self) -> int:
@@ -182,10 +184,17 @@ class DetectionRepository:
     async def get(self, detection_id: str) -> DetectionRecord | None:
         return await self.session.get(DetectionRecord, detection_id)
 
-    async def page(self, filters: DetectionFilter, *, limit: int = 50, offset: int = 0, order: str = "newest") -> Page[DetectionRecord]:
+    async def page(
+        self, filters: DetectionFilter, *, limit: int = 50, offset: int = 0, order: str = "newest"
+    ) -> Page[DetectionRecord]:
         limit, offset = _clamp(limit, offset)
         base = filters.apply(select(DetectionRecord))
-        total = int(await self.session.scalar(filters.apply(select(func.count()).select_from(DetectionRecord))) or 0)
+        total = int(
+            await self.session.scalar(
+                filters.apply(select(func.count()).select_from(DetectionRecord))
+            )
+            or 0
+        )
         ordering: Any = {
             "newest": DetectionRecord.timestamp.desc(),
             "oldest": DetectionRecord.timestamp.asc(),
@@ -194,7 +203,9 @@ class DetectionRepository:
         rows = await self.session.execute(base.order_by(ordering).limit(limit).offset(offset))
         return Page(list(rows.scalars()), total, limit, offset)
 
-    async def set_status(self, detection_id: str, status: str, reviewer: str) -> DetectionRecord | None:
+    async def set_status(
+        self, detection_id: str, status: str, reviewer: str
+    ) -> DetectionRecord | None:
         record = await self.get(detection_id)
         if record is None:
             return None
@@ -206,7 +217,9 @@ class DetectionRepository:
     async def link_incident(self, detection_ids: list[str], incident_id: str) -> None:
         if detection_ids:
             await self.session.execute(
-                update(DetectionRecord).where(DetectionRecord.detection_id.in_(detection_ids)).values(incident_id=incident_id)
+                update(DetectionRecord)
+                .where(DetectionRecord.detection_id.in_(detection_ids))
+                .values(incident_id=incident_id)
             )
 
 
@@ -266,12 +279,16 @@ class IncidentRepository:
             count_query = count_query.where(where)
             query = query.where(where)
         total = int(await self.session.scalar(count_query) or 0)
-        rows = await self.session.execute(query.order_by(IncidentRecord.last_seen.desc()).limit(limit).offset(offset))
+        rows = await self.session.execute(
+            query.order_by(IncidentRecord.last_seen.desc()).limit(limit).offset(offset)
+        )
         return Page(list(rows.scalars()), total, limit, offset)
 
     async def detections(self, incident_id: str) -> list[DetectionRecord]:
         rows = await self.session.execute(
-            select(DetectionRecord).where(DetectionRecord.incident_id == incident_id).order_by(DetectionRecord.timestamp)
+            select(DetectionRecord)
+            .where(DetectionRecord.incident_id == incident_id)
+            .order_by(DetectionRecord.timestamp)
         )
         return list(rows.scalars())
 
@@ -287,8 +304,14 @@ class ResponseActionRepository:
         self.session.add(record)
 
     async def page(
-        self, *, target: str | None = None, outcomes: list[str] | None = None, incident_id: str | None = None,
-        detection_id: str | None = None, limit: int = 100, offset: int = 0,
+        self,
+        *,
+        target: str | None = None,
+        outcomes: list[str] | None = None,
+        incident_id: str | None = None,
+        detection_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> Page[ResponseActionRecord]:
         limit, offset = _clamp(limit, offset)
         conditions: list[ColumnElement[bool]] = []
@@ -306,7 +329,9 @@ class ResponseActionRepository:
             query = query.where(and_(*conditions))
             count_query = count_query.where(and_(*conditions))
         total = int(await self.session.scalar(count_query) or 0)
-        rows = await self.session.execute(query.order_by(ResponseActionRecord.decided_at.desc()).limit(limit).offset(offset))
+        rows = await self.session.execute(
+            query.order_by(ResponseActionRecord.decided_at.desc()).limit(limit).offset(offset)
+        )
         return Page(list(rows.scalars()), total, limit, offset)
 
 
@@ -314,10 +339,23 @@ class BlockRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def record_block(self, network: str, *, reason: str, expires_at: datetime | None, rate_limited: bool, backend: str) -> BlockRecord:
+    async def record_block(
+        self,
+        network: str,
+        *,
+        reason: str,
+        expires_at: datetime | None,
+        rate_limited: bool,
+        backend: str,
+    ) -> BlockRecord:
         await self.deactivate(network, removal_reason="superseded by new block")
         record = BlockRecord(
-            network=network, reason=reason, expires_at=expires_at, rate_limited=rate_limited, backend=backend, active=True
+            network=network,
+            reason=reason,
+            expires_at=expires_at,
+            rate_limited=rate_limited,
+            backend=backend,
+            active=True,
         )
         self.session.add(record)
         return record
@@ -332,14 +370,18 @@ class BlockRepository:
 
     async def active(self) -> list[BlockRecord]:
         rows = await self.session.execute(
-            select(BlockRecord).where(BlockRecord.active.is_(True)).order_by(BlockRecord.created_at.desc())
+            select(BlockRecord)
+            .where(BlockRecord.active.is_(True))
+            .order_by(BlockRecord.created_at.desc())
         )
         return list(rows.scalars())
 
     async def history(self, *, limit: int = 100, offset: int = 0) -> Page[BlockRecord]:
         limit, offset = _clamp(limit, offset)
         total = int(await self.session.scalar(select(func.count()).select_from(BlockRecord)) or 0)
-        rows = await self.session.execute(select(BlockRecord).order_by(BlockRecord.created_at.desc()).limit(limit).offset(offset))
+        rows = await self.session.execute(
+            select(BlockRecord).order_by(BlockRecord.created_at.desc()).limit(limit).offset(offset)
+        )
         return Page(list(rows.scalars()), total, limit, offset)
 
 
@@ -356,8 +398,14 @@ class AuditRepository:
         return record
 
     async def page(
-        self, *, actor: str | None = None, action: str | None = None, target: str | None = None,
-        since: datetime | None = None, limit: int = 100, offset: int = 0,
+        self,
+        *,
+        actor: str | None = None,
+        action: str | None = None,
+        target: str | None = None,
+        since: datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> Page[AuditEvent]:
         limit, offset = _clamp(limit, offset)
         conditions: list[ColumnElement[bool]] = []
@@ -375,7 +423,11 @@ class AuditRepository:
             query = query.where(and_(*conditions))
             count_query = count_query.where(and_(*conditions))
         total = int(await self.session.scalar(count_query) or 0)
-        rows = await self.session.execute(query.order_by(AuditEvent.timestamp.desc(), AuditEvent.id.desc()).limit(limit).offset(offset))
+        rows = await self.session.execute(
+            query.order_by(AuditEvent.timestamp.desc(), AuditEvent.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         return Page(list(rows.scalars()), total, limit, offset)
 
 
@@ -390,7 +442,9 @@ class RuleRepository:
         return await self.session.get(RuleRecord, rule_id)
 
     async def all(self) -> list[RuleRecord]:
-        return list((await self.session.execute(select(RuleRecord).order_by(RuleRecord.name))).scalars())
+        return list(
+            (await self.session.execute(select(RuleRecord).order_by(RuleRecord.name))).scalars()
+        )
 
     async def upsert(self, rule_id: str, **values: Any) -> RuleRecord:
         record = await self.get(rule_id)
@@ -438,7 +492,9 @@ class ReplayRepository:
 
     async def recent(self, *, limit: int = 50) -> list[ReplayRecord]:
         limit, _ = _clamp(limit, 0)
-        rows = await self.session.execute(select(ReplayRecord).order_by(ReplayRecord.created_at.desc()).limit(limit))
+        rows = await self.session.execute(
+            select(ReplayRecord).order_by(ReplayRecord.created_at.desc()).limit(limit)
+        )
         return list(rows.scalars())
 
 
@@ -455,7 +511,9 @@ class TelemetryRepository:
     async def add_metric(self, record: SystemMetric) -> None:
         self.session.add(record)
 
-    async def summaries(self, since: datetime, *, sensor: str | None = None) -> list[TrafficSummary]:
+    async def summaries(
+        self, since: datetime, *, sensor: str | None = None
+    ) -> list[TrafficSummary]:
         query = select(TrafficSummary).where(TrafficSummary.bucket_start >= since)
         if sensor:
             query = query.where(TrafficSummary.sensor == sensor)
@@ -464,7 +522,10 @@ class TelemetryRepository:
 
     async def metrics(self, since: datetime) -> list[SystemMetric]:
         rows = await self.session.execute(
-            select(SystemMetric).where(SystemMetric.timestamp >= since).order_by(SystemMetric.timestamp).limit(20_000)
+            select(SystemMetric)
+            .where(SystemMetric.timestamp >= since)
+            .order_by(SystemMetric.timestamp)
+            .limit(20_000)
         )
         return list(rows.scalars())
 
@@ -475,7 +536,9 @@ class AnalyticsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def _grouped(self, column: Any, since: datetime, *, limit: int = 20) -> list[dict[str, Any]]:
+    async def _grouped(
+        self, column: Any, since: datetime, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
         rows = await self.session.execute(
             select(column, func.count())
             .where(DetectionRecord.timestamp >= since, DetectionRecord.replay_id.is_(None))
@@ -487,20 +550,29 @@ class AnalyticsRepository:
 
     async def summary(self, since: datetime) -> dict[str, Any]:
         live = and_(DetectionRecord.timestamp >= since, DetectionRecord.replay_id.is_(None))
-        total = int(await self.session.scalar(select(func.count()).select_from(DetectionRecord).where(live)) or 0)
+        total = int(
+            await self.session.scalar(select(func.count()).select_from(DetectionRecord).where(live))
+            or 0
+        )
         false_positives = int(
             await self.session.scalar(
-                select(func.count()).select_from(DetectionRecord).where(live, DetectionRecord.status == "false_positive")
+                select(func.count())
+                .select_from(DetectionRecord)
+                .where(live, DetectionRecord.status == "false_positive")
             )
             or 0
         )
         reviewed = int(
             await self.session.scalar(
-                select(func.count()).select_from(DetectionRecord).where(live, DetectionRecord.status != "new")
+                select(func.count())
+                .select_from(DetectionRecord)
+                .where(live, DetectionRecord.status != "new")
             )
             or 0
         )
-        mean_risk = await self.session.scalar(select(func.avg(DetectionRecord.risk_score)).where(live))
+        mean_risk = await self.session.scalar(
+            select(func.avg(DetectionRecord.risk_score)).where(live)
+        )
         return {
             "since": since.isoformat(),
             "detections": total,
@@ -508,7 +580,9 @@ class AnalyticsRepository:
             "by_category": await self._grouped(DetectionRecord.category, since),
             "by_detector": await self._grouped(DetectionRecord.detector, since),
             "top_sources": await self._grouped(DetectionRecord.source_ip, since, limit=10),
-            "top_destinations": await self._grouped(DetectionRecord.destination_ip, since, limit=10),
+            "top_destinations": await self._grouped(
+                DetectionRecord.destination_ip, since, limit=10
+            ),
             "by_protocol": await self._grouped(DetectionRecord.protocol, since),
             "false_positives": false_positives,
             "reviewed": reviewed,
@@ -518,7 +592,9 @@ class AnalyticsRepository:
             "mean_risk": round(float(mean_risk), 1) if mean_risk is not None else None,
         }
 
-    async def timeline(self, since: datetime, bucket_minutes: int, dialect: str) -> list[dict[str, Any]]:
+    async def timeline(
+        self, since: datetime, bucket_minutes: int, dialect: str
+    ) -> list[dict[str, Any]]:
         """Detection counts per time bucket, split by severity."""
         bucket_seconds = max(60, bucket_minutes * 60)
         if dialect == "postgresql":
@@ -539,7 +615,9 @@ class AnalyticsRepository:
             raw = []
             for timestamp, severity in rows.all():
                 moment = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=UTC)
-                raw.append((float(int(moment.timestamp() // bucket_seconds) * bucket_seconds), severity, 1))
+                raw.append(
+                    (float(int(moment.timestamp() // bucket_seconds) * bucket_seconds), severity, 1)
+                )
 
         # A complete, zero-filled series: an interval with no detections is a real
         # observation ("nothing happened"), and omitting it makes one busy interval
@@ -547,11 +625,16 @@ class AnalyticsRepository:
         first = int(since.timestamp() // bucket_seconds) * bucket_seconds
         last = int(datetime.now(UTC).timestamp() // bucket_seconds) * bucket_seconds
         buckets: dict[float, dict[str, Any]] = {
-            float(start): {"bucket_start": datetime.fromtimestamp(start, UTC).isoformat(), "total": 0}
+            float(start): {
+                "bucket_start": datetime.fromtimestamp(start, UTC).isoformat(),
+                "total": 0,
+            }
             for start in range(first, last + 1, bucket_seconds)
         }
         for start, severity, count in raw:
-            entry = buckets.setdefault(start, {"bucket_start": datetime.fromtimestamp(start, UTC).isoformat(), "total": 0})
+            entry = buckets.setdefault(
+                start, {"bucket_start": datetime.fromtimestamp(start, UTC).isoformat(), "total": 0}
+            )
             entry[severity] = entry.get(severity, 0) + count
             entry["total"] += count
         return [buckets[key] for key in sorted(buckets)]
@@ -563,7 +646,9 @@ class RetentionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def purge(self, *, retention_days: int, audit_days: int, metrics_days: int) -> dict[str, int]:
+    async def purge(
+        self, *, retention_days: int, audit_days: int, metrics_days: int
+    ) -> dict[str, int]:
         now = datetime.now(UTC)
         cutoff = now - timedelta(days=retention_days)
         metric_cutoff = now - timedelta(days=metrics_days)
@@ -579,17 +664,33 @@ class RetentionRepository:
         await run(
             "incidents",
             delete(IncidentRecord).where(
-                IncidentRecord.last_seen < cutoff, IncidentRecord.status.in_(["resolved", "false_positive"])
+                IncidentRecord.last_seen < cutoff,
+                IncidentRecord.status.in_(["resolved", "false_positive"]),
             ),
         )
-        await run("response_actions", delete(ResponseActionRecord).where(ResponseActionRecord.decided_at < cutoff))
-        await run("blocked_sources", delete(BlockRecord).where(BlockRecord.active.is_(False), BlockRecord.created_at < cutoff))
-        await run("traffic_summaries", delete(TrafficSummary).where(TrafficSummary.bucket_start < metric_cutoff))
-        await run("system_metrics", delete(SystemMetric).where(SystemMetric.timestamp < metric_cutoff))
+        await run(
+            "response_actions",
+            delete(ResponseActionRecord).where(ResponseActionRecord.decided_at < cutoff),
+        )
+        await run(
+            "blocked_sources",
+            delete(BlockRecord).where(
+                BlockRecord.active.is_(False), BlockRecord.created_at < cutoff
+            ),
+        )
+        await run(
+            "traffic_summaries",
+            delete(TrafficSummary).where(TrafficSummary.bucket_start < metric_cutoff),
+        )
+        await run(
+            "system_metrics", delete(SystemMetric).where(SystemMetric.timestamp < metric_cutoff)
+        )
         await run("audit_events", delete(AuditEvent).where(AuditEvent.timestamp < audit_cutoff))
         await run("replays", delete(ReplayRecord).where(ReplayRecord.created_at < cutoff))
         await run(
             "refresh_tokens",
-            delete(RefreshToken).where(or_(RefreshToken.expires_at < now, RefreshToken.revoked_at.is_not(None))),
+            delete(RefreshToken).where(
+                or_(RefreshToken.expires_at < now, RefreshToken.revoked_at.is_not(None))
+            ),
         )
         return results

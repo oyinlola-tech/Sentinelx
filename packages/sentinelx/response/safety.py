@@ -52,7 +52,12 @@ class SafetyReport:
     reason: str
 
     def as_dict(self) -> dict[str, object]:
-        return {"target": self.target, "allowed": self.allowed, "network": self.network, "reason": self.reason}
+        return {
+            "target": self.target,
+            "allowed": self.allowed,
+            "network": self.network,
+            "reason": self.reason,
+        }
 
 
 class SafetyGuard:
@@ -110,10 +115,19 @@ class SafetyGuard:
         Raises:
             SafetyViolationError: naming the precise rule that refused it.
         """
-        if not target or target != target.strip() or any(not ch.isprintable() or ch.isspace() for ch in target):
+        if (
+            not target
+            or target != target.strip()
+            or any(not ch.isprintable() or ch.isspace() for ch in target)
+        ):
             # Reject rather than normalise: the raw target is written to the audit
             # log, and embedded newlines there would allow forged log entries.
-            self._refuse(record, repr(target), "invalid_address", "target contains whitespace or control characters")
+            self._refuse(
+                record,
+                repr(target),
+                "invalid_address",
+                "target contains whitespace or control characters",
+            )
         try:
             network = parse_network(target, strict=False)
         except ValueError as exc:
@@ -124,7 +138,8 @@ class SafetyGuard:
 
         limit = self.settings.max_block_prefix_hosts
         if network.num_addresses > limit:
-            self._refuse(record,
+            self._refuse(
+                record,
                 target,
                 "prefix_too_wide",
                 f"{describe_network(network)} exceeds the maximum of {limit} addresses "
@@ -133,15 +148,30 @@ class SafetyGuard:
 
         for address in (network.network_address, network.broadcast_address):
             if is_special(address):
-                self._refuse(record, target, "special_address", f"{address} is loopback, link-local, multicast or reserved")
+                self._refuse(
+                    record,
+                    target,
+                    "special_address",
+                    f"{address} is loopback, link-local, multicast or reserved",
+                )
 
         for protected in self._allowlist:
             if network.version == protected.version and network.overlaps(protected):
-                self._refuse(record, target, "allowlisted", f"{network} overlaps allowlisted network {protected}")
+                self._refuse(
+                    record,
+                    target,
+                    "allowlisted",
+                    f"{network} overlaps allowlisted network {protected}",
+                )
 
         for protected in self._management:
             if network.version == protected.version and network.overlaps(protected):
-                self._refuse(record, target, "management_address", f"{network} overlaps management address {protected}")
+                self._refuse(
+                    record,
+                    target,
+                    "management_address",
+                    f"{network} overlaps management address {protected}",
+                )
 
         if self.settings.protect_management_addresses:
             for raw in self._local_addresses():
@@ -150,10 +180,16 @@ class SafetyGuard:
                 except ValueError:
                     continue
                 if local.version == network.version and network.overlaps(local):
-                    self._refuse(record, target, "local_address", f"{network} contains {local.network_address}, an address of this host")
+                    self._refuse(
+                        record,
+                        target,
+                        "local_address",
+                        f"{network} contains {local.network_address}, an address of this host",
+                    )
 
         if self._active_block_count() >= self.settings.max_blocked_addresses:
-            self._refuse(record,
+            self._refuse(
+                record,
                 target,
                 "block_limit_reached",
                 f"{self.settings.max_blocked_addresses} blocks already active (response.max_blocked_addresses)",

@@ -58,7 +58,9 @@ async def client(platform: Platform) -> AsyncIterator[httpx.AsyncClient]:
         yield http
 
 
-async def login(client: httpx.AsyncClient, username: str = "admin", password: str = ADMIN_PASSWORD) -> dict[str, str]:
+async def login(
+    client: httpx.AsyncClient, username: str = "admin", password: str = ADMIN_PASSWORD
+) -> dict[str, str]:
     response = await client.post("/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
@@ -70,7 +72,9 @@ async def admin(client: httpx.AsyncClient) -> dict[str, str]:
 
 
 @pytest.fixture
-async def roles(client: httpx.AsyncClient, platform: Platform, admin: dict[str, str]) -> dict[str, dict[str, str]]:
+async def roles(
+    client: httpx.AsyncClient, platform: Platform, admin: dict[str, str]
+) -> dict[str, dict[str, str]]:
     headers = {"admin": admin}
     for role in (UserRole.ANALYST, UserRole.VIEWER):
         await platform.auth.create_user(f"{role.value}1", f"{role.value}-Passphrase-2026", role)

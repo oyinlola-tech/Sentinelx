@@ -25,7 +25,13 @@ from sentinelx.signatures.detector import RuleDetector
 from sentinelx.signatures.rules import Rule
 from sentinelx.testing.scenarios import get_scenario
 
-__all__ = ["RuleRunResult", "RuleTestOutcome", "run_rule_on_frames", "run_rule_on_pcap", "run_rule_tests"]
+__all__ = [
+    "RuleRunResult",
+    "RuleTestOutcome",
+    "run_rule_on_frames",
+    "run_rule_on_pcap",
+    "run_rule_tests",
+]
 
 
 @dataclass(slots=True)
@@ -49,7 +55,9 @@ class RuleRunResult:
             "sources": self.sources,
             "elapsed_seconds": round(self.elapsed_seconds, 4),
             "first_detection": self.detections[0].explain() if self.detections else None,
-            "evidence": [e.as_dict() for e in self.detections[0].evidence] if self.detections else [],
+            "evidence": [e.as_dict() for e in self.detections[0].evidence]
+            if self.detections
+            else [],
         }
 
 
@@ -66,13 +74,23 @@ class RuleTestOutcome:
         return self.expected == self.actual
 
     def as_dict(self) -> dict[str, Any]:
-        return {"rule_id": self.rule_id, "scenario": self.scenario, "expected": self.expected,
-                "actual": self.actual, "detections": self.detections, "passed": self.passed}
+        return {
+            "rule_id": self.rule_id,
+            "scenario": self.scenario,
+            "expected": self.expected,
+            "actual": self.actual,
+            "detections": self.detections,
+            "passed": self.passed,
+        }
 
 
-def run_rule_on_frames(rule: Rule, frames: Iterable[RawFrame], settings: DetectionSettings | None = None) -> RuleRunResult:
+def run_rule_on_frames(
+    rule: Rule, frames: Iterable[RawFrame], settings: DetectionSettings | None = None
+) -> RuleRunResult:
     """Evaluate one rule, and nothing else, over frames. Cooldown is disabled so every match counts."""
-    detection_settings = (settings or DetectionSettings()).model_copy(update={"detection_cooldown_seconds": 0})
+    detection_settings = (settings or DetectionSettings()).model_copy(
+        update={"detection_cooldown_seconds": 0}
+    )
     decoder = PacketDecoder()
     extractor = FeatureExtractor(detection_settings)
     detector = RuleDetector(rule.model_copy(update={"enabled": True}), detection_settings)
@@ -81,7 +99,9 @@ def run_rule_on_frames(rule: Rule, frames: Iterable[RawFrame], settings: Detecti
     packets = 0
     started = time.perf_counter()
     for frame in frames:
-        packet = decoder.decode(frame.data, frame.timestamp, frame.link_type, frame.interface, frame.wire_length)
+        packet = decoder.decode(
+            frame.data, frame.timestamp, frame.link_type, frame.interface, frame.wire_length
+        )
         if packet is None:
             continue
         packets += 1
@@ -92,7 +112,9 @@ def run_rule_on_frames(rule: Rule, frames: Iterable[RawFrame], settings: Detecti
     return RuleRunResult(rule.id, packets, detections, time.perf_counter() - started, sources)
 
 
-async def run_rule_on_pcap(rule: Rule, path: Path, settings: DetectionSettings | None = None) -> RuleRunResult:
+async def run_rule_on_pcap(
+    rule: Rule, path: Path, settings: DetectionSettings | None = None
+) -> RuleRunResult:
     frames: list[RawFrame] = []
     async with PcapFileCapture(path) as capture:
         async for frame in capture.frames():
@@ -107,6 +129,12 @@ def run_rule_tests(rule: Rule, settings: DetectionSettings | None = None) -> lis
         scenario = get_scenario(test.scenario, **test.params)
         result = run_rule_on_frames(rule, scenario.frames, settings)
         outcomes.append(
-            RuleTestOutcome(rule.id, test.scenario, test.expect, "match" if result.matched else "no_match", len(result.detections))
+            RuleTestOutcome(
+                rule.id,
+                test.scenario,
+                test.expect,
+                "match" if result.matched else "no_match",
+                len(result.detections),
+            )
         )
     return outcomes

@@ -39,12 +39,16 @@ def _ago(iso: str | None) -> str:
 def register(app: typer.Typer) -> None:
     @app.command(rich_help_panel="Investigate")
     def detections(
-        severity: Annotated[list[str], typer.Option("--severity", "-s", help="Filter; repeatable.")] = [],  # noqa: B006
+        severity: Annotated[
+            list[str], typer.Option("--severity", "-s", help="Filter; repeatable.")
+        ] = [],  # noqa: B006
         source: Annotated[str | None, typer.Option("--source", help="Source IP.")] = None,
         detector: Annotated[list[str], typer.Option("--detector", "-d")] = [],  # noqa: B006
         hours: Annotated[int, typer.Option(help="Look back this many hours.")] = 24,
         limit: Annotated[int, typer.Option(min=1, max=500)] = 25,
-        detection_id: Annotated[str | None, typer.Option("--id", help="Show one detection with full evidence.")] = None,
+        detection_id: Annotated[
+            str | None, typer.Option("--id", help="Show one detection with full evidence.")
+        ] = None,
         as_json: JsonOption = False,
     ) -> None:
         """List recent detections, or explain one with --id."""
@@ -55,8 +59,12 @@ def register(app: typer.Typer) -> None:
                 _, _, _, queries = platform.require()
                 if detection_id:
                     return await queries.detection(detection_id)
-                filters = DetectionFilter(severities=severity, detectors=detector, source_ip=source,
-                                          since=datetime.now(UTC) - timedelta(hours=hours))
+                filters = DetectionFilter(
+                    severities=severity,
+                    detectors=detector,
+                    source_ip=source,
+                    since=datetime.now(UTC) - timedelta(hours=hours),
+                )
                 return await queries.detections(filters, limit=limit, offset=0, order="newest")
 
         result = run(main)
@@ -70,18 +78,45 @@ def register(app: typer.Typer) -> None:
             _explain(result)
             return
         rows = [
-            (d["detection_id"][:10], _ago(d["timestamp"]), severity_text(d["severity"]), risk_text(d["risk"].get("score")),
-             d["title"], d["source_ip"], d.get("destination_ip"), d["detector"], d["status"])
+            (
+                d["detection_id"][:10],
+                _ago(d["timestamp"]),
+                severity_text(d["severity"]),
+                risk_text(d["risk"].get("score")),
+                d["title"],
+                d["source_ip"],
+                d.get("destination_ip"),
+                d["detector"],
+                d["status"],
+            )
             for d in result["items"]
         ]
-        console.print(table(f"Detections (last {hours}h)", ["ID", "When", "Severity", "Risk", "Threat", "Source", "Target", "Detector", "Status"],
-                            rows, caption=f"{len(rows)} of {result['total']} - explain one with: sentinelx detections --id <ID>"))
+        console.print(
+            table(
+                f"Detections (last {hours}h)",
+                [
+                    "ID",
+                    "When",
+                    "Severity",
+                    "Risk",
+                    "Threat",
+                    "Source",
+                    "Target",
+                    "Detector",
+                    "Status",
+                ],
+                rows,
+                caption=f"{len(rows)} of {result['total']} - explain one with: sentinelx detections --id <ID>",
+            )
+        )
 
     @app.command(rich_help_panel="Investigate")
     def incidents(
         status: Annotated[list[str], typer.Option("--status")] = [],  # noqa: B006
         limit: Annotated[int, typer.Option(min=1, max=500)] = 25,
-        incident_id: Annotated[str | None, typer.Option("--id", help="Show one incident with its timeline.")] = None,
+        incident_id: Annotated[
+            str | None, typer.Option("--id", help="Show one incident with its timeline.")
+        ] = None,
         as_json: JsonOption = False,
     ) -> None:
         """List correlated incidents, or show one with --id."""
@@ -105,12 +140,26 @@ def register(app: typer.Typer) -> None:
             _incident(result)
             return
         rows = [
-            (i["incident_id"][:10], severity_text(i["severity"]), risk_text(i["risk"].get("score")), i["title"],
-             ", ".join(i["affected_sources"][:3]), i["detection_count"], i["status"], _ago(i["last_seen"]))
+            (
+                i["incident_id"][:10],
+                severity_text(i["severity"]),
+                risk_text(i["risk"].get("score")),
+                i["title"],
+                ", ".join(i["affected_sources"][:3]),
+                i["detection_count"],
+                i["status"],
+                _ago(i["last_seen"]),
+            )
             for i in result["items"]
         ]
-        console.print(table("Incidents", ["ID", "Severity", "Risk", "Title", "Sources", "Detections", "Status", "Last seen"], rows,
-                            caption=f"{len(rows)} of {result['total']}"))
+        console.print(
+            table(
+                "Incidents",
+                ["ID", "Severity", "Risk", "Title", "Sources", "Detections", "Status", "Last seen"],
+                rows,
+                caption=f"{len(rows)} of {result['total']}",
+            )
+        )
 
     @app.command(rich_help_panel="Investigate")
     def threats(hours: int = 24, limit: int = 25, as_json: JsonOption = False) -> None:
@@ -120,18 +169,41 @@ def register(app: typer.Typer) -> None:
         async def main() -> Any:
             async with platform_context(settings, persist=False) as platform:
                 _, _, _, queries = platform.require()
-                return await queries.threats(since=datetime.now(UTC) - timedelta(hours=hours), limit=limit)
+                return await queries.threats(
+                    since=datetime.now(UTC) - timedelta(hours=hours), limit=limit
+                )
 
         result = run(main)
         if as_json:
             emit_json(result)
             return
         rows = [
-            (t["source_ip"], risk_text(t["max_risk"]), t["detections"], ", ".join(t["categories"]),
-             ", ".join(t["detectors"][:3]), "yes" if t["blocked"] else "no", _ago(t["last_seen"]))
+            (
+                t["source_ip"],
+                risk_text(t["max_risk"]),
+                t["detections"],
+                ", ".join(t["categories"]),
+                ", ".join(t["detectors"][:3]),
+                "yes" if t["blocked"] else "no",
+                _ago(t["last_seen"]),
+            )
             for t in result
         ]
-        console.print(table(f"Threat sources (last {hours}h)", ["Source", "Max risk", "Detections", "Categories", "Detectors", "Blocked", "Last seen"], rows))
+        console.print(
+            table(
+                f"Threat sources (last {hours}h)",
+                [
+                    "Source",
+                    "Max risk",
+                    "Detections",
+                    "Categories",
+                    "Detectors",
+                    "Blocked",
+                    "Last seen",
+                ],
+                rows,
+            )
+        )
 
     @app.command(rich_help_panel="Respond")
     def blocked(as_json: JsonOption = False) -> None:
@@ -148,21 +220,49 @@ def register(app: typer.Typer) -> None:
             emit_json({k: result[k] for k in ("status", "health", "active")})
             return
         console.print(safety_panel(settings.safety_banner()))
-        rows = [(b["network"], "rate limit" if b["rate_limited"] else "block",
-                 f"{int(b['remaining_seconds'])}s" if b["remaining_seconds"] is not None else "permanent", b["comment"])
-                for b in result["active"]]
-        console.print(table(f"Active blocks ({result['status']['firewall_backend']})", ["Network", "Type", "Expires", "Reason"], rows))
-        history = [(h["network"], "active" if h["active"] else "removed", _ago(h["created_at"]), h["reason"][:60])
-                   for h in result["history"][:10]]
+        rows = [
+            (
+                b["network"],
+                "rate limit" if b["rate_limited"] else "block",
+                f"{int(b['remaining_seconds'])}s"
+                if b["remaining_seconds"] is not None
+                else "permanent",
+                b["comment"],
+            )
+            for b in result["active"]
+        ]
+        console.print(
+            table(
+                f"Active blocks ({result['status']['firewall_backend']})",
+                ["Network", "Type", "Expires", "Reason"],
+                rows,
+            )
+        )
+        history = [
+            (
+                h["network"],
+                "active" if h["active"] else "removed",
+                _ago(h["created_at"]),
+                h["reason"][:60],
+            )
+            for h in result["history"][:10]
+        ]
         if history:
-            console.print(table("Recent block history", ["Network", "State", "Created", "Reason"], history))
+            console.print(
+                table("Recent block history", ["Network", "State", "Created", "Reason"], history)
+            )
 
     @app.command(rich_help_panel="Respond")
     def block(
         target: Annotated[str | None, typer.Argument(help="IP address or CIDR.")] = None,
         reason: Annotated[str | None, typer.Option("--reason", "-r")] = None,
-        duration: Annotated[int | None, typer.Option("--duration", "-t", help="Seconds; omit for permanent.", min=30)] = None,
-        rate_limit: Annotated[bool, typer.Option("--rate-limit", help="Rate limit instead of block.")] = False,
+        duration: Annotated[
+            int | None,
+            typer.Option("--duration", "-t", help="Seconds; omit for permanent.", min=30),
+        ] = None,
+        rate_limit: Annotated[
+            bool, typer.Option("--rate-limit", help="Rate limit instead of block.")
+        ] = False,
         yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
         as_json: JsonOption = False,
     ) -> None:
@@ -170,8 +270,19 @@ def register(app: typer.Typer) -> None:
         target = target or typer.prompt("Address or CIDR to block")
         reason = reason or typer.prompt("Reason (recorded in the audit log)")
         settings = load_settings()
-        _respond(settings, ActionType.RATE_LIMIT if rate_limit else ActionType.TEMPORARY_BLOCK if duration else ActionType.BLOCK_IP,
-                 target, reason, duration, yes, as_json)
+        _respond(
+            settings,
+            ActionType.RATE_LIMIT
+            if rate_limit
+            else ActionType.TEMPORARY_BLOCK
+            if duration
+            else ActionType.BLOCK_IP,
+            target,
+            reason,
+            duration,
+            yes,
+            as_json,
+        )
 
     @app.command(rich_help_panel="Respond")
     def unblock(
@@ -187,7 +298,15 @@ def register(app: typer.Typer) -> None:
         _respond(settings, ActionType.UNBLOCK_IP, target, reason, None, yes, as_json)
 
 
-def _respond(settings: Any, action: ActionType, target: str, reason: str, duration: int | None, yes: bool, as_json: bool) -> None:
+def _respond(
+    settings: Any,
+    action: ActionType,
+    target: str,
+    reason: str,
+    duration: int | None,
+    yes: bool,
+    as_json: bool,
+) -> None:
     if not as_json:
         console.print(safety_panel(settings.safety_banner()))
     enforcing = settings.prevention_active or not settings.response.dry_run
@@ -198,7 +317,9 @@ def _respond(settings: Any, action: ActionType, target: str, reason: str, durati
     async def main() -> Any:
         async with platform_context(settings, persist=False) as platform:
             pipeline, _, _, _ = platform.require()
-            return await pipeline.response.manual_action(action, target, actor=actor(), reason=reason, duration=duration, source="cli")
+            return await pipeline.response.manual_action(
+                action, target, actor=actor(), reason=reason, duration=duration, source="cli"
+            )
 
     decision = run(main)
     from sentinelx.response.engine import decision_payload
@@ -207,9 +328,20 @@ def _respond(settings: Any, action: ActionType, target: str, reason: str, durati
     if as_json:
         emit_json(payload)
     else:
-        style = {"executed": "green", "simulated": "yellow", "failed": "red"}.get(decision.outcome, "")
-        console.print(Panel(Text(f"{decision.outcome.upper()}: {decision.reason}" + (f"\n{decision.error}" if decision.error else ""), style=style),
-                            title=f"{action.value} {target}", expand=False))
+        style = {"executed": "green", "simulated": "yellow", "failed": "red"}.get(
+            decision.outcome, ""
+        )
+        console.print(
+            Panel(
+                Text(
+                    f"{decision.outcome.upper()}: {decision.reason}"
+                    + (f"\n{decision.error}" if decision.error else ""),
+                    style=style,
+                ),
+                title=f"{action.value} {target}",
+                expand=False,
+            )
+        )
     if decision.error:
         raise typer.Exit(1)
 
@@ -226,9 +358,13 @@ def _explain(detection: dict[str, Any]) -> None:
     lines.append_text(severity_text(detection["severity"]))
     lines.append(f"  confidence {detection['confidence']:.0%}\n")
     lines.append("Source    ", style="dim")
-    lines.append(f"{detection['source_ip']}  ->  {detection.get('destination_ip') or '-'}:{detection.get('destination_port') or '-'}\n")
+    lines.append(
+        f"{detection['source_ip']}  ->  {detection.get('destination_ip') or '-'}:{detection.get('destination_port') or '-'}\n"
+    )
     lines.append("Detector  ", style="dim")
-    lines.append(f"{detection['detector']}{'  (rule: ' + detection['rule_name'] + ')' if detection.get('rule_name') else ''}\n\n")
+    lines.append(
+        f"{detection['detector']}{'  (rule: ' + detection['rule_name'] + ')' if detection.get('rule_name') else ''}\n\n"
+    )
     lines.append("Evidence\n", style="bold")
     for item in detection["evidence"]:
         lines.append(f"  - {item['description']}\n")
@@ -251,16 +387,33 @@ def _incident(incident: dict[str, Any]) -> None:
     body.append("Risk  ", style="dim")
     body.append_text(risk_text(risk.get("score")))
     body.append(f"/100   status {incident['status']}   rule {incident.get('correlation_rule')}\n")
-    body.append(f"Sources {', '.join(incident['affected_sources'])}   targets {', '.join(incident['affected_destinations'][:5])}\n")
+    body.append(
+        f"Sources {', '.join(incident['affected_sources'])}   targets {', '.join(incident['affected_destinations'][:5])}\n"
+    )
     body.append(f"Services {', '.join(str(p) for p in incident['affected_services'][:10])}\n\n")
     body.append("Why this score\n", style="bold")
     for reason in risk.get("rationale", []):
         body.append(f"  {reason}\n")
-    body.append(f"\nRecommended action  {incident.get('recommended_action', 'alert').upper()}", style="bold")
+    body.append(
+        f"\nRecommended action  {incident.get('recommended_action', 'alert').upper()}", style="bold"
+    )
     console.print(Panel(body, title=f"Incident {incident['incident_id'][:10]}", expand=False))
-    rows = [(_ago(t["timestamp"]), severity_text(t["severity"]), risk_text(t["risk"]), t["title"], t.get("destination_port"))
-            for t in incident["timeline"]]
+    rows = [
+        (
+            _ago(t["timestamp"]),
+            severity_text(t["severity"]),
+            risk_text(t["risk"]),
+            t["title"],
+            t.get("destination_port"),
+        )
+        for t in incident["timeline"]
+    ]
     console.print(table("Timeline", ["When", "Severity", "Risk", "Detection", "Port"], rows))
     if incident.get("actions"):
-        console.print(table("Actions taken", ["Action", "Target", "Outcome"],
-                            [(a["action"], a["target"], a["outcome"]) for a in incident["actions"]]))
+        console.print(
+            table(
+                "Actions taken",
+                ["Action", "Target", "Outcome"],
+                [(a["action"], a["target"], a["outcome"]) for a in incident["actions"]],
+            )
+        )

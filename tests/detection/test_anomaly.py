@@ -37,7 +37,13 @@ class TestStatistical:
         assert first.recommended_action.value == "alert"
 
     def test_steady_traffic_is_silent(self) -> None:
-        assert run(StatisticalAnomalyDetector(), get_scenario("dns_rate_spike", spike_seconds=0, baseline_seconds=300).frames) == []
+        assert (
+            run(
+                StatisticalAnomalyDetector(),
+                get_scenario("dns_rate_spike", spike_seconds=0, baseline_seconds=300).frames,
+            )
+            == []
+        )
 
     def test_no_reports_during_warmup(self) -> None:
         detector = StatisticalAnomalyDetector(AnomalySettings(min_samples=500))
@@ -58,7 +64,10 @@ class TestStatistical:
 
     def test_baseline_report_shape(self) -> None:
         report = StatisticalAnomalyDetector().baseline_report()
-        assert set(report) >= {"dns_per_second", "syn_per_second"} and report["dns_per_second"]["ready"] is False
+        assert (
+            set(report) >= {"dns_per_second", "syn_per_second"}
+            and report["dns_per_second"]["ready"] is False
+        )
 
 
 class TestMachineLearning:
@@ -69,7 +78,11 @@ class TestMachineLearning:
         from sentinelx.anomaly.ml import collect_training_vectors, train_model
 
         frames = sorted(
-            (f for seed in range(1, 6) for f in get_scenario("normal_traffic", seed=seed, packet_count=2500).frames),
+            (
+                f
+                for seed in range(1, 6)
+                for f in get_scenario("normal_traffic", seed=seed, packet_count=2500).frames
+            ),
             key=lambda f: f.timestamp,
         )
         return train_model(collect_training_vectors(frames), seed=1)
@@ -85,7 +98,11 @@ class TestMachineLearning:
         from sentinelx.anomaly.ml import FEATURE_NAMES
 
         info = bundle.info()
-        assert info["model"] == "IsolationForest" and info["features"] == list(FEATURE_NAMES) and info["samples"] >= 50
+        assert (
+            info["model"] == "IsolationForest"
+            and info["features"] == list(FEATURE_NAMES)
+            and info["samples"] >= 50
+        )
 
     def test_ml_detections_are_leads_not_blocks(self, bundle) -> None:  # type: ignore[no-untyped-def]
         from sentinelx.anomaly.ml import MlAnomalyDetector

@@ -49,7 +49,10 @@ MENU: list[tuple[str, list[str]]] = [
 
 
 @app.callback()
-def root(ctx: typer.Context, version: Annotated[bool, typer.Option("--version", help="Print the version and exit.")] = False) -> None:
+def root(
+    ctx: typer.Context,
+    version: Annotated[bool, typer.Option("--version", help="Print the version and exit.")] = False,
+) -> None:
     if version:
         console.print(f"sentinelx {__version__}")
         raise typer.Exit()
@@ -83,9 +86,16 @@ def _menu() -> None:
 def start(
     host: Annotated[str | None, typer.Option(help="Listen address (API_HOST).")] = None,
     port: Annotated[int | None, typer.Option(help="Listen port (API_PORT).")] = None,
-    capture: Annotated[bool, typer.Option("--capture/--no-capture", help="Start live capture on CAPTURE_INTERFACE at startup.")] = False,
+    capture: Annotated[
+        bool,
+        typer.Option(
+            "--capture/--no-capture", help="Start live capture on CAPTURE_INTERFACE at startup."
+        ),
+    ] = False,
     interface: Annotated[str | None, typer.Option("--interface", "-i")] = None,
-    reload: Annotated[bool, typer.Option(help="Auto-reload on code changes (development).")] = False,
+    reload: Annotated[
+        bool, typer.Option(help="Auto-reload on code changes (development).")
+    ] = False,
 ) -> None:
     """Start the API, WebSocket stream and detection pipeline."""
     import uvicorn
@@ -94,7 +104,10 @@ def start(
     console.print(safety_panel(settings.safety_banner()))
     listen_host = host or settings.api.host
     listen_port = port or settings.api.port
-    if listen_host not in ("127.0.0.1", "localhost", "::1") and settings.environment != "production":
+    if (
+        listen_host not in ("127.0.0.1", "localhost", "::1")
+        and settings.environment != "production"
+    ):
         err.print(f"[yellow]listening on {listen_host}: the API is reachable from the network[/]")
 
     if capture:
@@ -102,12 +115,20 @@ def start(
         import os
 
         os.environ["SENTINELX_START_CAPTURE"] = interface or settings.capture.interface
-    console.print(f"API    http://{listen_host}:{listen_port}/api/v1   docs /api/docs\n"
-                  f"Events ws://{listen_host}:{listen_port}/api/v1/ws/events")
+    console.print(
+        f"API    http://{listen_host}:{listen_port}/api/v1   docs /api/docs\n"
+        f"Events ws://{listen_host}:{listen_port}/api/v1/ws/events"
+    )
     uvicorn.run(
-        "sentinelx.api.server:app", host=listen_host, port=listen_port, reload=reload, workers=1,
-        log_level=settings.telemetry.log_level.lower(), proxy_headers=bool(settings.api.trusted_proxies),
-        forwarded_allow_ips=",".join(settings.api.trusted_proxies) or None, server_header=False,
+        "sentinelx.api.server:app",
+        host=listen_host,
+        port=listen_port,
+        reload=reload,
+        workers=1,
+        log_level=settings.telemetry.log_level.lower(),
+        proxy_headers=bool(settings.api.trusted_proxies),
+        forwarded_allow_ips=",".join(settings.api.trusted_proxies) or None,
+        server_header=False,
     )
 
 
@@ -132,18 +153,44 @@ def status(as_json: JsonOption = False) -> None:
     components = report["components"]
     rows = [
         ("database", components["database"].get("ok"), components["database"].get("url")),
-        ("redis", components["redis"].get("ok"), "degraded (per-process limits)" if components["redis"].get("degraded") else "connected"),
-        ("firewall", components["firewall"].get("ok"), f"{components['firewall'].get('backend')} enforcing={components['firewall'].get('enforcing')}"),
-        ("rules", components["rules"]["ok"], "; ".join(components["rules"]["problems"][:2]) or "all valid"),
+        (
+            "redis",
+            components["redis"].get("ok"),
+            "degraded (per-process limits)" if components["redis"].get("degraded") else "connected",
+        ),
+        (
+            "firewall",
+            components["firewall"].get("ok"),
+            f"{components['firewall'].get('backend')} enforcing={components['firewall'].get('enforcing')}",
+        ),
+        (
+            "rules",
+            components["rules"]["ok"],
+            "; ".join(components["rules"]["problems"][:2]) or "all valid",
+        ),
     ]
-    console.print(table(f"SentinelX {report['version']} - {report['status'].upper()}", ["Component", "OK", "Detail"],
-                        [(name, "yes" if ok else "no", detail) for name, ok, detail in rows]))
+    console.print(
+        table(
+            f"SentinelX {report['version']} - {report['status'].upper()}",
+            ["Component", "OK", "Detail"],
+            [(name, "yes" if ok else "no", detail) for name, ok, detail in rows],
+        )
+    )
     overview = report["overview"]
-    console.print(table("Last 24 hours", ["Metric", "Value"], [
-        ("Detections", overview["detections_24h"]), ("Open incidents", overview["open_incidents"]),
-        ("Critical incidents", overview["critical_incidents"]), ("Blocked sources", overview["blocked_sources"]),
-        ("Pending approvals", overview["pending_approvals"]), ("Detectors loaded", len(report["detectors"])),
-    ]))
+    console.print(
+        table(
+            "Last 24 hours",
+            ["Metric", "Value"],
+            [
+                ("Detections", overview["detections_24h"]),
+                ("Open incidents", overview["open_incidents"]),
+                ("Critical incidents", overview["critical_incidents"]),
+                ("Blocked sources", overview["blocked_sources"]),
+                ("Pending approvals", overview["pending_approvals"]),
+                ("Detectors loaded", len(report["detectors"])),
+            ],
+        )
+    )
 
 
 @app.command(rich_help_panel="Operate")
@@ -155,12 +202,28 @@ def interfaces(as_json: JsonOption = False) -> None:
     if as_json:
         emit_json({"has_capture_privileges": has_capture_privileges(), "interfaces": entries})
         return
-    console.print(table("Interfaces", ["Name", "State", "Addresses", "MAC", "MTU", "RX packets", "Dropped"], [
-        (i["name"], i["state"], ", ".join(i["addresses"]) or "-", i["mac"], i["mtu"], f"{i['statistics']['rx_packets']:,}",
-         i["statistics"]["rx_dropped"]) for i in entries
-    ]))
+    console.print(
+        table(
+            "Interfaces",
+            ["Name", "State", "Addresses", "MAC", "MTU", "RX packets", "Dropped"],
+            [
+                (
+                    i["name"],
+                    i["state"],
+                    ", ".join(i["addresses"]) or "-",
+                    i["mac"],
+                    i["mtu"],
+                    f"{i['statistics']['rx_packets']:,}",
+                    i["statistics"]["rx_dropped"],
+                )
+                for i in entries
+            ],
+        )
+    )
     if not has_capture_privileges():
-        err.print("[yellow]This process cannot capture (no CAP_NET_RAW).[/] Replay and fixtures still work; see: sentinelx doctor")
+        err.print(
+            "[yellow]This process cannot capture (no CAP_NET_RAW).[/] Replay and fixtures still work; see: sentinelx doctor"
+        )
 
 
 security.register(app)

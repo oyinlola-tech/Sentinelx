@@ -59,8 +59,10 @@ def create_app(settings: Settings | None = None, *, platform: Platform | None = 
                 f"  SentinelX created the administrator account '{settings.api.bootstrap_admin_username}'.\n"
                 f"  One-time password: {instance.bootstrap_password}\n"
                 "  You will be asked to change it at first login. It will not be shown again.\n"
-                + "=" * 72 + "\n",
-                file=sys.stderr, flush=True,
+                + "=" * 72
+                + "\n",
+                file=sys.stderr,
+                flush=True,
             )
         try:
             yield

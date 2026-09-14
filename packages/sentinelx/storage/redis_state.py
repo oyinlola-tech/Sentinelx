@@ -40,7 +40,9 @@ _sequence = itertools.count()
 class SharedState:
     """Rate limiting, caching and pub/sub over Redis, degrading to in-process."""
 
-    def __init__(self, settings: StorageSettings, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self, settings: StorageSettings, *, clock: Callable[[], float] = time.time
+    ) -> None:
         self.settings = settings
         self.namespace = settings.redis_namespace
         self._clock = clock
@@ -65,12 +67,17 @@ class SharedState:
 
             redis: Any = importlib.import_module("redis.asyncio")  # untyped third-party module
             client = redis.from_url(
-                self.settings.redis_url, socket_connect_timeout=2, socket_timeout=2, decode_responses=True
+                self.settings.redis_url,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+                decode_responses=True,
             )
             await client.ping()
         except Exception as exc:
             if self.settings.redis_required:
-                raise StorageError(f"Redis is required but unreachable: {type(exc).__name__}") from exc
+                raise StorageError(
+                    f"Redis is required but unreachable: {type(exc).__name__}"
+                ) from exc
             if self._degraded_since is None:
                 self._degraded_since = self._clock()
                 log.warning(
@@ -81,7 +88,9 @@ class SharedState:
             return
         self._client = client
         if self._degraded_since is not None:
-            log.info("redis_recovered", degraded_seconds=round(self._clock() - self._degraded_since, 1))
+            log.info(
+                "redis_recovered", degraded_seconds=round(self._clock() - self._degraded_since, 1)
+            )
         self._degraded_since = None
         log.info("redis_connected")
 
@@ -118,7 +127,9 @@ class SharedState:
 
     # --------------------------------------------------------------- limits
 
-    async def hit(self, bucket: str, identity: str, *, limit: int, window_seconds: int) -> tuple[bool, int, float]:
+    async def hit(
+        self, bucket: str, identity: str, *, limit: int, window_seconds: int
+    ) -> tuple[bool, int, float]:
         """Record one request in a sliding window and decide whether it is allowed.
 
         Returns:
@@ -151,7 +162,9 @@ class SharedState:
         return self._verdict(len(window), limit, window[0], window_seconds, now)
 
     @staticmethod
-    def _verdict(count: int, limit: int, oldest: float, window: int, now: float) -> tuple[bool, int, float]:
+    def _verdict(
+        count: int, limit: int, oldest: float, window: int, now: float
+    ) -> tuple[bool, int, float]:
         allowed = count <= limit
         retry_after = 0.0 if allowed else max(oldest + window - now, 0.0)
         return allowed, max(limit - count, 0), round(retry_after, 1)

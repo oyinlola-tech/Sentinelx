@@ -140,7 +140,9 @@ class DetectionEngine:
             except Exception:
                 self.detector_errors += 1
                 metrics.detector_errors.labels(detector=detector.name).inc()
-                log.exception("detector_failed", detector=detector.name, packet=context.packet.summary())
+                log.exception(
+                    "detector_failed", detector=detector.name, packet=context.packet.summary()
+                )
                 continue
             if detection is None:
                 continue
@@ -214,10 +216,7 @@ class DetectionEngine:
         can escalate at most a handful of times before it saturates.
         """
         _, last_rank, last_confidence = last
-        return (
-            detection.severity.rank > last_rank
-            or detection.confidence >= last_confidence + 0.2
-        )
+        return detection.severity.rank > last_rank or detection.confidence >= last_confidence + 0.2
 
     def _is_allowlisted(self, address: str) -> bool:
         if not self._allowlist:

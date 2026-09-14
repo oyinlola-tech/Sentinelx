@@ -33,7 +33,13 @@ def fmt(stat: dict[str, float] | None, unit: str = "", digits: int = 2) -> str:
     return f"{stat['mean']:.{digits}f}{unit} ± {stat['stdev']:.{digits}f}"
 
 
-def markdown(env: dict[str, object], micro: dict[str, object], results: list[dict[str, object]], runs: int, rules: bool) -> str:
+def markdown(
+    env: dict[str, object],
+    micro: dict[str, object],
+    results: list[dict[str, object]],
+    runs: int,
+    rules: bool,
+) -> str:
     lines = [
         "# SentinelX detection benchmark",
         "",
@@ -88,21 +94,36 @@ def main() -> int:
     structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
 
     def progress(experiment: object, done: int, total: int) -> None:
-        print(f"\r  {experiment.name:45} {done}/{total}", end="" if done < total else "\n", file=sys.stderr, flush=True)
+        print(
+            f"\r  {experiment.name:45} {done}/{total}",
+            end="" if done < total else "\n",
+            file=sys.stderr,
+            flush=True,
+        )
 
     env = environment()
     print("decoder microbenchmark...", file=sys.stderr)
     micro = decoder_microbenchmark()
     print("experiments...", file=sys.stderr)
-    results = [result.summary() for result in run_sync(args.runs, not args.no_rules, args.only, progress)]
+    results = [
+        result.summary() for result in run_sync(args.runs, not args.no_rules, args.only, progress)
+    ]
 
     args.output.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    document = {"environment": env, "runs": args.runs, "rules": not args.no_rules, "decoder": micro, "experiments": results}
+    document = {
+        "environment": env,
+        "runs": args.runs,
+        "rules": not args.no_rules,
+        "decoder": micro,
+        "experiments": results,
+    }
     json_path = args.output / f"{stamp}.json"
     md_path = args.output / f"{stamp}.md"
     json_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    md_path.write_text(markdown(env, micro, results, args.runs, not args.no_rules), encoding="utf-8")
+    md_path.write_text(
+        markdown(env, micro, results, args.runs, not args.no_rules), encoding="utf-8"
+    )
     print(md_path.read_text(encoding="utf-8"))
     print(f"wrote {json_path.relative_to(ROOT)} and {md_path.relative_to(ROOT)}", file=sys.stderr)
     return 0

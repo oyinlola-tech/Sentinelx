@@ -34,7 +34,11 @@ def test_version() -> None:
 
 def test_fixtures_and_replay_json_is_clean_on_stdout(cli_env: Path) -> None:
     assert invoke("fixtures", "generate", "tcp_port_scan", "-o", str(cli_env / "fx")).exit_code == 0  # type: ignore[attr-defined]
-    result = CliRunner().invoke(app, ["replay", str(cli_env / "fx" / "tcp_port_scan.pcap"), "--json"], catch_exceptions=False)
+    result = CliRunner().invoke(
+        app,
+        ["replay", str(cli_env / "fx" / "tcp_port_scan.pcap"), "--json"],
+        catch_exceptions=False,
+    )
     report = json.loads(result.stdout)  # would fail if diagnostics leaked onto stdout
     assert result.exit_code == 0
     assert report["frames"] == 440 and "tcp_port_scan" in report["detections_by_detector"]
@@ -44,7 +48,10 @@ def test_fixtures_and_replay_json_is_clean_on_stdout(cli_env: Path) -> None:
 def test_rules_validate_and_test_exit_codes(cli_env: Path, tmp_path: Path) -> None:
     assert invoke("rules", "validate").exit_code == 0  # type: ignore[attr-defined]
     bad = tmp_path / "bad.yml"
-    bad.write_text("rules:\n  - name: Blocks Everyone\n    condition: protocol == TCP\n    action: block_ip\n", encoding="utf-8")
+    bad.write_text(
+        "rules:\n  - name: Blocks Everyone\n    condition: protocol == TCP\n    action: block_ip\n",
+        encoding="utf-8",
+    )
     result = CliRunner().invoke(app, ["rules", "validate", str(bad)])
     assert result.exit_code == 1 and "count threshold" in result.output
     assert invoke("rules", "test", str(REPO_RULES / "authentication.yml")).exit_code == 0  # type: ignore[attr-defined]
@@ -66,13 +73,17 @@ def test_invalid_configuration_exits_2(cli_env: Path, monkeypatch: pytest.Monkey
 
 def test_status_and_doctor_json(cli_env: Path) -> None:
     status = CliRunner().invoke(app, ["status", "--json"])
-    assert status.exit_code == 0 and json.loads(status.stdout)["safety"].startswith("DETECTION ONLY")
+    assert status.exit_code == 0 and json.loads(status.stdout)["safety"].startswith(
+        "DETECTION ONLY"
+    )
     doctor = CliRunner().invoke(app, ["doctor", "--json"])
     checks = {c["check"]: c["status"] for c in json.loads(doctor.stdout)}
     assert checks["rules"] == "ok" and checks["database"] == "ok" and checks["redis"] == "warn"
 
 
-def test_config_set_rejects_prevention_without_confirmation(cli_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_set_rejects_prevention_without_confirmation(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("FIREWALL_BACKEND", "nftables")
     monkeypatch.setenv("RESPONSE_MODE", "automatic")
     result = CliRunner().invoke(app, ["config", "set", "response", "dry_run", "false"])

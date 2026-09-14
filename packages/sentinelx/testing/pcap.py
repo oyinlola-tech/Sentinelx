@@ -20,7 +20,13 @@ _MAGIC = 0xA1B2C3D4
 _VERSION = (2, 4)
 
 
-def write_pcap(path: Path | str, frames: Iterable[RawFrame], *, link_type: int = LinkType.ETHERNET, snaplen: int = 65535) -> int:
+def write_pcap(
+    path: Path | str,
+    frames: Iterable[RawFrame],
+    *,
+    link_type: int = LinkType.ETHERNET,
+    snaplen: int = 65535,
+) -> int:
     """Write frames to ``path``. Returns the number of records written."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,7 +39,9 @@ def write_pcap(path: Path | str, frames: Iterable[RawFrame], *, link_type: int =
             if micros >= 1_000_000:
                 seconds, micros = seconds + 1, micros - 1_000_000
             data = frame.data[:snaplen]
-            handle.write(struct.pack("<IIII", seconds, micros, len(data), frame.wire_length or len(data)))
+            handle.write(
+                struct.pack("<IIII", seconds, micros, len(data), frame.wire_length or len(data))
+            )
             handle.write(data)
             count += 1
     return count

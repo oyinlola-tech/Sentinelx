@@ -203,7 +203,9 @@ def validate_rule(rule: Rule, *, max_window_seconds: float) -> list[str]:
     return problems
 
 
-def parse_rule_document(document: Any, *, source: str, max_window_seconds: float) -> tuple[list[Rule], list[str]]:
+def parse_rule_document(
+    document: Any, *, source: str, max_window_seconds: float
+) -> tuple[list[Rule], list[str]]:
     """Build rules from a parsed YAML document. Returns ``(rules, problems)``."""
     if isinstance(document, dict) and "rule" in document and "rules" not in document:
         entries: Any = [document["rule"]]
@@ -273,7 +275,9 @@ def load_rules(path: Path, *, max_window_seconds: float) -> LoadResult:
         except (yaml.YAMLError, UnicodeDecodeError) as exc:
             problems.append(f"{file}: not valid YAML ({exc})")
             continue
-        loaded, issues = parse_rule_document(document, source=str(file), max_window_seconds=max_window_seconds)
+        loaded, issues = parse_rule_document(
+            document, source=str(file), max_window_seconds=max_window_seconds
+        )
         problems.extend(issues)
         for rule in loaded:
             if rule.id in seen:

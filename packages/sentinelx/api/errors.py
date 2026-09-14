@@ -39,11 +39,16 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RuleValidationError)
     async def _rule(request: Request, exc: RuleValidationError) -> JSONResponse:
-        return JSONResponse({"detail": "rule is invalid", "problems": exc.problems}, status_code=422)
+        return JSONResponse(
+            {"detail": "rule is invalid", "problems": exc.problems}, status_code=422
+        )
 
     @app.exception_handler(SafetyViolationError)
     async def _safety(request: Request, exc: SafetyViolationError) -> JSONResponse:
-        return JSONResponse({"detail": f"refused by safety guard: {exc.reason}", "target": exc.target}, status_code=422)
+        return JSONResponse(
+            {"detail": f"refused by safety guard: {exc.reason}", "target": exc.target},
+            status_code=422,
+        )
 
     @app.exception_handler(ConfigurationError)
     async def _config(request: Request, exc: ConfigurationError) -> JSONResponse:
@@ -74,10 +79,14 @@ def install_error_handlers(app: FastAPI) -> None:
     async def _storage(request: Request, exc: StorageError) -> JSONResponse:
         incident = secrets.token_hex(6)
         log.error("storage_error", error=str(exc), error_id=incident, path=request.url.path)
-        return JSONResponse({"detail": "storage unavailable", "error_id": incident}, status_code=503)
+        return JSONResponse(
+            {"detail": "storage unavailable", "error_id": incident}, status_code=503
+        )
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
         incident = secrets.token_hex(6)
-        log.exception("unhandled_error", error_id=incident, path=request.url.path, method=request.method)
+        log.exception(
+            "unhandled_error", error_id=incident, path=request.url.path, method=request.method
+        )
         return JSONResponse({"detail": "internal error", "error_id": incident}, status_code=500)

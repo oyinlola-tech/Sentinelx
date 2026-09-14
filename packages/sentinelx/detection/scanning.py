@@ -72,7 +72,9 @@ class TcpPortScanDetector(Detector):
         refusal_ratio = profile.refusal_ratio()
         # Probe the small sensitive-port set against the window, not the reverse:
         # O(13) per SYN rather than O(distinct ports) during a large scan.
-        sensitive_hit = sorted(port for port in SENSITIVE_PORTS if profile.scan_ports.contains(profile.source_ip, port))
+        sensitive_hit = sorted(
+            port for port in SENSITIVE_PORTS if profile.scan_ports.contains(profile.source_ip, port)
+        )
 
         confidence = self.scaled_confidence(
             unique_ports, settings.port_scan_unique_ports, floor=0.6, ceiling=0.97, saturation=4.0

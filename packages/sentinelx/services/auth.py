@@ -51,8 +51,19 @@ _hasher = PasswordHasher()
 _DUMMY_HASH = _hasher.hash("sentinelx-timing-equaliser")
 
 _COMMON_PASSWORDS = frozenset(
-    {"password", "password123", "123456789012", "qwertyuiopas", "administrator", "sentinelx", "letmein12345",
-     "changeme1234", "adminadmin12", "welcome12345", "passw0rd1234"}
+    {
+        "password",
+        "password123",
+        "123456789012",
+        "qwertyuiopas",
+        "administrator",
+        "sentinelx",
+        "letmein12345",
+        "changeme1234",
+        "adminadmin12",
+        "welcome12345",
+        "passw0rd1234",
+    }
 )
 _GENERIC_FAILURE = "invalid username or password"
 
@@ -60,7 +71,9 @@ _GENERIC_FAILURE = "invalid username or password"
 class AuthError(SentinelXError):
     """Authentication or authorisation failed. ``status`` maps onto HTTP."""
 
-    def __init__(self, message: str, status: int = 401, *, retry_after: float | None = None) -> None:
+    def __init__(
+        self, message: str, status: int = 401, *, retry_after: float | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.retry_after = retry_after
@@ -124,7 +137,9 @@ class AuthService:
         return _hasher.hash(password)
 
     def check_password_policy(self, password: str, username: str) -> None:
-        problems = validate_password(password, username=username, min_length=self.settings.password_min_length)
+        problems = validate_password(
+            password, username=username, min_length=self.settings.password_min_length
+        )
         if problems:
             raise AuthError("password " + "; ".join(problems), status=422)
 
@@ -157,19 +172,27 @@ class AuthService:
                     must_change_password=generated is not None,
                 )
             )
-        log.warning("bootstrap_admin_created", username=self.settings.bootstrap_admin_username, generated_password=generated is not None)
+        log.warning(
+            "bootstrap_admin_created",
+            username=self.settings.bootstrap_admin_username,
+            generated_password=generated is not None,
+        )
         return generated
 
     async def create_user(self, username: str, password: str, role: UserRole) -> User:
         username = username.strip()
         if not 3 <= len(username) <= 64 or not all(ch.isalnum() or ch in "._-" for ch in username):
-            raise AuthError("username must be 3-64 characters of letters, digits, '.', '_' or '-'", status=422)
+            raise AuthError(
+                "username must be 3-64 characters of letters, digits, '.', '_' or '-'", status=422
+            )
         self.check_password_policy(password, username)
         async with self.database.session() as session:
             users = UserRepository(session)
             if await users.by_username(username) is not None:
                 raise AuthError(f"user {username!r} already exists", status=409)
-            return await users.add(User(username=username, password_hash=self.hash_password(password), role=role.value))
+            return await users.add(
+                User(username=username, password_hash=self.hash_password(password), role=role.value)
+            )
 
     async def change_password(self, principal: Principal, current: str, new: str) -> None:
         async with self.database.session() as session:
@@ -215,12 +238,15 @@ class AuthService:
                 locked, 401 for any credential failure (uniform message).
         """
         allowed, _, retry_after = await self.state.hit(
-            "login", client_ip,
+            "login",
+            client_ip,
             limit=self.settings.login_rate_limit_attempts,
             window_seconds=self.settings.login_rate_limit_window_seconds,
         )
         if not allowed:
-            raise AuthError("too many login attempts; try again later", status=429, retry_after=retry_after)
+            raise AuthError(
+                "too many login attempts; try again later", status=429, retry_after=retry_after
+            )
 
         now = datetime.now(UTC)
         # Failures are *decided* inside the transaction but *raised* after it
@@ -239,12 +265,18 @@ class AuthService:
 
             if user is None:
                 self._verify(_DUMMY_HASH, password)  # equalise timing
-                log.info("login_failed", username=username[:64], reason="unknown_user", client_ip=client_ip)
+                log.info(
+                    "login_failed",
+                    username=username[:64],
+                    reason="unknown_user",
+                    client_ip=client_ip,
+                )
                 failure = AuthError(_GENERIC_FAILURE)
             elif locked_until is not None and locked_until > now:
                 self._verify(_DUMMY_HASH, password)
                 failure = AuthError(
-                    "account temporarily locked after repeated failures", status=423,
+                    "account temporarily locked after repeated failures",
+                    status=423,
                     retry_after=(locked_until - now).total_seconds(),
                 )
             elif not user.is_active or not self._verify(user.password_hash, password):
@@ -253,7 +285,12 @@ class AuthService:
                     user.locked_until = now + timedelta(seconds=self.settings.lockout_seconds)
                     user.failed_logins = 0
                     log.warning("account_locked", username=user.username, client_ip=client_ip)
-                log.info("login_failed", username=user.username, reason="bad_credentials", client_ip=client_ip)
+                log.info(
+                    "login_failed",
+                    username=user.username,
+                    reason="bad_credentials",
+                    client_ip=client_ip,
+                )
                 failure = AuthError(_GENERIC_FAILURE)
             else:
                 if _hasher.check_needs_rehash(user.password_hash):
@@ -261,7 +298,12 @@ class AuthService:
                 user.failed_logins = 0
                 user.locked_until = None
                 user.last_login_at = now
-                principal = Principal(user.id, user.username, UserRole(user.role), must_change_password=user.must_change_password)
+                principal = Principal(
+                    user.id,
+                    user.username,
+                    UserRole(user.role),
+                    must_change_password=user.must_change_password,
+                )
                 pair = await self._issue(users, principal)
         if failure is not None:
             raise failure
@@ -269,7 +311,12 @@ class AuthService:
             raise AuthError(_GENERIC_FAILURE)
         principal = pair.principal
         await self.state.reset("login", client_ip)
-        log.info("login_succeeded", username=principal.username, role=principal.role.value, client_ip=client_ip)
+        log.info(
+            "login_succeeded",
+            username=principal.username,
+            role=principal.role.value,
+            client_ip=client_ip,
+        )
         return pair
 
     async def _issue(self, users: UserRepository, principal: Principal) -> TokenPair:
@@ -279,13 +326,22 @@ class AuthService:
         refresh_expires = now + timedelta(seconds=self.settings.refresh_token_ttl_seconds)
         common = {"sub": str(principal.user_id), "iss": self.settings.jwt_issuer, "iat": now}
         access = jwt.encode(
-            {**common, "type": "access", "jti": access_jti, "exp": access_expires,
-             "username": principal.username, "role": principal.role.value, "pwd_change": principal.must_change_password},
-            self.settings.jwt_secret, algorithm=self.settings.jwt_algorithm,
+            {
+                **common,
+                "type": "access",
+                "jti": access_jti,
+                "exp": access_expires,
+                "username": principal.username,
+                "role": principal.role.value,
+                "pwd_change": principal.must_change_password,
+            },
+            self.settings.jwt_secret,
+            algorithm=self.settings.jwt_algorithm,
         )
         refresh = jwt.encode(
             {**common, "type": "refresh", "jti": refresh_jti, "exp": refresh_expires},
-            self.settings.jwt_secret, algorithm=self.settings.jwt_algorithm,
+            self.settings.jwt_secret,
+            algorithm=self.settings.jwt_algorithm,
         )
         await users.store_refresh_token(refresh_jti, principal.user_id, refresh_expires)
         return TokenPair(access, refresh, access_expires, refresh_expires, principal)
@@ -320,7 +376,13 @@ class AuthService:
             user = await UserRepository(session).get(int(claims["sub"]))
         if user is None or not user.is_active:
             raise AuthError("account disabled")
-        return Principal(user.id, user.username, UserRole(user.role), str(claims["jti"]), user.must_change_password)
+        return Principal(
+            user.id,
+            user.username,
+            UserRole(user.role),
+            str(claims["jti"]),
+            user.must_change_password,
+        )
 
     async def refresh(self, refresh_token: str) -> TokenPair:
         claims = self._decode(refresh_token, "refresh")
@@ -339,7 +401,12 @@ class AuthService:
                 reuse_detected = True
             else:
                 stored.revoked_at = datetime.now(UTC)
-                principal = Principal(user.id, user.username, UserRole(user.role), must_change_password=user.must_change_password)
+                principal = Principal(
+                    user.id,
+                    user.username,
+                    UserRole(user.role),
+                    must_change_password=user.must_change_password,
+                )
                 pair = await self._issue(users, principal)
         if reuse_detected:
             raise AuthError("invalid token")
@@ -353,7 +420,9 @@ class AuthService:
 
     async def issue_ws_ticket(self, principal: Principal) -> str:
         ticket = secrets.token_urlsafe(32)
-        await self.state.cache_set(f"wsticket:{ticket}", {"user_id": principal.user_id}, ttl_seconds=30)
+        await self.state.cache_set(
+            f"wsticket:{ticket}", {"user_id": principal.user_id}, ttl_seconds=30
+        )
         return ticket
 
     async def redeem_ws_ticket(self, ticket: str) -> Principal:

@@ -158,7 +158,9 @@ class DetectionSettings(BaseModel):
     dns_window_seconds: float = Field(default=30.0, gt=0)
     dns_query_threshold: int = Field(default=300, ge=1)
     dns_unique_domain_threshold: int = Field(
-        default=100, ge=1, description="Many distinct names from one client suggests tunnelling or DGA."
+        default=100,
+        ge=1,
+        description="Many distinct names from one client suggests tunnelling or DGA.",
     )
     dns_long_label_length: int = Field(
         default=52,
@@ -167,7 +169,9 @@ class DetectionSettings(BaseModel):
         description="Label length above which a name looks like encoded data rather than a hostname.",
     )
     dns_high_entropy_threshold: float = Field(
-        default=3.8, ge=0.0, description="Shannon entropy (bits/char) suggesting an algorithmic name."
+        default=3.8,
+        ge=0.0,
+        description="Shannon entropy (bits/char) suggesting an algorithmic name.",
     )
 
     # --- general
@@ -320,8 +324,10 @@ class ResponseSettings(BaseModel):
     default_block_seconds: int = Field(default=900, ge=30, le=86_400)
     max_block_seconds: int = Field(default=86_400, ge=60)
     max_blocked_addresses: int = Field(
-        default=10_000, ge=1, description="Hard cap on concurrent blocks. A runaway detector "
-        "hits this limit instead of exhausting the firewall set."
+        default=10_000,
+        ge=1,
+        description="Hard cap on concurrent blocks. A runaway detector "
+        "hits this limit instead of exhausting the firewall set.",
     )
     max_block_prefix_hosts: int = Field(
         default=256,
@@ -366,7 +372,11 @@ class ResponseSettings(BaseModel):
     @model_validator(mode="after")
     def _guard_prevention(self) -> ResponseSettings:
         """A live firewall backend is required before prevention can do anything."""
-        if self.mode is ResponseMode.AUTOMATIC and not self.dry_run and self.firewall_backend == "null":
+        if (
+            self.mode is ResponseMode.AUTOMATIC
+            and not self.dry_run
+            and self.firewall_backend == "null"
+        ):
             raise ValueError(
                 "RESPONSE_MODE=automatic with DRY_RUN=false requires a real "
                 "FIREWALL_BACKEND (nftables or iptables), not 'null'"
@@ -407,7 +417,9 @@ class StorageSettings(BaseModel):
         default=365, ge=1, description="Audit events are kept far longer than telemetry."
     )
     metrics_retention_days: int = Field(default=7, ge=1)
-    batch_size: int = Field(default=200, ge=1, description="Rows flushed to the database per write.")
+    batch_size: int = Field(
+        default=200, ge=1, description="Rows flushed to the database per write."
+    )
     flush_interval_seconds: float = Field(default=2.0, gt=0)
 
     @property
@@ -446,7 +458,9 @@ class ApiSettings(BaseModel):
         description="Mark auth cookies Secure (HTTPS only). Forced on in production.",
     )
     password_min_length: int = Field(default=12, ge=8, le=128)
-    lockout_threshold: int = Field(default=5, ge=1, description="Failed logins before an account locks.")
+    lockout_threshold: int = Field(
+        default=5, ge=1, description="Failed logins before an account locks."
+    )
     lockout_seconds: int = Field(default=900, ge=30)
 
     auth_enabled: bool = True
@@ -479,7 +493,9 @@ class ApiSettings(BaseModel):
         description="Bearer token for the Prometheus endpoint. When empty, metrics are "
         "served to loopback clients only.",
     )
-    docs_enabled: bool = Field(default=True, description="Serve interactive OpenAPI docs. Disabled in production.")
+    docs_enabled: bool = Field(
+        default=True, description="Serve interactive OpenAPI docs. Disabled in production."
+    )
 
     @field_validator("trusted_proxies")
     @classmethod

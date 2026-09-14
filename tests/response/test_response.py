@@ -18,13 +18,31 @@ from sentinelx.response.engine import ResponseEngine
 from sentinelx.response.safety import SafetyGuard
 
 
-def guard(settings: ResponseSettings, local: set[str] | None = None, active: int = 0) -> SafetyGuard:
-    return SafetyGuard(settings, local_addresses=lambda: local or set(), active_block_count=lambda: active)
+def guard(
+    settings: ResponseSettings, local: set[str] | None = None, active: int = 0
+) -> SafetyGuard:
+    return SafetyGuard(
+        settings, local_addresses=lambda: local or set(), active_block_count=lambda: active
+    )
 
 
 class TestSafetyGuard:
-    @pytest.mark.parametrize("target", ["127.0.0.1", "::1", "169.254.10.10", "224.0.0.1", "0.0.0.0/0", "::/0",
-                                        "10.0.0.0/8", "not-an-ip", "1.2.3.4; nft flush ruleset", "", "1.2.3.4\n"])
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "127.0.0.1",
+            "::1",
+            "169.254.10.10",
+            "224.0.0.1",
+            "0.0.0.0/0",
+            "::/0",
+            "10.0.0.0/8",
+            "not-an-ip",
+            "1.2.3.4; nft flush ruleset",
+            "",
+            "1.2.3.4\n",
+        ],
+    )
     def test_refuses_dangerous_targets(self, target: str) -> None:
         with pytest.raises(SafetyViolationError):
             guard(ResponseSettings()).check(target)
@@ -39,7 +57,11 @@ class TestSafetyGuard:
             guard(ResponseSettings(), local={"192.0.2.10"}).check("192.0.2.0/28")
 
     def test_refuses_allowlist_and_management_overlap(self) -> None:
-        g = guard(ResponseSettings(allowlist_networks=["198.51.100.0/24"], management_addresses=["192.0.2.50"]))
+        g = guard(
+            ResponseSettings(
+                allowlist_networks=["198.51.100.0/24"], management_addresses=["192.0.2.50"]
+            )
+        )
         with pytest.raises(SafetyViolationError, match="allowlisted"):
             g.check("198.51.100.0/30")
         with pytest.raises(SafetyViolationError, match="management"):
@@ -64,18 +86,37 @@ class TestSafetyGuard:
         assert "127.0.0.0/8" in g.allowlist
 
 
-def detection(action: ActionType = ActionType.TEMPORARY_BLOCK, source: str = "203.0.113.5") -> Detection:
-    return Detection(detector="tcp_port_scan", category=ThreatCategory.RECONNAISSANCE, severity=Severity.CRITICAL,
-                     confidence=0.95, title="TCP port scan", description="d", source_ip=source,
-                     evidence=[Evidence("ports", 94, "94 ports")], recommended_action=action)
+def detection(
+    action: ActionType = ActionType.TEMPORARY_BLOCK, source: str = "203.0.113.5"
+) -> Detection:
+    return Detection(
+        detector="tcp_port_scan",
+        category=ThreatCategory.RECONNAISSANCE,
+        severity=Severity.CRITICAL,
+        confidence=0.95,
+        title="TCP port scan",
+        description="d",
+        source_ip=source,
+        evidence=[Evidence("ports", 94, "94 ports")],
+        recommended_action=action,
+    )
 
 
 def risk(score: float) -> RiskAssessment:
-    return RiskAssessment(score=score, band=RiskBand.from_score(score), contributions={"severity": score}, rationale=["x"])
+    return RiskAssessment(
+        score=score,
+        band=RiskBand.from_score(score),
+        contributions={"severity": score},
+        rationale=["x"],
+    )
 
 
-async def engine_for(mode: ResponseMode, dry_run: bool, **extra: object) -> tuple[ResponseEngine, MemoryFirewall, list[dict[str, object]], EventBus]:
-    settings = ResponseSettings(mode=mode, dry_run=dry_run, firewall_backend="null" if dry_run else "nftables", **extra)  # type: ignore[arg-type]
+async def engine_for(
+    mode: ResponseMode, dry_run: bool, **extra: object
+) -> tuple[ResponseEngine, MemoryFirewall, list[dict[str, object]], EventBus]:
+    settings = ResponseSettings(
+        mode=mode, dry_run=dry_run, firewall_backend="null" if dry_run else "nftables", **extra
+    )  # type: ignore[arg-type]
     firewall = MemoryFirewall()
     audit: list[dict[str, object]] = []
 
@@ -83,8 +124,14 @@ async def engine_for(mode: ResponseMode, dry_run: bool, **extra: object) -> tupl
         audit.append(record)
 
     bus = EventBus()
-    engine = ResponseEngine(settings, firewall, scoring=ScoringSettings(auto_block_threshold=85), bus=bus, audit=sink,
-                            guard=guard(settings))
+    engine = ResponseEngine(
+        settings,
+        firewall,
+        scoring=ScoringSettings(auto_block_threshold=85),
+        bus=bus,
+        audit=sink,
+        guard=guard(settings),
+    )
     return engine, firewall, audit, bus
 
 
@@ -138,33 +185,49 @@ class TestResponseModes:
         assert len(engine.pending) == 1  # not queued twice
         action_id = next(iter(engine.pending))
         approved = await engine.approve(action_id, actor="admin")
-        assert approved.outcome == "executed" and firewall.operations == [("block", "203.0.113.5/32")]
+        assert approved.outcome == "executed" and firewall.operations == [
+            ("block", "203.0.113.5/32")
+        ]
         assert audit[-1]["actor"] == "admin"
 
     async def test_reject_removes_pending_and_audits(self) -> None:
         engine, firewall, audit, _ = await engine_for(ResponseMode.MANUAL_APPROVAL, dry_run=False)
         await engine.handle_detection(detection(), risk(99))
         await engine.reject(next(iter(engine.pending)), actor="admin", reason="false positive")
-        assert engine.pending == {} and audit[-1]["action"] == "REJECT_RESPONSE" and firewall.operations == []
+        assert (
+            engine.pending == {}
+            and audit[-1]["action"] == "REJECT_RESPONSE"
+            and firewall.operations == []
+        )
 
     async def test_manual_block_honours_dry_run_and_safety(self) -> None:
         engine, firewall, _, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=True)
-        simulated = await engine.manual_action(ActionType.BLOCK_IP, "203.0.113.7", actor="admin", reason="test")
+        simulated = await engine.manual_action(
+            ActionType.BLOCK_IP, "203.0.113.7", actor="admin", reason="test"
+        )
         assert simulated.outcome == "simulated" and firewall.operations == []
-        refused = await engine.manual_action(ActionType.BLOCK_IP, "127.0.0.1", actor="admin", reason="oops")
+        refused = await engine.manual_action(
+            ActionType.BLOCK_IP, "127.0.0.1", actor="admin", reason="oops"
+        )
         assert refused.outcome == "failed" and "safety" in (refused.error or "")
 
     async def test_manual_block_and_unblock_when_enforcing(self) -> None:
         engine, firewall, audit, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=False)
         await engine.manual_action(ActionType.BLOCK_IP, "203.0.113.7", actor="admin", reason="scan")
-        await engine.manual_action(ActionType.UNBLOCK_IP, "203.0.113.7", actor="admin", reason="cleared")
+        await engine.manual_action(
+            ActionType.UNBLOCK_IP, "203.0.113.7", actor="admin", reason="cleared"
+        )
         assert firewall.operations == [("block", "203.0.113.7/32"), ("unblock", "203.0.113.7/32")]
         assert [a["action"] for a in audit] == ["BLOCK_IP", "UNBLOCK_IP"]
         assert await engine.blocked() == []
 
     async def test_manual_duration_is_clamped_to_maximum(self) -> None:
-        engine, _, _, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=False, max_block_seconds=600)
-        decision = await engine.manual_action(ActionType.TEMPORARY_BLOCK, "203.0.113.8", actor="a", reason="r", duration=99999)
+        engine, _, _, _ = await engine_for(
+            ResponseMode.DETECT_ONLY, dry_run=False, max_block_seconds=600
+        )
+        decision = await engine.manual_action(
+            ActionType.TEMPORARY_BLOCK, "203.0.113.8", actor="a", reason="r", duration=99999
+        )
         assert decision.duration_seconds == 600
 
     async def test_firewall_failure_is_reported_not_raised(self) -> None:
@@ -192,7 +255,9 @@ class FakeRunner:
         failed = any(token in args for token in self.fail_on)
         if failed and check:
             raise FirewallError("failed", command=" ".join(args))
-        return CommandResult(argv=args, returncode=1 if failed else 0, stdout=self.stdout, stderr="", duration=0.0)
+        return CommandResult(
+            argv=args, returncode=1 if failed else 0, stdout=self.stdout, stderr="", duration=0.0
+        )
 
 
 class TestNftablesAdapter:
@@ -209,7 +274,18 @@ class TestNftablesAdapter:
         runner = FakeRunner()
         adapter = NftablesAdapter(runner=runner)  # type: ignore[arg-type]
         await adapter.block(parse_network("203.0.113.5"), duration=900)
-        assert runner.calls[-1] == ("add", "element", "inet", "sentinelx", "blocklist_v4", "{", "203.0.113.5", "timeout", "900s", "}")
+        assert runner.calls[-1] == (
+            "add",
+            "element",
+            "inet",
+            "sentinelx",
+            "blocklist_v4",
+            "{",
+            "203.0.113.5",
+            "timeout",
+            "900s",
+            "}",
+        )
         await adapter.block(parse_network("2001:db8::/64"))
         assert runner.calls[-1][4] == "blocklist_v6" and "2001:db8::/64" in runner.calls[-1]
 
@@ -240,7 +316,9 @@ class TestIptablesAdapter:
 
     async def test_list_parses_rules(self) -> None:
         v4 = FakeRunner()
-        v4.stdout = "-N SENTINELX\n-A SENTINELX -s 203.0.113.5/32 -m comment --comment sentinelx -j DROP\n"
+        v4.stdout = (
+            "-N SENTINELX\n-A SENTINELX -s 203.0.113.5/32 -m comment --comment sentinelx -j DROP\n"
+        )
         entries = await IptablesAdapter(runner_v4=v4, runner_v6=FakeRunner()).list_blocked()  # type: ignore[arg-type]
         assert [e.network for e in entries] == ["203.0.113.5/32"]
 

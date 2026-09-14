@@ -63,7 +63,12 @@ async def test_invalid_pcap_raises_pcap_error(tmp_path: Path, content: bytes | N
 
 
 async def test_paced_replay_respects_speed(tmp_path: Path) -> None:
-    frames = [RawFrame(data=get_scenario("icmp_flood", count=1).frames[0].data, timestamp=100.0 + i * 0.05) for i in range(5)]
+    frames = [
+        RawFrame(
+            data=get_scenario("icmp_flood", count=1).frames[0].data, timestamp=100.0 + i * 0.05
+        )
+        for i in range(5)
+    ]
     path = tmp_path / "paced.pcap"
     write_pcap(path, frames)
     import time
@@ -93,7 +98,9 @@ def test_mock_capture_rejects_invalid_repeat() -> None:
 
 
 def test_factory_selects_pcap_or_live(tmp_path: Path) -> None:
-    assert isinstance(create_capture(CaptureSettings(), pcap_path=tmp_path / "x.pcap"), PcapFileCapture)
+    assert isinstance(
+        create_capture(CaptureSettings(), pcap_path=tmp_path / "x.pcap"), PcapFileCapture
+    )
     assert isinstance(create_capture(CaptureSettings(interface="lo")), LiveCapture)
 
 

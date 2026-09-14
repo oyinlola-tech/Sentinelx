@@ -22,9 +22,22 @@ from sentinelx.features.extractor import FeatureContext, FeatureExtractor
 from sentinelx.parser.decoder import PacketDecoder
 
 _SETTINGS_ENV = (
-    "DATABASE_URL", "REDIS_URL", "API_HOST", "API_PORT", "CAPTURE_INTERFACE", "DETECTION_MODE",
-    "RESPONSE_MODE", "DRY_RUN", "JWT_SECRET", "LOG_LEVEL", "PCAP_DIRECTORY", "RETENTION_DAYS",
-    "FIREWALL_BACKEND", "CORS_ORIGINS", "BPF_FILTER", "LOG_FORMAT",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "API_HOST",
+    "API_PORT",
+    "CAPTURE_INTERFACE",
+    "DETECTION_MODE",
+    "RESPONSE_MODE",
+    "DRY_RUN",
+    "JWT_SECRET",
+    "LOG_LEVEL",
+    "PCAP_DIRECTORY",
+    "RETENTION_DAYS",
+    "FIREWALL_BACKEND",
+    "CORS_ORIGINS",
+    "BPF_FILTER",
+    "LOG_FORMAT",
 )
 
 
@@ -66,7 +79,11 @@ def decoder() -> PacketDecoder:
 def run_detection() -> Callable[..., list]:  # type: ignore[type-arg]
     """Feed frames through decode -> features -> detection and return detections."""
 
-    def run(frames: list[RawFrame], settings: DetectionSettings | None = None, engine: DetectionEngine | None = None) -> list:  # type: ignore[type-arg]
+    def run(
+        frames: list[RawFrame],
+        settings: DetectionSettings | None = None,
+        engine: DetectionEngine | None = None,
+    ) -> list:  # type: ignore[type-arg]
         detection_settings = settings or DetectionSettings()
         decoder = PacketDecoder()
         extractor = FeatureExtractor(detection_settings)
@@ -88,7 +105,9 @@ def contexts() -> Callable[[list[RawFrame]], list[FeatureContext]]:
         extractor = FeatureExtractor()
         out = []
         for frame in frames:
-            packet: PacketEvent | None = decoder.decode(frame.data, frame.timestamp, frame.link_type)
+            packet: PacketEvent | None = decoder.decode(
+                frame.data, frame.timestamp, frame.link_type
+            )
             if packet is not None:
                 out.append(extractor.process(packet))
         return out

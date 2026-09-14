@@ -171,7 +171,9 @@ class ResponseEngine:
 
     # ------------------------------------------------------ automatic path
 
-    async def handle_detection(self, detection: Detection, risk: RiskAssessment) -> list[ResponseDecision]:
+    async def handle_detection(
+        self, detection: Detection, risk: RiskAssessment
+    ) -> list[ResponseDecision]:
         """Decide how to respond to a scored detection."""
         decisions: list[ResponseDecision] = []
         evidence = [item.description for item in detection.evidence]
@@ -207,11 +209,22 @@ class ResponseEngine:
             decisions.append(await self._finalise(decision, source="engine", record=False))
             return decisions
 
-        duration = self.settings.default_block_seconds if action in (ActionType.TEMPORARY_BLOCK, ActionType.RATE_LIMIT) else None
+        duration = (
+            self.settings.default_block_seconds
+            if action in (ActionType.TEMPORARY_BLOCK, ActionType.RATE_LIMIT)
+            else None
+        )
         reason = f"{detection.title}: risk {risk.score:.0f}/100 from {detection.source_ip}"
         decisions.append(
-            await self._automatic(action, detection.source_ip, reason, risk.score, duration,
-                                  detection_id=detection.detection_id, evidence=evidence)
+            await self._automatic(
+                action,
+                detection.source_ip,
+                reason,
+                risk.score,
+                duration,
+                detection_id=detection.detection_id,
+                evidence=evidence,
+            )
         )
         return decisions
 
@@ -226,8 +239,12 @@ class ResponseEngine:
             reason = f"incident '{incident.title}' risk {incident.risk.score:.0f}/100"
             decisions.append(
                 await self._automatic(
-                    ActionType.TEMPORARY_BLOCK, source, reason, incident.risk.score,
-                    self.settings.default_block_seconds, incident_id=incident.incident_id,
+                    ActionType.TEMPORARY_BLOCK,
+                    source,
+                    reason,
+                    incident.risk.score,
+                    self.settings.default_block_seconds,
+                    incident_id=incident.incident_id,
                     evidence=incident.risk.rationale,
                 )
             )
@@ -247,17 +264,27 @@ class ResponseEngine:
     ) -> ResponseDecision:
         mode = self.settings.mode
         base = ResponseDecision(
-            action=action, target=target, reason=reason, executed=False, dry_run=self.settings.dry_run,
-            duration_seconds=duration, detection_id=detection_id, incident_id=incident_id,
+            action=action,
+            target=target,
+            reason=reason,
+            executed=False,
+            dry_run=self.settings.dry_run,
+            duration_seconds=duration,
+            detection_id=detection_id,
+            incident_id=incident_id,
         )
         if target in self._blocks and action in (ActionType.BLOCK_IP, ActionType.TEMPORARY_BLOCK):
             return await self._finalise(
-                replace(base, dry_run=False, reason=f"{reason}; already blocked"), source="engine", record=False
+                replace(base, dry_run=False, reason=f"{reason}; already blocked"),
+                source="engine",
+                record=False,
             )
 
         if mode is ResponseMode.DETECT_ONLY:
             return await self._finalise(
-                replace(base, dry_run=False, reason=f"{reason}; not applied (RESPONSE_MODE=detect_only)"),
+                replace(
+                    base, dry_run=False, reason=f"{reason}; not applied (RESPONSE_MODE=detect_only)"
+                ),
                 source="engine",
             )
 
@@ -266,12 +293,20 @@ class ResponseEngine:
         try:
             self.guard.check(target)
         except SafetyViolationError as exc:
-            return await self._finalise(replace(base, error=f"safety guard: {exc.reason}"), source="engine")
+            return await self._finalise(
+                replace(base, error=f"safety guard: {exc.reason}"), source="engine"
+            )
 
         if mode is ResponseMode.MANUAL_APPROVAL:
             pending = PendingAction(
-                action=action, target=target, reason=reason, risk=risk, duration_seconds=duration,
-                detection_id=detection_id, incident_id=incident_id, evidence=evidence or [],
+                action=action,
+                target=target,
+                reason=reason,
+                risk=risk,
+                duration_seconds=duration,
+                detection_id=detection_id,
+                incident_id=incident_id,
+                evidence=evidence or [],
             )
             if not any(p.target == target and p.action is action for p in self.pending.values()):
                 self.pending[pending.action_id] = pending
@@ -302,15 +337,21 @@ class ResponseEngine:
         if action is ActionType.TEMPORARY_BLOCK and duration is None:
             duration = self.settings.default_block_seconds
         base = ResponseDecision(
-            action=action, target=target, reason=reason or f"manual {action.value} by {actor}",
-            executed=False, dry_run=self.settings.dry_run, duration_seconds=duration,
+            action=action,
+            target=target,
+            reason=reason or f"manual {action.value} by {actor}",
+            executed=False,
+            dry_run=self.settings.dry_run,
+            duration_seconds=duration,
         )
         if action is ActionType.UNBLOCK_IP:
             return await self._execute(base, source=source, actor=actor)
         try:
             self.guard.check(target)
         except SafetyViolationError as exc:
-            return await self._finalise(replace(base, error=f"safety guard: {exc.reason}"), source=source, actor=actor)
+            return await self._finalise(
+                replace(base, error=f"safety guard: {exc.reason}"), source=source, actor=actor
+            )
         return await self._execute(base, source=source, actor=actor)
 
     async def approve(self, action_id: str, *, actor: str) -> ResponseDecision:
@@ -321,56 +362,89 @@ class ResponseEngine:
         """
         pending = self.pending.pop(action_id)
         return await self.manual_action(
-            pending.action, pending.target, actor=actor,
-            reason=f"approved: {pending.reason}", duration=pending.duration_seconds, source="approval",
+            pending.action,
+            pending.target,
+            actor=actor,
+            reason=f"approved: {pending.reason}",
+            duration=pending.duration_seconds,
+            source="approval",
         )
 
     async def reject(self, action_id: str, *, actor: str, reason: str = "") -> PendingAction:
         pending = self.pending.pop(action_id)
         await self._audit_record(
-            {"action": "REJECT_RESPONSE", "actor": actor, "target": pending.target,
-             "reason": reason or "rejected by administrator", "source": "approval",
-             "details": pending.as_dict()}
+            {
+                "action": "REJECT_RESPONSE",
+                "actor": actor,
+                "target": pending.target,
+                "reason": reason or "rejected by administrator",
+                "source": "approval",
+                "details": pending.as_dict(),
+            }
         )
         return pending
 
     # ------------------------------------------------------------ execution
 
-    async def _execute(self, decision: ResponseDecision, *, source: str, actor: str = "system") -> ResponseDecision:
+    async def _execute(
+        self, decision: ResponseDecision, *, source: str, actor: str = "system"
+    ) -> ResponseDecision:
         if decision.dry_run:
             return await self._finalise(
-                replace(decision, reason=f"{decision.reason} [DRY RUN - not applied]"), source=source, actor=actor
+                replace(decision, reason=f"{decision.reason} [DRY RUN - not applied]"),
+                source=source,
+                actor=actor,
             )
         try:
             async with self._lock:
                 result = await self._apply(decision)
         except (FirewallError, SafetyViolationError, ValueError) as exc:
-            return await self._finalise(replace(decision, error=str(exc)), source=source, actor=actor)
+            return await self._finalise(
+                replace(decision, error=str(exc)), source=source, actor=actor
+            )
         return await self._finalise(replace(decision, executed=result), source=source, actor=actor)
 
     async def _apply(self, decision: ResponseDecision) -> bool:
         action = decision.action
         if action in (ActionType.BLOCK_IP, ActionType.TEMPORARY_BLOCK, ActionType.QUARANTINE):
             network = self.guard.check(decision.target)
-            entry = await self.firewall.block(network, duration=decision.duration_seconds, comment=decision.reason[:120])
-            self._blocks[entry.network] = entry
-            metrics.blocked_addresses.set(len(self._blocks))
-            if self._on_response:
-                self._on_response(decision.target)
-            if self.bus:
-                await self.bus.publish(EventType.IP_BLOCKED, {**entry.as_dict(), "reason": decision.reason, "backend": self.firewall.backend})
-            return True
-        if action is ActionType.RATE_LIMIT:
-            network = self.guard.check(decision.target)
-            entry = await self.firewall.rate_limit(
-                network, packets_per_second=self.settings.rate_limit_packets_per_second, duration=decision.duration_seconds
+            entry = await self.firewall.block(
+                network, duration=decision.duration_seconds, comment=decision.reason[:120]
             )
             self._blocks[entry.network] = entry
             metrics.blocked_addresses.set(len(self._blocks))
             if self._on_response:
                 self._on_response(decision.target)
             if self.bus:
-                await self.bus.publish(EventType.IP_BLOCKED, {**entry.as_dict(), "reason": decision.reason, "backend": self.firewall.backend})
+                await self.bus.publish(
+                    EventType.IP_BLOCKED,
+                    {
+                        **entry.as_dict(),
+                        "reason": decision.reason,
+                        "backend": self.firewall.backend,
+                    },
+                )
+            return True
+        if action is ActionType.RATE_LIMIT:
+            network = self.guard.check(decision.target)
+            entry = await self.firewall.rate_limit(
+                network,
+                packets_per_second=self.settings.rate_limit_packets_per_second,
+                duration=decision.duration_seconds,
+            )
+            self._blocks[entry.network] = entry
+            metrics.blocked_addresses.set(len(self._blocks))
+            if self._on_response:
+                self._on_response(decision.target)
+            if self.bus:
+                await self.bus.publish(
+                    EventType.IP_BLOCKED,
+                    {
+                        **entry.as_dict(),
+                        "reason": decision.reason,
+                        "backend": self.firewall.backend,
+                    },
+                )
             return True
         if action is ActionType.UNBLOCK_IP:
             network = parse_network(decision.target)
@@ -378,7 +452,10 @@ class ResponseEngine:
             self._blocks.pop(str(network), None)
             metrics.blocked_addresses.set(len(self._blocks))
             if self.bus:
-                await self.bus.publish(EventType.IP_UNBLOCKED, {"network": str(network), "reason": decision.reason, "removed": removed})
+                await self.bus.publish(
+                    EventType.IP_UNBLOCKED,
+                    {"network": str(network), "reason": decision.reason, "removed": removed},
+                )
             return removed
         raise ValueError(f"{action.value} is not an executable preventive action")
 
@@ -404,7 +481,11 @@ class ResponseEngine:
         if self.bus:
             await self.bus.publish(EventType.RESPONSE_DECIDED, payload)
         if decision.action.is_preventive:
-            log.info("response_decision", **{k: payload[k] for k in ("action", "target", "outcome", "reason")}, actor=actor)
+            log.info(
+                "response_decision",
+                **{k: payload[k] for k in ("action", "target", "outcome", "reason")},
+                actor=actor,
+            )
             await self._audit_record(
                 {
                     "action": decision.action.value.upper(),
@@ -426,7 +507,9 @@ class ResponseEngine:
         except Exception:
             # Losing an audit record is serious, but must not reverse a firewall
             # change already made. Log loudly so it cannot pass unnoticed.
-            log.exception("audit_write_failed", action=record.get("action"), target=record.get("target"))
+            log.exception(
+                "audit_write_failed", action=record.get("action"), target=record.get("target")
+            )
 
     async def _webhook(self, detection: Detection, risk: RiskAssessment) -> ResponseDecision:
         import httpx
@@ -444,15 +527,23 @@ class ResponseEngine:
             "timestamp": detection.timestamp.isoformat(),
         }
         decision = ResponseDecision(
-            action=ActionType.WEBHOOK, target=self.settings.webhook_url.split("?")[0], reason=detection.title,
-            executed=False, dry_run=False, detection_id=detection.detection_id,
+            action=ActionType.WEBHOOK,
+            target=self.settings.webhook_url.split("?")[0],
+            reason=detection.title,
+            executed=False,
+            dry_run=False,
+            detection_id=detection.detection_id,
         )
         try:
             async with httpx.AsyncClient(timeout=self.settings.webhook_timeout_seconds) as client:
                 response = await client.post(self.settings.webhook_url, json=body)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            return await self._finalise(replace(decision, error=f"webhook failed: {type(exc).__name__}"), source="engine", record=False)
+            return await self._finalise(
+                replace(decision, error=f"webhook failed: {type(exc).__name__}"),
+                source="engine",
+                record=False,
+            )
         return await self._finalise(replace(decision, executed=True), source="engine", record=False)
 
     # --------------------------------------------------------------- expiry
@@ -469,16 +560,25 @@ class ResponseEngine:
             expired = [e for e in self._blocks.values() if e.expires_at and e.expires_at <= now]
             for entry in expired:
                 try:
-                            await self.firewall.unblock(parse_network(entry.network))
+                    await self.firewall.unblock(parse_network(entry.network))
                 except FirewallError as exc:
                     log.warning("expiry_unblock_failed", network=entry.network, error=str(exc))
                 self._blocks.pop(entry.network, None)
                 metrics.blocked_addresses.set(len(self._blocks))
                 if self.bus:
-                    await self.bus.publish(EventType.IP_UNBLOCKED, {"network": entry.network, "reason": "temporary block expired"})
+                    await self.bus.publish(
+                        EventType.IP_UNBLOCKED,
+                        {"network": entry.network, "reason": "temporary block expired"},
+                    )
                 await self._audit_record(
-                    {"action": "UNBLOCK_IP", "actor": "system", "target": entry.network,
-                     "reason": "temporary block expired", "source": "engine", "outcome": "executed"}
+                    {
+                        "action": "UNBLOCK_IP",
+                        "actor": "system",
+                        "target": entry.network,
+                        "reason": "temporary block expired",
+                        "source": "engine",
+                        "outcome": "executed",
+                    }
                 )
 
     # ---------------------------------------------------------------- views

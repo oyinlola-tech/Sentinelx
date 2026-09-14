@@ -64,7 +64,12 @@ class Platform:
         self.started = False
 
     async def start(
-        self, *, create_schema: bool | None = None, persist: bool = True, background: bool = True, bootstrap: bool = True
+        self,
+        *,
+        create_schema: bool | None = None,
+        persist: bool = True,
+        background: bool = True,
+        bootstrap: bool = True,
     ) -> None:
         """Start everything. Order matters and is commented where it does.
 
@@ -82,12 +87,16 @@ class Platform:
         await self.config.load_overrides()
 
         intel_dir = Path(self.settings.rules_directory) / "intel"
-        self.intel = ThreatIntelService([
-            LocalAllowlistProvider(path=intel_dir / "allowlist.txt"),
-            LocalDenylistProvider(path=intel_dir / "denylist.txt"),
-        ])
+        self.intel = ThreatIntelService(
+            [
+                LocalAllowlistProvider(path=intel_dir / "allowlist.txt"),
+                LocalDenylistProvider(path=intel_dir / "denylist.txt"),
+            ]
+        )
         firewall = self._firewall_override or create_firewall(self.settings.response)
-        self.pipeline = Pipeline(self.settings, bus=self.bus, firewall=firewall, audit=self.audit.sink, intel=self.intel)
+        self.pipeline = Pipeline(
+            self.settings, bus=self.bus, firewall=firewall, audit=self.audit.sink, intel=self.intel
+        )
         self._attach_anomaly_detectors(self.pipeline)
         self.config.listeners.append(self._on_settings_changed)
 
@@ -109,15 +118,23 @@ class Platform:
             self._background.append(asyncio.create_task(self._health_loop(), name="health"))
             self._background.append(asyncio.create_task(self._retention_loop(), name="retention"))
         self.started = True
-        log.info("platform_started", version=__version__, rules=active, safety=self.settings.safety_banner(),
-                 database=self.database.dialect, redis_degraded=self.state.degraded)
+        log.info(
+            "platform_started",
+            version=__version__,
+            rules=active,
+            safety=self.settings.safety_banner(),
+            database=self.database.dialect,
+            redis_degraded=self.state.degraded,
+        )
 
     def _attach_anomaly_detectors(self, pipeline: Pipeline) -> None:
         anomaly = self.settings.anomaly
         if anomaly.enabled:
             from sentinelx.anomaly import StatisticalAnomalyDetector
 
-            pipeline.detection.add_detector(StatisticalAnomalyDetector(anomaly, self.settings.detection))
+            pipeline.detection.add_detector(
+                StatisticalAnomalyDetector(anomaly, self.settings.detection)
+            )
         if anomaly.ml_enabled:
             from sentinelx.anomaly.ml import MlAnomalyDetector, load_model
 
@@ -127,7 +144,9 @@ class Platform:
                 # ML is optional; a missing or untrusted model must not stop detection.
                 log.error("ml_model_unavailable", error=str(exc), effect="ML detector disabled")
             else:
-                pipeline.detection.add_detector(MlAnomalyDetector(bundle, anomaly, self.settings.detection))
+                pipeline.detection.add_detector(
+                    MlAnomalyDetector(bundle, anomaly, self.settings.detection)
+                )
 
     def _on_settings_changed(self, section: str, fields: set[str]) -> None:
         pipeline = self.pipeline
@@ -146,7 +165,9 @@ class Platform:
                     denylist.update(self.settings.detection.denylist_networks)
             if fields & WINDOW_FIELDS:
                 pipeline.extractor = FeatureExtractor(self.settings.detection)
-                log.warning("feature_windows_rebuilt", reason="window settings changed; traffic state reset")
+                log.warning(
+                    "feature_windows_rebuilt", reason="window settings changed; traffic state reset"
+                )
         if section == "capture" and "home_networks" in fields:
             from sentinelx.parser.decoder import PacketDecoder
 
@@ -216,15 +237,22 @@ class Platform:
             "redis": redis,
             "firewall": firewall,
             "event_bus": self.bus.stats(),
-            "persister": {"ok": self.persister is None or self.persister.failed_batches == 0,
-                          "written": self.persister.written if self.persister else 0,
-                          "failed_batches": self.persister.failed_batches if self.persister else 0},
+            "persister": {
+                "ok": self.persister is None or self.persister.failed_batches == 0,
+                "written": self.persister.written if self.persister else 0,
+                "failed_batches": self.persister.failed_batches if self.persister else 0,
+            },
             "sensor": self.sensor.status() if self.sensor else None,
-            "rules": {"ok": not self.rules.load_problems, "problems": self.rules.load_problems[:20]},
+            "rules": {
+                "ok": not self.rules.load_problems,
+                "problems": self.rules.load_problems[:20],
+            },
         }
         # Redis degraded mode is a warning, not an outage: the platform still works.
         status = "ok" if database["ok"] else "error"
-        if status == "ok" and (redis.get("degraded") or self.rules.load_problems or not firewall.get("ok", True)):
+        if status == "ok" and (
+            redis.get("degraded") or self.rules.load_problems or not firewall.get("ok", True)
+        ):
             status = "degraded"
         metrics.queue_depth.set(self.bus.stats()["handler_backlog"])
         return {
@@ -239,6 +267,11 @@ class Platform:
         }
 
     def require(self) -> tuple[Pipeline, SensorService, ReplayService, QueryService]:
-        if self.pipeline is None or self.sensor is None or self.replay is None or self.queries is None:
+        if (
+            self.pipeline is None
+            or self.sensor is None
+            or self.replay is None
+            or self.queries is None
+        ):
             raise RuntimeError("platform has not been started")
         return self.pipeline, self.sensor, self.replay, self.queries

@@ -35,22 +35,37 @@ def decode(decoder: PacketDecoder, packet: object, link_type: int = LinkType.ETH
 
 
 def test_tcp_syn_fields(home_decoder: PacketDecoder) -> None:
-    event = decode(home_decoder, Ether() / IP(src="192.168.1.10", dst="10.0.0.5", ttl=61) / TCP(sport=44321, dport=22, flags="S"))
+    event = decode(
+        home_decoder,
+        Ether()
+        / IP(src="192.168.1.10", dst="10.0.0.5", ttl=61)
+        / TCP(sport=44321, dport=22, flags="S"),
+    )
     assert event is not None
-    assert (event.src_ip, event.dst_ip, event.src_port, event.dst_port) == ("192.168.1.10", "10.0.0.5", 44321, 22)
+    assert (event.src_ip, event.dst_ip, event.src_port, event.dst_port) == (
+        "192.168.1.10",
+        "10.0.0.5",
+        44321,
+        22,
+    )
     assert event.protocol is Protocol.TCP and event.ttl == 61
     assert event.tcp_flags is not None and event.tcp_flags.is_syn_only
     assert event.direction is Direction.OUTBOUND
     assert event.payload_length == 0
 
 
-@pytest.mark.parametrize(("src", "dst", "direction"), [
-    ("192.168.1.1", "192.168.1.2", Direction.INTERNAL),
-    ("8.8.8.8", "192.168.1.2", Direction.INBOUND),
-    ("192.168.1.2", "8.8.8.8", Direction.OUTBOUND),
-    ("8.8.8.8", "1.1.1.1", Direction.EXTERNAL),
-])
-def test_direction_labelling(home_decoder: PacketDecoder, src: str, dst: str, direction: Direction) -> None:
+@pytest.mark.parametrize(
+    ("src", "dst", "direction"),
+    [
+        ("192.168.1.1", "192.168.1.2", Direction.INTERNAL),
+        ("8.8.8.8", "192.168.1.2", Direction.INBOUND),
+        ("192.168.1.2", "8.8.8.8", Direction.OUTBOUND),
+        ("8.8.8.8", "1.1.1.1", Direction.EXTERNAL),
+    ],
+)
+def test_direction_labelling(
+    home_decoder: PacketDecoder, src: str, dst: str, direction: Direction
+) -> None:
     event = decode(home_decoder, Ether() / IP(src=src, dst=dst) / UDP(sport=1, dport=2))
     assert event is not None and event.direction is direction
 
@@ -61,23 +76,41 @@ def test_direction_unknown_without_home_networks(decoder: PacketDecoder) -> None
 
 
 def test_ipv6_tcp(decoder: PacketDecoder) -> None:
-    event = decode(decoder, Ether() / IPv6(src="2001:db8::1", dst="2001:db8::2", hlim=58) / TCP(sport=1000, dport=443, flags="S"))
-    assert event is not None and event.src_ip == "2001:db8::1" and event.dst_port == 443 and event.ttl == 58
+    event = decode(
+        decoder,
+        Ether()
+        / IPv6(src="2001:db8::1", dst="2001:db8::2", hlim=58)
+        / TCP(sport=1000, dport=443, flags="S"),
+    )
+    assert (
+        event is not None
+        and event.src_ip == "2001:db8::1"
+        and event.dst_port == 443
+        and event.ttl == 58
+    )
 
 
 def test_vlan_tag_is_skipped_and_recorded(decoder: PacketDecoder) -> None:
-    event = decode(decoder, Ether() / Dot1Q(vlan=42) / IP(src="10.0.0.1", dst="10.0.0.2") / UDP(sport=1, dport=2))
+    event = decode(
+        decoder,
+        Ether() / Dot1Q(vlan=42) / IP(src="10.0.0.1", dst="10.0.0.2") / UDP(sport=1, dport=2),
+    )
     assert event is not None and event.metadata["vlan_id"] == 42 and event.dst_port == 2
 
 
 def test_icmp_echo(decoder: PacketDecoder) -> None:
-    event = decode(decoder, Ether() / IP(src="10.1.1.1", dst="10.1.1.2") / ICMP(type=8, id=99, seq=7))
+    event = decode(
+        decoder, Ether() / IP(src="10.1.1.1", dst="10.1.1.2") / ICMP(type=8, id=99, seq=7)
+    )
     assert event is not None and event.protocol is Protocol.ICMP
     assert event.metadata["icmp"]["is_echo_request"] and event.metadata["icmp"]["sequence"] == 7
 
 
 def test_arp_request(decoder: PacketDecoder) -> None:
-    event = decode(decoder, Ether() / ARP(op=1, psrc="192.168.1.1", pdst="192.168.1.99", hwsrc="aa:bb:cc:dd:ee:ff"))
+    event = decode(
+        decoder,
+        Ether() / ARP(op=1, psrc="192.168.1.1", pdst="192.168.1.99", hwsrc="aa:bb:cc:dd:ee:ff"),
+    )
     assert event is not None and event.protocol is Protocol.ARP
     assert event.metadata["arp"]["operation"] == "request"
 
@@ -88,19 +121,24 @@ def test_raw_ip_link_type(decoder: PacketDecoder) -> None:
 
 
 def test_non_first_fragment_has_no_ports(decoder: PacketDecoder) -> None:
-    event = decode(decoder, Ether() / IP(src="1.1.1.1", dst="2.2.2.2", frag=100, proto=6) / (b"\x00" * 40))
+    event = decode(
+        decoder, Ether() / IP(src="1.1.1.1", dst="2.2.2.2", frag=100, proto=6) / (b"\x00" * 40)
+    )
     assert event is not None and event.src_port is None and "fragment" in event.metadata
 
 
-@pytest.mark.parametrize("frame", [
-    b"",
-    b"\x00",
-    b"\xff" * 14,
-    b"\x45" * 60,
-    bytes(Ether() / IP(src="1.1.1.1", dst="2.2.2.2"))[:20],
-    bytes(Ether() / IP(src="1.1.1.1", dst="2.2.2.2", ihl=15) / TCP()),
-    bytes(Ether(type=0x86DD) / (b"\x60" + b"\x00" * 10)),
-])
+@pytest.mark.parametrize(
+    "frame",
+    [
+        b"",
+        b"\x00",
+        b"\xff" * 14,
+        b"\x45" * 60,
+        bytes(Ether() / IP(src="1.1.1.1", dst="2.2.2.2"))[:20],
+        bytes(Ether() / IP(src="1.1.1.1", dst="2.2.2.2", ihl=15) / TCP()),
+        bytes(Ether(type=0x86DD) / (b"\x60" + b"\x00" * 10)),
+    ],
+)
 def test_malformed_frames_never_raise(decoder: PacketDecoder, frame: bytes) -> None:
     decoder.decode(frame, 1.0)  # must not raise; returning None is fine
 
@@ -112,10 +150,20 @@ def test_decoder_counts_failures(decoder: PacketDecoder) -> None:
 
 
 def test_dns_query_metadata(decoder: PacketDecoder) -> None:
-    event = decode(decoder, Ether() / IP() / UDP(sport=5353, dport=53) / DNS(rd=1, qd=DNSQR(qname="c2.example.com", qtype="TXT")))
+    event = decode(
+        decoder,
+        Ether()
+        / IP()
+        / UDP(sport=5353, dport=53)
+        / DNS(rd=1, qd=DNSQR(qname="c2.example.com", qtype="TXT")),
+    )
     assert event is not None
     dns = event.metadata["dns"]
-    assert dns["query_name"] == "c2.example.com" and dns["query_type"] == "TXT" and not dns["is_response"]
+    assert (
+        dns["query_name"] == "c2.example.com"
+        and dns["query_type"] == "TXT"
+        and not dns["is_response"]
+    )
 
 
 def test_dns_compression_pointer_loop_terminates() -> None:
@@ -145,8 +193,16 @@ def _client_hello(sni: str) -> bytes:
     server_name = b"\x00" + struct.pack("!H", len(name)) + name
     body = struct.pack("!H", len(server_name)) + server_name
     ext = struct.pack("!HH", 0x0000, len(body)) + body
-    hello = (b"\x03\x03" + b"\x11" * 32 + b"\x00" + struct.pack("!H", 2) + b"\x13\x01" + b"\x01\x00"
-             + struct.pack("!H", len(ext)) + ext)
+    hello = (
+        b"\x03\x03"
+        + b"\x11" * 32
+        + b"\x00"
+        + struct.pack("!H", 2)
+        + b"\x13\x01"
+        + b"\x01\x00"
+        + struct.pack("!H", len(ext))
+        + ext
+    )
     handshake = b"\x01" + struct.pack("!I", len(hello))[1:] + hello
     return b"\x16\x03\x01" + struct.pack("!H", len(handshake)) + handshake
 
@@ -164,9 +220,15 @@ def test_truncated_tls_never_raises(cut: int) -> None:
 def test_custom_app_parser_registration(decoder: PacketDecoder) -> None:
     from sentinelx.parser import decoder as decoder_module
 
-    register_app_parser("ntp", lambda payload, s, d: {"ntp": {"mode": payload[0] & 7}} if 123 in (s, d) else None, {Protocol.UDP})
+    register_app_parser(
+        "ntp",
+        lambda payload, s, d: {"ntp": {"mode": payload[0] & 7}} if 123 in (s, d) else None,
+        {Protocol.UDP},
+    )
     try:
-        event = decode(decoder, Ether() / IP() / UDP(sport=40000, dport=123) / (b"\xe3" + b"\x00" * 47))
+        event = decode(
+            decoder, Ether() / IP() / UDP(sport=40000, dport=123) / (b"\xe3" + b"\x00" * 47)
+        )
         assert event is not None and event.metadata["ntp"] == {"mode": 3}
     finally:
         decoder_module._APP_PARSERS.pop("ntp", None)
@@ -180,7 +242,9 @@ def test_failing_app_parser_does_not_drop_packet(decoder: PacketDecoder) -> None
 
     register_app_parser("broken", broken, {Protocol.UDP})
     try:
-        event = decode(decoder, Ether() / IP(src="1.1.1.1", dst="2.2.2.2") / UDP(sport=1, dport=2) / b"payload")
+        event = decode(
+            decoder, Ether() / IP(src="1.1.1.1", dst="2.2.2.2") / UDP(sport=1, dport=2) / b"payload"
+        )
         assert event is not None and event.dst_port == 2
     finally:
         decoder_module._APP_PARSERS.pop("broken", None)

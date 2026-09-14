@@ -237,7 +237,9 @@ class SourceProfile:
         label_length = dns.get("max_label_length") or 0
         entropy = dns.get("name_entropy") or 0.0
         leftmost = len(name.split(".", 1)[0])
-        if label_length >= self.dns_long_label or (leftmost >= 20 and entropy >= self.dns_high_entropy):
+        if label_length >= self.dns_long_label or (
+            leftmost >= 20 and entropy >= self.dns_high_entropy
+        ):
             self.dns_suspicious.add(timestamp, parent_domain(name))
 
     def observe_reply(self, packet: PacketEvent) -> None:
@@ -270,8 +272,15 @@ class SourceProfile:
         self.http_requests.expire(now)
         self.short_sessions.expire(now)
         for series in (
-            self.packet_times, self.syn_packets, self.syn_ack_received, self.rst_received, self.icmp_packets,
-            self.connections_started, self.refused_connections, self.dns_times, self.http_times,
+            self.packet_times,
+            self.syn_packets,
+            self.syn_ack_received,
+            self.rst_received,
+            self.icmp_packets,
+            self.connections_started,
+            self.refused_connections,
+            self.dns_times,
+            self.http_times,
         ):
             series.expire(now)
 
