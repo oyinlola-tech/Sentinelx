@@ -54,7 +54,7 @@ seed: ## Fill the development database with detections from synthetic scenarios
 # ---------------------------------------------------------------- quality
 .PHONY: test
 test: ## Run the test suite (SQLite; no external services)
-	$(BIN)/pytest
+	$(BIN)/python -m pytest
 
 .PHONY: test-integration
 test-integration: ## Run tests against real PostgreSQL and Redis in throwaway containers
@@ -63,11 +63,11 @@ test-integration: ## Run tests against real PostgreSQL and Redis in throwaway co
 	@trap 'docker rm -f sx-it-pg sx-it-redis >/dev/null' EXIT; \
 	for i in $$(seq 1 30); do docker exec sx-it-pg pg_isready -U sentinelx >/dev/null 2>&1 && break; sleep 1; done; \
 	SENTINELX_TEST_POSTGRES_URL=postgresql://sentinelx:sentinelx-test@127.0.0.1:55432/sentinelx_test \
-	SENTINELX_TEST_REDIS_URL=redis://127.0.0.1:56379/0 $(BIN)/pytest
+	SENTINELX_TEST_REDIS_URL=redis://127.0.0.1:56379/0 $(BIN)/python -m pytest
 
 .PHONY: coverage
 coverage: ## Test with a coverage report
-	$(BIN)/pytest --cov --cov-report=term-missing
+	$(BIN)/python -m pytest --cov --cov-report=term-missing
 
 .PHONY: lint
 lint: ## Lint Python (ruff) and the dashboard (eslint)

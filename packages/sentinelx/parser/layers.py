@@ -4,7 +4,7 @@ Implemented with :mod:`struct` against raw bytes rather than by building Scapy
 objects.  Scapy is excellent for crafting and for interactive analysis, but it
 allocates a Python object per layer per packet, which dominates cost on a capture
 hot path.  ``scripts/benchmark.py`` measures both on the same frames; on the
-reference machine recorded in docs/benchmarking.md this decoder was about 2.5x
+reference machine recorded in docs/benchmarking.md this decoder was about 2.1-2.5x
 faster than ``Ether(raw_bytes)``. Measure on your own hardware before relying on
 that figure.
 
