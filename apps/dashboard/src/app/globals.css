@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/*
+ * SentinelX design tokens.
+ *
+ * Ground: blue-slate "oscilloscope glass", not pure black, so dense tables stay
+ * readable for a whole shift. Brand/interactive accent is "signal iris", chosen to
+ * sit outside the severity spectrum so a button never reads as an alert.
+ * Severity colours are never the only signal: every severity also renders a label.
+ * Contrast of text tokens against --color-ground is at least 4.5:1 (checked).
+ */
+@theme {
+  --color-ground: #0b1117;
+  --color-panel: #111a23;
+  --color-raised: #182430;
+  --color-line: #233240;
+  --color-line-strong: #34495b;
+  --color-frost: #d7e1ea;
+  --color-mist: #95a7b7;
+  --color-fog: #6b7f90;
+  --color-iris: #8c9eff;
+  --color-iris-deep: #5b6fe0;
+
+  --color-sev-critical: #ff4d5e;
+  --color-sev-high: #ff8a3d;
+  --color-sev-medium: #e8c547;
+  --color-sev-low: #56b3f5;
+  --color-sev-info: #8897a6;
+  --color-ok: #4fd1a1;
+
+  /* Severity as an ORDINAL ramp, for charts where severities sit side by side.
+     Validated with the dataviz palette validator (--ordinal, dark, surface #111a23):
+     single hue, monotone lightness, adjacent dL >= 0.06. The status hues above are
+     only ever used next to a text label (badges), never as the sole encoding. */
+  --color-ramp-info: #70463d;
+  --color-ramp-low: #a35a49;
+  --color-ramp-medium: #d66c50;
+  --color-ramp-high: #f98662;
+  --color-ramp-critical: #ffad86;
+
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SFMono-Regular", monospace;
+  --font-display: var(--font-archivo), var(--font-plex-sans), ui-sans-serif, sans-serif;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  --animate-tape: tape 1.2s ease-out;
+}
+
+@keyframes trace-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes tape {
+  from { opacity: 0; transform: scaleY(0.2); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+@layer base {
+  html { color-scheme: dark; }
+  body {
+    background: var(--color-ground);
+    color: var(--color-frost);
+    font-feature-settings: "ss01", "cv05";
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-iris);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  ::selection { background: color-mix(in oklab, var(--color-iris) 35%, transparent); }
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  .panel {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    border-radius: 6px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-fog);
+  }
+  .data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.8125rem; }
+  .data-table th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--color-panel);
+    text-align: left; font-weight: 500;
+    font-family: var(--font-mono); font-size: var(--text-2xs);
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-fog);
+    padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--color-line);
+    white-space: nowrap;
+  }
+  .data-table td { padding: 0.45rem 0.75rem; border-bottom: 1px solid color-mix(in oklab, var(--color-line) 60%, transparent); vertical-align: middle; }
+  .data-table tbody tr { transition: background-color 120ms; }
+  .data-table tbody tr:hover { background: var(--color-raised); }
+  .data-table tbody tr[data-href] { cursor: pointer; }
+}
