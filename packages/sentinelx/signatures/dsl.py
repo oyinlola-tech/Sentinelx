@@ -301,6 +301,16 @@ class _Parser:
             raise ConditionSyntaxError(
                 f"expected a field name, found {field_token.text or 'end of condition'!r}", field_token.position
             )
+        spec = FIELDS.get(field_token.text.lower())
+        following = self.peek()
+        if spec is not None and spec.kind is FieldKind.BOOLEAN and (
+            following.kind in {"end", "rparen"} or following.text.lower() in {"and", "or"}
+        ):
+            raise ConditionSyntaxError(
+                f"boolean field '{spec.name}' needs an explicit comparison: "
+                f"write '{spec.name} == true' or '{spec.name} == false'",
+                field_token.position,
+            )
         operator = self.operator()
         value = self.value()
         return Comparison(field_token.text.lower(), operator, value, field_token.position)

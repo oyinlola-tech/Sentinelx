@@ -7,7 +7,7 @@ rules:
       One source sends bare SYNs to many distinct ports and almost never completes a
       handshake. Tighter than the built-in scan detector; suited to flat internal
       networks where no host should probe another.
-    condition: protocol == TCP and not handshake_complete and unique_dst_ports >= 50 and syn_ratio > 0.9
+    condition: protocol == TCP and handshake_complete == false and unique_dst_ports >= 50 and syn_ratio > 0.9
     within: 15s
     severity: high
     category: reconnaissance
