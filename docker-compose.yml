@@ -10,7 +10,8 @@
 # which starts `sensor` on the HOST network with CAP_NET_RAW (and CAP_NET_ADMIN, used
 # only if you enable a firewall backend). Linux only. See docs/deployment.md.
 #
-#   docker compose --profile capture up -d --build
+#   DASHBOARD_API_URL=http://host.docker.internal:8001 PUBLIC_WS_URL=ws://localhost:8001 \
+#     docker compose --profile capture up -d --build --scale api=0
 
 name: sentinelx
 
@@ -41,6 +42,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-sentinelx}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Loopback only; needed by the host-network `sensor` profile.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -60,6 +64,8 @@ services:
       retries: 20
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6381}:6379"
     networks: [backend]
 
   migrate:
@@ -95,10 +101,12 @@ services:
     image: sentinelx-dashboard:local
     restart: unless-stopped
     environment:
-      SENTINELX_API_URL: http://api:8000
+      # With the capture profile, point this at the sensor: http://host.docker.internal:8001
+      SENTINELX_API_URL: ${DASHBOARD_API_URL:-http://api:8000}
       SENTINELX_PUBLIC_WS_URL: ${PUBLIC_WS_URL:-ws://localhost:8000}
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
-      api: { condition: service_healthy }
+      api: { condition: service_healthy, required: false }
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
     read_only: true
@@ -118,8 +126,9 @@ services:
       <<: *api-env
       # Host networking cannot resolve compose service names; published ports are used instead.
       DATABASE_URL: postgresql://${POSTGRES_USER:-sentinelx}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-5433}/${POSTGRES_DB:-sentinelx}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_HOST_PORT:-6380}/0
-      API_HOST: 127.0.0.1
+      REDIS_URL: redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_HOST_PORT:-6381}/0
+      API_HOST: 0.0.0.0
+      API_PORT: "8001"
     command: ["sentinelx", "start", "--capture"]
     cap_drop: [ALL]
     cap_add: [NET_RAW, NET_ADMIN]
