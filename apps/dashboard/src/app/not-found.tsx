@@ -12,10 +12,15 @@ const ROUTES = [
 
 export default function NotFound() {
   return (
-    <main className="relative grid min-h-dvh place-items-center overflow-hidden px-6 py-16">
-      <Trace variant="flatline" className="pointer-events-none absolute inset-x-0 top-1/2 h-28 w-full -translate-y-1/2 opacity-30" />
-      <div className="relative w-full max-w-xl">
-        <p className="font-mono text-7xl font-medium tracking-tighter text-line-strong sm:text-8xl" aria-hidden>404</p>
+    <main className="flex min-h-dvh flex-col justify-center overflow-hidden py-16">
+      {/* Full-width row so the flatline crosses the viewport, spiking just before the numeral. */}
+      <div className="relative w-full">
+        <Trace variant="flatline" className="pointer-events-none absolute inset-x-0 top-1/2 h-24 w-full -translate-y-1/2 opacity-35" />
+        <div className="relative mx-auto w-full max-w-xl px-6">
+          <p className="font-mono text-7xl font-medium tracking-tighter text-line-strong sm:text-8xl" aria-hidden>404</p>
+        </div>
+      </div>
+      <div className="mx-auto w-full max-w-xl px-6">
         <h1 className="mt-4 font-display text-3xl font-semibold tracking-tight">Signal lost</h1>
         <p className="mt-2 max-w-md text-mist">
           There is nothing at this address. The link may be out of date, or the detection it pointed to was removed by the retention policy.

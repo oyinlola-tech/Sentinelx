@@ -50,7 +50,7 @@ export default function OverviewPage() {
       <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <Panel title="Latest detections" eyebrow="Live" bodyClassName="p-0" actions={<Link href="/monitor" className="text-xs text-iris hover:underline">Live monitor</Link>}>
           {data ? (
-            <DetectionTable detections={data.recent_detections} emptyTitle="No detections yet" emptyBody="When the sensor or a replay produces a detection, it appears here within a second." />
+            <DetectionTable compact detections={data.recent_detections} emptyTitle="No detections yet" emptyBody="When the sensor or a replay produces a detection, it appears here within a second." />
           ) : (
             <TableSkeleton />
           )}
@@ -63,10 +63,10 @@ export default function OverviewPage() {
                   <Link href={`/incidents/${incident.incident_id}`} className="flex items-start justify-between gap-3 px-4 py-3 hover:bg-raised">
                     <div className="min-w-0">
                       <p className="truncate text-sm text-frost">{incident.title}</p>
-                      <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-mist">
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-mist">
                         <SeverityBadge severity={incident.severity} compact />
                         <span className="font-mono">{incident.affected_sources.slice(0, 2).join(", ")}</span>
-                        <span>· {incident.detection_count} detections · {ago(incident.last_seen)}</span>
+                        <span>{incident.detection_count} detections, {ago(incident.last_seen)}</span>
                       </p>
                     </div>
                     <RiskScore score={incident.risk.score} />
@@ -102,13 +102,13 @@ function useLiveStat(subscribe: ReturnType<typeof useEvents>["subscribe"]): numb
 function InstrumentStrip({ overview, livePps, loading }: { overview?: Overview; livePps: number | null; loading: boolean }) {
   const risk = overview?.current_risk ?? 0;
   const readouts: { label: string; value: string; detail?: string; href?: string; tone?: string }[] = [
-    { label: "Packets processed", value: compact(overview?.packets_processed), detail: bytes(overview?.bytes_processed) },
-    { label: "Packets / second", value: livePps != null ? compact(livePps) : "—", detail: livePps != null ? "live capture" : "no live capture" },
-    { label: "Active connections", value: compact(overview?.active_flows), detail: `${compact(overview?.tracked_sources)} sources` },
-    { label: "Detections · 24h", value: compact(overview?.detections_24h), href: "/threats" },
-    { label: "Critical incidents", value: compact(overview?.critical_incidents), detail: `${compact(overview?.open_incidents)} open`, href: "/incidents", tone: overview?.critical_incidents ? "text-sev-critical" : undefined },
-    { label: "Blocked sources", value: compact(overview?.blocked_sources), detail: overview?.pending_approvals ? `${overview.pending_approvals} awaiting approval` : undefined, href: "/firewall" },
-    { label: "Sensor health", value: overview?.health ?? "—", tone: overview?.health === "ok" ? "text-ok" : overview?.health === "degraded" ? "text-sev-medium" : overview?.health ? "text-sev-critical" : undefined, href: "/settings#health" },
+    { label: "Packets", value: compact(overview?.packets_processed), detail: bytes(overview?.bytes_processed) },
+    { label: "Packets/s", value: livePps != null ? compact(livePps) : "—", detail: livePps != null ? "live capture" : "no live capture" },
+    { label: "Connections", value: compact(overview?.active_flows), detail: `${compact(overview?.tracked_sources)} sources` },
+    { label: "Detections", value: compact(overview?.detections_24h), detail: "last 24 hours", href: "/threats" },
+    { label: "Critical", value: compact(overview?.critical_incidents), detail: `${compact(overview?.open_incidents)} incidents open`, href: "/incidents", tone: overview?.critical_incidents ? "text-sev-critical" : undefined },
+    { label: "Blocked", value: compact(overview?.blocked_sources), detail: overview?.pending_approvals ? `${overview.pending_approvals} awaiting approval` : "sources", href: "/firewall" },
+    { label: "Health", value: overview?.health ?? "—", tone: overview?.health === "ok" ? "text-ok" : overview?.health === "degraded" ? "text-sev-medium" : overview?.health ? "text-sev-critical" : undefined, href: "/settings#health" },
   ];
   return (
     <div className="panel grid grid-cols-2 divide-line sm:grid-cols-4 xl:grid-cols-8 xl:divide-x" aria-busy={loading}>

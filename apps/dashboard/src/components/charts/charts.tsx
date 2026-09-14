@@ -179,19 +179,25 @@ export function SeverityTimeline({ buckets, height = 180 }: { buckets: TimelineB
   );
 }
 
-/** Ranked horizontal bars with direct labels: one series, so no legend is needed. */
-export function BarList({ items, format = num, empty = "No data in this period." }: { items: { label: ReactNode; value: number; key: string; href?: string }[]; format?: (value: number) => string; empty?: string }) {
+/**
+ * Ranked horizontal bars with direct labels: one series, so no legend is needed.
+ * Label and value share a line above a thin bar on a full-width track, so text is
+ * never clipped by, or overhanging, a short bar.
+ */
+export function BarList({ items, format = num, empty = "No data in this period." }: { items: { label: ReactNode; value: number; key: string }[]; format?: (value: number) => string; empty?: string }) {
   const max = Math.max(1, ...items.map((item) => item.value));
   if (!items.length) return <p className="py-6 text-center text-sm text-mist">{empty}</p>;
   return (
-    <ul className="flex flex-col gap-1.5">
+    <ul className="flex flex-col gap-2.5">
       {items.map((item) => (
-        <li key={item.key} className="group relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-sm" title={`${item.key}: ${format(item.value)}`}>
-          <span className="relative min-w-0 py-1">
-            <span className="absolute inset-y-0 left-0 rounded-sm bg-iris/15 transition-colors group-hover:bg-iris/25" style={{ width: `${(item.value / max) * 100}%` }} aria-hidden />
-            <span className="relative block truncate px-2 text-frost">{item.label}</span>
-          </span>
-          <span className="font-mono text-xs tabular text-mist">{format(item.value)}</span>
+        <li key={item.key} className="group" title={`${item.key}: ${format(item.value)}`}>
+          <div className="flex items-baseline justify-between gap-3 text-sm">
+            <span className="min-w-0 truncate text-frost">{item.label}</span>
+            <span className="shrink-0 font-mono text-xs tabular text-mist">{format(item.value)}</span>
+          </div>
+          <div className="mt-1 h-1 rounded-full bg-line" aria-hidden>
+            <div className="h-full rounded-full bg-iris/70 transition-colors group-hover:bg-iris" style={{ width: `${Math.max(2, (item.value / max) * 100)}%` }} />
+          </div>
         </li>
       ))}
     </ul>

@@ -178,6 +178,19 @@ function FeedRow({ event }: { event: StreamEvent }) {
       </li>
     );
   }
+  if (event.type === "severity.changed") {
+    const change = event.payload as { incident_id: string; previous: Severity | null; current: Severity; risk: number };
+    return (
+      <li className="flex flex-wrap items-center gap-3 px-4 py-2 text-sm">
+        {time}
+        <span className="font-mono text-2xs uppercase text-sev-high">Escalated</span>
+        {change.previous && <SeverityBadge severity={change.previous} compact />}
+        <span className="text-fog" aria-hidden>→</span>
+        <SeverityBadge severity={change.current} compact />
+        <Link href={`/incidents/${change.incident_id}`} className="text-frost hover:text-iris">Incident now at risk {Math.round(change.risk)}</Link>
+      </li>
+    );
+  }
   const payload = event.payload as { network?: string; reason?: string; state?: string; interface?: string };
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-2 text-sm">

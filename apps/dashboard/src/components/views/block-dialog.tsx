@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { Button, Dialog, Field, Input, Select } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/toast";
 import { api } from "@/lib/api";
-import type { ResponseAction } from "@/lib/types";
+import type { BlockRequest, ResponseAction } from "@/lib/types";
 
 interface SafetyReport { target: string; allowed: boolean; network: string | null; reason: string; dry_run: boolean }
 
@@ -58,7 +58,7 @@ function BlockForm({ onClose, initialTarget = "", initialReason = "", onDone }: 
     try {
       const decision = await api<ResponseAction>("/firewall/block", {
         method: "POST",
-        json: { target: target.trim(), reason: reason.trim(), duration_seconds: duration || null, rate_limit: rateLimit },
+        json: { target: target.trim(), reason: reason.trim(), duration_seconds: duration || null, rate_limit: rateLimit } satisfies BlockRequest,
       });
       if (decision.outcome === "failed") toast("error", `${target} was not blocked`, decision.error ?? undefined);
       else if (decision.outcome === "simulated") toast("info", `Block of ${target} simulated`, "DRY_RUN is on, so the firewall was not changed. The decision is in the audit log.");

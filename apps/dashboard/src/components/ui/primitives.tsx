@@ -66,23 +66,29 @@ export function Field({ label, hint, error, children, htmlFor }: { label: string
   );
 }
 
-const inputClass =
-  "w-full rounded-md border border-line-strong bg-ground px-2.5 text-sm text-frost placeholder:text-fog focus:border-iris focus:outline-none disabled:opacity-60";
+/** Base input styles. Width defaults to full unless the caller passes a w-* utility. */
+const inputBase =
+  "rounded-md border border-line-strong bg-ground px-2.5 text-sm text-frost placeholder:text-fog focus:border-iris focus:outline-none disabled:opacity-60";
+
+function inputClass(className: string): string {
+  const width = /(^|\s)(w-|min-w-|max-w-|flex-1)/.test(className) ? "" : "w-full";
+  return `${width} ${inputBase} ${className}`;
+}
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input({ className = "", ...rest }, ref) {
-  return <input ref={ref} className={`h-9 ${inputClass} ${className}`} {...rest} />;
+  return <input ref={ref} className={`h-9 ${inputClass(className)}`} {...rest} />;
 });
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select({ className = "", children, ...rest }, ref) {
   return (
-    <select ref={ref} className={`h-9 ${inputClass} ${className}`} {...rest}>
+    <select ref={ref} className={`h-9 ${inputClass(className)}`} {...rest}>
       {children}
     </select>
   );
 });
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(function Textarea({ className = "", ...rest }, ref) {
-  return <textarea ref={ref} className={`py-2 font-mono text-xs leading-relaxed ${inputClass} ${className}`} spellCheck={false} {...rest} />;
+  return <textarea ref={ref} className={`py-2 font-mono text-xs leading-relaxed ${inputClass(className)}`} spellCheck={false} {...rest} />;
 });
 
 export function Panel({ title, eyebrow, actions, children, className = "", bodyClassName = "p-4", id }: {

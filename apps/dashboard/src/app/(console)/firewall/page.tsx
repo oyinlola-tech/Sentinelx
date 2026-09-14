@@ -14,7 +14,7 @@ import { api } from "@/lib/api";
 import { useEventRefresh } from "@/lib/events";
 import { ago, humanise, timestamp } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import type { FirewallOverview, PendingAction, ResponseAction } from "@/lib/types";
+import type { FirewallOverview, PendingAction, ResponseAction, UnblockRequest } from "@/lib/types";
 
 function remaining(seconds: number | null): string {
   if (seconds == null) return "permanent";
@@ -225,7 +225,7 @@ function UnblockDialog({ network, onClose, onDone }: { network: string | null; o
     if (!network) return;
     setBusy(true);
     try {
-      const decision = await api<ResponseAction>("/firewall/unblock", { method: "POST", json: { target: network, reason } });
+      const decision = await api<ResponseAction>("/firewall/unblock", { method: "POST", json: { target: network, reason } satisfies UnblockRequest });
       toast(decision.outcome === "failed" ? "error" : "success", `${network}: ${humanise(decision.outcome)}`, decision.error ?? undefined);
       setReason("");
       onDone();

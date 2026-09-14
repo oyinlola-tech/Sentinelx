@@ -9,7 +9,8 @@
  * Severity colours are never the only signal: every severity also renders a label.
  * Contrast of text tokens against --color-ground is at least 4.5:1 (checked).
  */
-@theme {
+/* static: emit every token, including ones referenced only from inline styles. */
+@theme static {
   --color-ground: #0b1117;
   --color-panel: #111a23;
   --color-raised: #182430;

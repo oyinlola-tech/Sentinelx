@@ -222,9 +222,10 @@ export function SafetyChip({ banner }: { banner: string }) {
   }[mode];
   const label = { active: "Prevention active", dry: "Dry run", detect: "Detection only" }[mode];
   return (
-    <Link href="/settings#response" title={banner} className={`hidden items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-2xs font-medium tracking-wide uppercase md:inline-flex ${styles}`}>
+    <Link href="/settings#response" title={banner} aria-label={`Safety posture: ${label}`} className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 font-mono text-2xs font-medium tracking-wide uppercase sm:px-2.5 ${styles}`}>
       <span className={`size-1.5 rounded-full ${mode === "active" ? "animate-pulse" : ""}`} style={{ background: "currentColor" }} aria-hidden />
-      {label}
+      <span className="sm:hidden">{{ active: "Prevent", dry: "Dry run", detect: "Detect" }[mode]}</span>
+      <span className="hidden sm:inline">{label}</span>
     </Link>
   );
 }

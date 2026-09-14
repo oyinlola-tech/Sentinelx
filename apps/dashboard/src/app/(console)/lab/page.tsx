@@ -14,7 +14,7 @@ import { api } from "@/lib/api";
 import { useEvents } from "@/lib/events";
 import { ago, bytes, humanise, num } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import type { PcapFile, ReplayRun } from "@/lib/types";
+import type { PcapFile, ReplayRequest, ReplayRun } from "@/lib/types";
 
 interface ScenarioInfo { name: string; description: string }
 interface Progress { replay_id: string; frames: number; packets_per_second: number; detections: number; incidents: number; elapsed_seconds: number }
@@ -92,7 +92,7 @@ function Lab() {
   async function start() {
     setBusy("start");
     try {
-      const run = await api<{ replay_id: string }>("/replay", { method: "POST", json: { path, speed } });
+      const run = await api<{ replay_id: string }>("/replay", { method: "POST", json: { path, speed } satisfies ReplayRequest });
       await mutateRuns();
       router.replace(`/lab?replay=${run.replay_id}`);
     } catch (error) {

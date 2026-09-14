@@ -8,11 +8,11 @@ export function SeverityBadge({ severity, compact = false }: { severity: Severit
   const color = severityColor[severity] ?? "var(--color-sev-info)";
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-px font-mono text-2xs font-medium uppercase tracking-wide"
+      className={`inline-flex items-center rounded-sm border py-px font-mono text-2xs font-medium uppercase tracking-wide ${compact ? "gap-1 px-1" : "gap-1.5 px-1.5"}`}
       style={{ color, borderColor: `color-mix(in oklab, ${color} 45%, transparent)`, background: `color-mix(in oklab, ${color} 10%, transparent)` }}
     >
       <span className="size-1.5 rounded-full" style={{ background: color }} aria-hidden />
-      {compact ? severity.slice(0, 4) : severity}
+      {severity}
     </span>
   );
 }

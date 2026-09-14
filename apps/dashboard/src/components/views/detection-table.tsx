@@ -6,7 +6,7 @@ import { Mono, RiskScore, SeverityBadge, StatusBadge } from "@/components/ui/sec
 import { ago, endpoint, humanise } from "@/lib/format";
 import type { Detection } from "@/lib/types";
 
-export function DetectionTable({ detections, emptyTitle = "No detections", emptyBody, showStatus = true }: { detections: Detection[]; emptyTitle?: string; emptyBody?: string; showStatus?: boolean }) {
+export function DetectionTable({ detections, emptyTitle = "No detections", emptyBody, showStatus = true, compact = false }: { detections: Detection[]; emptyTitle?: string; emptyBody?: string; showStatus?: boolean; compact?: boolean }) {
   const router = useRouter();
   if (!detections.length) return <EmptyState title={emptyTitle}>{emptyBody}</EmptyState>;
   return (
@@ -19,9 +19,9 @@ export function DetectionTable({ detections, emptyTitle = "No detections", empty
             <th scope="col">Risk</th>
             <th scope="col">Threat</th>
             <th scope="col">Source</th>
-            <th scope="col">Target</th>
+            {!compact && <th scope="col">Target</th>}
             <th scope="col">Detector</th>
-            {showStatus && <th scope="col">Status</th>}
+            {showStatus && !compact && <th scope="col">Status</th>}
           </tr>
         </thead>
         <tbody>
@@ -39,9 +39,9 @@ export function DetectionTable({ detections, emptyTitle = "No detections", empty
                   </a>
                 </td>
                 <td><Mono>{detection.source_ip}</Mono></td>
-                <td><Mono className="text-mist">{endpoint(detection.destination_ip, detection.destination_port)}</Mono></td>
+                {!compact && <td><Mono className="text-mist">{endpoint(detection.destination_ip, detection.destination_port)}</Mono></td>}
                 <td className="whitespace-nowrap text-mist">{humanise(detection.detector)}</td>
-                {showStatus && <td>{detection.status ? <StatusBadge status={detection.status} /> : null}</td>}
+                {showStatus && !compact && <td>{detection.status ? <StatusBadge status={detection.status} /> : null}</td>}
               </tr>
             );
           })}
