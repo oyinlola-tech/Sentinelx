@@ -1,0 +1,43 @@
+rules:
+  - name: DNS TXT Tunnel
+    description: High volume of TXT lookups with long labels - a common DNS exfiltration channel.
+    condition: protocol == UDP and dns_query_type == TXT and dns_label_length >= 40 and dns_query_count >= 50
+    within: 30s
+    severity: high
+    category: exfiltration
+    action: alert
+    tags: [dns, t1071.004]
+    tests:
+      - scenario: dns_tunneling
+        expect: match
+      - scenario: dns_flood
+        expect: no_match
+      - scenario: normal_traffic
+        expect: no_match
+
+  - name: HTTP Request Flood
+    description: Layer-7 flood from a single client.
+    condition: http_method in [GET, POST, HEAD] and http_request_count >= 400
+    within: 10s
+    severity: medium
+    category: denial_of_service
+    action: rate_limit
+    duration: 600
+    tags: [http, t1499]
+    tests:
+      - scenario: http_flood
+        expect: match
+      - scenario: normal_traffic
+        expect: no_match
+
+  - name: Legacy TLS Negotiation
+    description: A client offering only SSLv3/TLS 1.0/1.1. Informational - often outdated software rather than an attack.
+    condition: tls_is_legacy_version == true
+    within: 60s
+    severity: low
+    category: policy_violation
+    action: log
+    tags: [tls, hygiene]
+    tests:
+      - scenario: normal_traffic
+        expect: no_match

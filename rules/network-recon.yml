@@ -1,0 +1,46 @@
+# Reconnaissance rules. These complement the built-in scan detectors with
+# site-tunable variants. Every rule carries positive and negative tests, run by
+# `sentinelx rules test` and by the test suite.
+rules:
+  - name: Rapid SYN Scan
+    description: >
+      One source sends bare SYNs to many distinct ports and almost never completes a
+      handshake. Tighter than the built-in scan detector; suited to flat internal
+      networks where no host should probe another.
+    condition: protocol == TCP and not handshake_complete and unique_dst_ports >= 50 and syn_ratio > 0.9
+    within: 15s
+    severity: high
+    category: reconnaissance
+    confidence: 0.9
+    action: temporary_block
+    duration: 900
+    tags: [scan, t1046]
+    references: [https://attack.mitre.org/techniques/T1046/]
+    tests:
+      - scenario: tcp_port_scan
+        expect: match
+      - scenario: normal_traffic
+        expect: no_match
+      - scenario: tcp_port_scan
+        params: {ports: 30}
+        expect: no_match
+
+  - name: SMB Sweep
+    description: Many hosts contacted on SMB (445) by one source - the propagation pattern of SMB worms.
+    condition: protocol == TCP and destination_port == 445 and unique_dst_ips >= 30
+    within: 30s
+    severity: critical
+    category: lateral_movement
+    confidence: 0.9
+    action: temporary_block
+    duration: 3600
+    tags: [smb, worm, t1210]
+    tests:
+      - scenario: horizontal_scan
+        params: {port: 445}
+        expect: match
+      - scenario: horizontal_scan
+        params: {port: 80}
+        expect: no_match
+      - scenario: normal_traffic
+        expect: no_match

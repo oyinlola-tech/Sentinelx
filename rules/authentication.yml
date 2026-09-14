@@ -1,0 +1,34 @@
+rules:
+  - name: SSH Brute Force
+    description: Repeated short-lived SSH sessions from one source, the pattern of automated password guessing.
+    condition: protocol == TCP and destination_port == 22 and short_sessions >= 20
+    within: 60s
+    severity: high
+    category: brute_force
+    confidence: 0.85
+    action: temporary_block
+    duration: 900
+    tags: [ssh, t1110]
+    references: [https://attack.mitre.org/techniques/T1110/]
+    tests:
+      - scenario: ssh_brute_force
+        expect: match
+      - scenario: ssh_brute_force
+        params: {attempts: 10}
+        expect: no_match
+      - scenario: normal_traffic
+        expect: no_match
+
+  - name: Remote Desktop Guessing
+    description: Short-lived sessions against RDP, VNC or database ports.
+    condition: protocol == TCP and destination_port in [3389, 5900, 3306, 5432, 1433] and short_sessions >= 15
+    within: 60s
+    severity: high
+    category: brute_force
+    action: alert
+    tags: [rdp, t1110]
+    tests:
+      - scenario: ssh_brute_force
+        expect: no_match
+      - scenario: normal_traffic
+        expect: no_match
