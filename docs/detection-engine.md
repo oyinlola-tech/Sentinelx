@@ -61,8 +61,10 @@ The scan structures are the exception. Distinct TCP destination ports and hosts 
 
 ### How the profile is updated
 
-- **Packets sent by a source** are folded into that source's profile: packet size, destination host, TCP destination port, bare SYNs (which also count as connection attempts), UDP destination ports, ICMP packets, DNS queries and HTTP requests.
-- **Replies update the original sender.** When a SYN-ACK or RST is seen, it is recorded in the profile of the packet's destination (the host that sent the SYN), as `syn_ack_received`, or as `rst_received` and `refused_connections`. This is how the extractor knows a source's probes are being refused.
+- **Packets sent by a source** are folded into that source's profile: packet size, destination host, TCP destination port, bare SYNs (which also count as connection attempts, and are counted per destination port in `syn_ports`), UDP destination ports, ICMP packets, DNS queries and HTTP requests.
+- **ICMP echo replies to a request are not the replier's ICMP.** Request and reply share a flow, which remembers who sent the last echo request and when. An echo reply (type 0, or 129 for ICMPv6) sent back to that requester within `icmp_flood_window_seconds` is marked as a solicited reply: it is not added to the replier's `icmp_packets`, and the statistical anomaly detector does not count it towards the replier's share. A host answering a ping flood is the flood's target, not its source. Unsolicited replies, as in a reflection attack, still count.
+- **Replies update the side that opened the connection.** When a SYN-ACK or RST is sent to a flow's initiator, it is recorded in the initiator's profile as `syn_ack_received`, or as `rst_received` and `refused_connections`, and the RST's source port in `refusals_by_port`. A reset sent the other way, such as a SYN flooder's own kernel resetting the SYN-ACKs it receives, is not a refusal and is not recorded against the target.
+- **Completed handshakes are credited to the initiator.** When a flow's handshake completes and the initiator sends a packet, `handshakes_completed` in its profile goes up once for that flow. `syn_flood` uses this to tell a busy client from a flood.
 - **Short sessions are recorded at teardown.** A flow is short-lived when its handshake completed (SYN, SYN-ACK and ACK all seen; a SYN-ACK timestamped before its SYN, as happens when captures from two taps are merged, still counts), a FIN or RST has been seen, and its duration is under 5 seconds. On the first FIN or RST of such a flow, the responder port is recorded in the initiator's `short_sessions`, once per flow. This is the brute-force signal.
 - **UDP service replies are not counted as scanning.** A UDP packet from a port below 1024 to a port at or above 1024 is treated as a server reply and is not added to `udp_ports`; otherwise every DNS resolver would look like a UDP scanner.
 - **DNS queries are classified once.** A query is added to `dns_suspicious` (keyed by its parent domain, the last two labels, or three when the second-to-last label has three characters or fewer) when its longest label is at least `dns_long_label_length`, or when its leftmost label is at least 20 characters and its entropy is at least `dns_high_entropy_threshold`.
@@ -114,6 +116,8 @@ A detection with an empty `evidence` list is discarded, logged as `detection_wit
 
 ### 3. Allowlist
 
+**SentinelX's own storage traffic comes first.** When the database or Redis runs on another host or container, the API's own connections to it cross the capture interface, and a connection pool opening and closing connections under load looks like credential guessing. A detection is dropped, and counted in `suppressed_own_traffic` and `sentinelx_detections_suppressed_total{reason="own_traffic"}`, when its source is an address of this host and its destination address and port are the database or Redis endpoint from `STORAGE__DATABASE_URL` or `STORAGE__REDIS_URL` (host names are resolved lazily and cached for 60 seconds). The same packets are also left out of the statistical and ML anomaly detectors. Traffic from any other address to those services, and anything else this host sends, is analysed as usual (`packages/sentinelx/system/self_traffic.py`).
+
 If the detection's `source_ip` falls inside any network in `DETECTION__ALLOWLIST_NETWORKS`, the detection is dropped and counted in `suppressed_allowlist` and `sentinelx_detections_suppressed_total{reason="allowlist"}`.
 
 Two details matter:
@@ -146,7 +150,7 @@ For emitted detections the engine also:
 
 ### Engine statistics
 
-`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. On restart, a built-in or anomaly detector named in `disabled_detectors` is attached but switched off (`attach_anomaly_detectors` in `assembly.py` does this for `statistical_anomaly` and `ml_anomaly`), so it can be switched back on from the dashboard or this endpoint without a restart. The endpoint returns 404 only for a detector that is not attached at all, for example an anomaly detector in `signature_only` mode or with `ANOMALY__ENABLED=false`, or the ML detector when its model did not load. See [api.md](api.md).
+`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `suppressed_own_traffic`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. On restart, a built-in or anomaly detector named in `disabled_detectors` is attached but switched off (`attach_anomaly_detectors` in `assembly.py` does this for `statistical_anomaly` and `ml_anomaly`), so it can be switched back on from the dashboard or this endpoint without a restart. The endpoint returns 404 only for a detector that is not attached at all, for example an anomaly detector in `signature_only` mode or with `ANOMALY__ENABLED=false`, or the ML detector when its model did not load. See [api.md](api.md).
 
 ## Detection modes
 
@@ -387,7 +391,7 @@ Code: `packages/sentinelx/detection/behavioral.py` (`BruteForceDetector`).
 
 **Confidence.** 0.60-0.95 at 4 times the threshold.
 
-**Evidence.** `failed_attempts`, `observation_window_seconds` (with the attempt rate per minute), `session_pattern`, `target_service`, and `server_resets` when the initiator has received RSTs. The detection's source is the flow initiator, its destination the responder.
+**Evidence.** `failed_attempts`, `observation_window_seconds` (with the attempt rate per minute), `session_pattern`, `target_service`, and `server_resets` when the initiator has received RSTs from that service's port (resets from other ports, such as a scan's refusals, are not counted). The detection's source is the flow initiator, its destination the responder.
 
 **Settings.** `brute_force_attempts` (15), `brute_force_ports` (`[22, 23, 21, 3389, 445, 5900, 1433, 3306, 5432]`), `brute_force_window_seconds` (60.0). Short sessions are held for W, so `brute_force_window_seconds` is only exact while it is the longest detection window, which it is by default.
 
@@ -402,15 +406,15 @@ Code: `packages/sentinelx/detection/behavioral.py` (`BruteForceDetector`).
 
 Code: `packages/sentinelx/detection/behavioral.py` (`SynFloodDetector`).
 
-**Detects** a high count of half-open connections from one source against few ports.
+**Detects** a high count of half-open connections from one source against few ports, whether or not those ports are open.
 
 **Signals**, on every bare SYN:
 
 1. Bare SYNs from the source in W is at least `syn_flood_threshold`. There is no separate window setting for this detector.
-2. Distinct TCP destination ports in W is 5 or fewer (more is treated as scanning).
-3. `syn_ack_ratio` (SYN-ACKs received per SYN sent, over W) is at most 0.5.
+2. Either distinct TCP destination ports in W is 5 or fewer (more is treated as scanning), or bare SYNs to this packet's destination port alone reach `syn_flood_threshold`. The second case catches a source that scans and then floods one port, which has touched many ports by the time it floods.
+3. Handshake completion (handshakes the source completed per SYN it sent, over W) is at most 0.5. A busy client completes almost every connection. Whether the server answered is not the test: against an open port every SYN gets a SYN-ACK, and a flood simply never sends the final ACK.
 
-**Output.** Severity high, critical at four times the threshold. Confidence 0.65-0.96. Action `rate_limit`. Evidence: `syn_count`, `syn_rate`, `syn_ack_ratio`.
+**Output.** Severity high, critical at four times the threshold. Confidence 0.65-0.96. Action `rate_limit`. Evidence: `syn_count` (SYNs to the destination port when condition 2 was met through that port), `syn_rate`, `handshake_completion`, and `syn_ack_ratio`, which notes when the port is open and each SYN holds a half-open slot.
 
 **Settings.** `syn_flood_threshold` (500).
 
@@ -526,7 +530,7 @@ The last rule resists baseline poisoning. If anomalous intervals were allowed to
 
 ### Output
 
-- `source_ip` is the top contributor to the metric in that interval: the source with the most SYNs, DNS queries or ICMP packets for the three per-protocol metrics, and the source with the most packets for the others.
+- `source_ip` is the top contributor to the metric in that interval: the source with the most SYNs, DNS queries or ICMP packets for the three per-protocol metrics, and the source with the most packets for the others. Only packets sent by the side that opened their flow, and not solicited ICMP echo replies, count towards a source's share. The rates themselves still count every packet. Without this, a server answering an HTTP flood packet for packet can edge past the flooder and be named as the source.
 - Severity is high when the score is at least 0.97 and the top contributor produced at least half of the metric; otherwise medium.
 - Confidence is `min(0.85, 0.4 + 0.45 * score * max(share, 0.3))`, capped below the rule-based detectors because deviation is weaker evidence than a matched pattern.
 - The title is `Unusual <metric label>`, with the label's first letter lowercased unless it starts an acronym (for example `Unusual total packet rate`, `Unusual DNS query rate`, `Unusual TCP connection attempts`).

@@ -207,6 +207,11 @@ A fresh install resolved Typer 0.27, Click 8.5, FastAPI 0.141 and Starlette 1.6,
 | Low | `cli/admin.py` | `config set` with an unknown section exited 1 | Exits 2 | Test, and the real command exits 2 |
 | Low | `api/security.py` | An unauthenticated request with malformed JSON got 422 before 401 | `AuthenticationGateMiddleware` authenticates before the body is parsed | `tests/api/test_security_hardening.py` |
 | Low | `config/settings.py`, `threat_intel/` | Unused settings and an unwired `HttpReputationProvider` | Removed; obsolete stored values are skipped with a warning | Config tests; `docs/deployment.md` notes the removal |
+| High | `features/extractor.py`, `detection/behavioral.py`, `anomaly/statistical.py` | Found by the live attack run (section 7): the target of a ping flood was reported as an ICMP flood source for its echo replies, and the statistical anomaly named the target of an HTTP flood as the source of the packet-rate spike its answers caused. In a gateway deployment the response engine would have proposed blocking the attacked server | Echo replies matched to their request are not counted as the replier's ICMP; anomaly attribution counts only packets from the side that opened each flow | `TestPingFloodAttribution`, `TestAnomalyAttribution` in `tests/detection/test_live_run_regressions.py` (the ping tests fail on the old code); the final live run names no detection after the target |
+| High | `detection/behavioral.py` (`syn_flood`) | hping3's SYN flood against an open port was not detected: the port answered every SYN with a SYN-ACK, which the detector read as a busy client. A source that scanned first and then flooded one port was also skipped, as "too many ports" | Busy clients are recognised by completing handshakes, not by being answered; SYNs to a single port reaching the threshold also count | `TestSynFloodAgainstAnOpenPort` (fails on the old code); the existing busy-client test now sends the final ACK a real client sends; live run: `syn_flood` x3 on the attacker |
+| Medium | `system/self_traffic.py`, `detection/engine.py` | SentinelX's own connection pool to its PostgreSQL server was reported as a brute force against PostgreSQL, and the response engine proposed blocking the sensor's own address | Detections from this host to its configured database or Redis endpoint are dropped and counted (`suppressed_own_traffic`); those packets are left out of anomaly baselines | `TestOwnStorageTraffic` (engine test fails on the old code); traffic from other hosts to the same database is still analysed |
+| Low | `features/extractor.py`, `detection/behavioral.py` | Brute-force evidence said "the server reset 4001 of these sessions" for 15 sessions: every RST a source had received was counted, including a SYN flooder's own kernel resets recorded against its target | Resets are credited only to a flow's initiator, and counted per service port | `TestBruteForceEvidence`, `test_the_flooders_resets_are_not_refusals_on_the_target` |
+| Low | `apps/dashboard` (PCAP Lab, Audit log) | Replayed detections showed "1035d ago" (the capture's own time); two Audit filter placeholders were set in uppercase mono | The Lab shows capture timestamps; placeholders use the body font | Screenshots from the live run |
 | Test | `tests/capture/test_parser.py` | 4 failures on Windows, 1 on macOS | Frames left addresses empty, so Scapy looked up this host's routes, interface and neighbours while building them: no usable interface on the Windows runner, no root access to `/dev/bpf` on macOS. Every frame now names its addresses | The old tests fail and the new ones pass with Scapy's route, interface and neighbour lookups made to raise |
 | Test | `tests/response/test_response_matrix.py` | 10 failures on Windows | The fake `nft` and `iptables` binaries are shell scripts, which Windows cannot run; both tools are Linux-only | Skipped on Windows only, with that reason |
 | Test | `tests/detection/test_rule_matrix.py` | 1 failure on Windows | `chmod 0` only sets the read-only attribute on Windows, so the file stays readable | Assertion accounts for Windows |
@@ -346,6 +351,23 @@ Synthetic traffic with known ground truth, 5 runs each:
 | Security checks | pip-audit: 0 vulnerabilities (runtime closure and image); npm audit: 0; secret scan of logs during auth flows: nothing found; `.env` not tracked |
 
 The skips in the main run are the kernel tests, which run separately through `make test-kernel`.
+
+### Live attack run (Docker, real tools)
+
+`scripts/live_demo.sh` was run end to end on the final code, from a fresh stack. The API container captured on its own interfaces with `CAP_NET_RAW` and controlled nftables in its own network namespace; four containers on the stack's private bridge attacked it. No traffic left the bridge and the host firewall was not changed.
+
+| Step | Result |
+|---|---|
+| First administrator | One-time password read from its file (never in logs); changed through the API; the file was deleted |
+| Attacks: nmap SYN, Xmas and UDP scans, hping3 SYN flood on the open API port (172.22.0.201); 80 tunnelling-shaped DNS TXT queries (172.22.0.202); hping3 ICMP flood and 1,500 HTTP requests (172.22.0.203) | 23 detections, each on the attacking host: `tcp_port_scan`, `tcp_flag_anomaly`, `udp_scan`, `syn_flood`, `connection_rate`, `dns_anomaly`, `icmp_flood`, `http_flood` and three rule detections. 3 incidents: *Reconnaissance with service disruption* (risk 100), *Denial-of-service activity*, *Possible data exfiltration* |
+| Automatic prevention (typed confirmation, dry run off); fourth attacker (172.22.0.204) port-scans | Temporary block executed, already in place when the scan finished; audited with the incident as its reason |
+| The same attacker floods the API port | 3,000 SYNs, 100% lost; `nft list table inet sentinelx` showed the address in `blocklist_v4` with a 15-minute timeout and 3,084 packets dropped; HTTP from that host got no response |
+| Unblock; return to detection only with dry run | Blocklist empty; the host got HTTP 200 again |
+| PCAP Lab | Two generated captures replayed: 9 detections and 1 incident; 3 detections and 1 incident |
+| Detections naming the target (172.22.0.4) across the whole run | 0 (33 live detections in total) |
+| Dashboard | Every page screenshotted with this data, no page errors; the images in `docs/images/` are from this run |
+
+Earlier runs of the same script found the five defects listed under "Resolved after the first report" as found by the live attack run. The stack's API image, dashboard image and tests were rebuilt and re-run after each fix.
 
 ## 8. Known limitations
 
