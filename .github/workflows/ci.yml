@@ -4,17 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, and on demand: the suite against the newest releases pyproject.toml allows.
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   backend:
     name: Backend (lint, types, tests)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -43,7 +48,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap0.8
           python -m pip install --upgrade pip
-          pip install -e ".[dev,ml]"
+          pip install -e ".[dev,ml]" -c constraints.txt
       - name: Ruff
         run: |
           ruff check packages apps tests scripts
@@ -70,6 +75,7 @@ jobs:
 
   kernel:
     name: Kernel (real capture and firewall, network namespace)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +88,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpcap0.8 nftables iptables iproute2
           python -m venv .venv
-          .venv/bin/pip install -e ".[dev]"
+          .venv/bin/pip install -e ".[dev]" -c constraints.txt
       - name: Allow unprivileged user namespaces
         # Ubuntu 24.04 restricts them with AppArmor; unshare -rn needs one.
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
@@ -99,6 +105,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -109,7 +116,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" -c constraints.txt
       - name: Capabilities and doctor report
         run: |
           sentinelx capabilities
@@ -124,6 +131,7 @@ jobs:
 
   dashboard:
     name: Dashboard (lint, types, build, API contract)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +146,7 @@ jobs:
           cache-dependency-path: apps/dashboard/package-lock.json
       - name: Install
         run: |
-          pip install -e .
+          pip install -e . -c constraints.txt
           npm ci --prefix apps/dashboard
       - name: OpenAPI contract has not drifted
         run: |
@@ -162,3 +170,51 @@ jobs:
         run: docker build -f docker/Dockerfile.api -t sentinelx-api:ci .
       - name: Build dashboard image
         run: docker build -f docker/Dockerfile.dashboard -t sentinelx-dashboard:ci .
+
+  latest-allowed:
+    name: Backend against the newest allowed dependencies
+    # Installs without constraints.txt, so pip picks the newest release every range in
+    # pyproject.toml permits. A failure here means a release inside the bounds changed
+    # behaviour: fix it or tighten the bound, then refresh constraints.txt.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: sentinelx
+          POSTGRES_PASSWORD: sentinelx-test
+          POSTGRES_DB: sentinelx_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sentinelx"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the newest allowed releases
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap0.8
+          python -m pip install --upgrade pip
+          pip install --upgrade --upgrade-strategy eager -e ".[dev,ml]"
+          pip check
+      - name: Versions resolved (compare with constraints.txt)
+        run: pip freeze --exclude-editable | diff constraints.txt - || true
+      - name: Ruff and mypy
+        run: |
+          ruff check packages apps tests scripts
+          ruff format --check packages apps tests scripts
+          mypy
+      - name: Tests (SQLite, PostgreSQL, Redis)
+        env:
+          SENTINELX_TEST_POSTGRES_URL: postgresql://sentinelx:sentinelx-test@127.0.0.1:5432/sentinelx_test
+          SENTINELX_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+        run: python -m pytest -p no:cacheprovider
