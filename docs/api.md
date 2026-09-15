@@ -78,6 +78,15 @@ Implemented in `packages/sentinelx/api/security.py`,
 If a request carries an `Authorization: Bearer` header, that token is used and the
 cookie is ignored. Bearer requests are exempt from the CSRF check.
 
+Authentication runs before routing and before the request body is read
+(`AuthenticationGateMiddleware`). A request to any `/api/v1` path other than
+`/auth/login`, `/auth/refresh`, `/system/health`, `/metrics` and `/openapi.json` that
+carries no token, or a token that does not authenticate, gets `401` with
+`WWW-Authenticate: Bearer`, whatever its body: a malformed JSON body no longer turns an
+unauthenticated request into a 422, and an unknown `/api/v1` path answers 401, not 404,
+to an anonymous caller. The token is looked up once per request; roles, the CSRF check
+and the forced password change are applied afterwards by the route.
+
 Cookies set for a dashboard session:
 
 | Cookie | Contents | Attributes |

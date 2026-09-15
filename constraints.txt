@@ -1,0 +1,74 @@
+# Pinned versions from a clean resolution of ".[dev,ml]" within the ranges in pyproject.toml,
+# on CPython 3.12 (python:3.12-slim, Linux x86_64), 2026-09-15. The test suite passes with them.
+#
+# Reproducible install:   pip install -e ".[dev,ml]" -c constraints.txt
+# Regenerate after changing a bound: install ".[dev,ml]" into a fresh Python 3.12 environment,
+# run the test suite, then: pip freeze --exclude-editable > constraints.txt (keep this header).
+# Platform-only packages (uvloop) are ignored where they do not install.
+aiosqlite==0.22.1
+alembic==1.20.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
+ast_serialize==0.11.2
+asyncpg==0.31.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+cloudpickle==3.1.2
+coverage==7.16.1
+fastapi==0.141.1
+greenlet==3.5.6
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.19
+iniconfig==2.3.0
+joblib==1.6.0
+librt==0.15.0
+Mako==1.4.1
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+mypy==2.3.1
+mypy_extensions==1.1.0
+narwhals==2.26.0
+numpy==2.5.3
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.6.0
+prometheus_client==0.26.0
+psutil==7.2.2
+pycparser==3.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+pydantic_core==2.46.5
+Pygments==2.21.0
+PyJWT==2.14.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+redis==8.1.0
+rich==15.0.0
+ruff==0.16.7
+scapy==2.7.0
+scikit-learn==1.9.1
+scipy==1.18.1
+shellingham==1.5.4
+SQLAlchemy==2.0.53
+starlette==1.6.0
+structlog==26.1.0
+threadpoolctl==3.6.0
+typer==0.27.2
+types-PyYAML==6.0.12.20260906
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.53.0
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==17.1

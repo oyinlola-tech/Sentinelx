@@ -330,7 +330,11 @@ The dashboard is a Next.js application. The browser reaches the API on the dashb
 
 Press `Ctrl+K` to search: an IP address opens that source's threats, and a detection or incident ID opens it directly.
 
-The shell around every page (top bar, footer and event tape) tolerates malformed API data. A page that receives a response of the wrong shape shows an error panel with **Try again** instead of taking the whole console down. The health row for the event persister in Settings shows events written and waiting, and, when they occur, retrying writes and dropped and rejected events.
+Navigation is grouped by task (**Watch**, **Investigate**, **Respond**, **Administer**), and each group opens a menu describing its pages. Under the top bar a thin signal strip shows the live packet rate and a tick for every detection in the last hour. The indicator beside it reads Live, Connecting, Reconnecting or Stream offline; when the API refuses the stream (for example, the dashboard's origin is missing from `CORS_ORIGINS`), a banner names the reason and the fix.
+
+The interface uses colour only for meaning. Amber marks something that needs attention (live state, dry run, focus), red marks danger and critical severity, and green marks healthy components. Everything else stays neutral. The fonts (Big Shoulders, Public Sans and Martian Mono, all under the SIL Open Font License) are bundled with the application, so the dashboard makes no external requests and works air-gapped.
+
+The shell around every page (top bar, footer and signal strip) tolerates malformed API data. A page that receives a response of the wrong shape shows an error panel with **Try again** instead of taking the whole console down. The health row for the event persister in Settings shows events written and waiting, and, when they occur, retrying writes and dropped and rejected events.
 
 ## Detection engine
 
