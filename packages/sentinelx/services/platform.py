@@ -100,6 +100,7 @@ class Platform:
         attach_anomaly_detectors(self.pipeline, self.settings)
         self.pipeline.response.guard._operator_addresses = self.operator_addresses
         self.config.listeners.append(self._on_settings_changed)
+        self.config.firewall_probe = self.pipeline.response.firewall.health
 
         await self.rules.sync_files()
         self.rules.attach(self.pipeline.detection)
@@ -331,10 +332,17 @@ class Platform:
             "redis": redis,
             "firewall": firewall,
             "event_bus": self.bus.stats(),
+            # Healthy while writes succeed: a failed write is retried, so one failure is
+            # not an outage. Events lost for good (buffer overflow, rejected data) stay
+            # visible in the counters.
             "persister": {
-                "ok": self.persister is None or self.persister.failed_batches == 0,
+                "ok": self.persister is None or not self.persister.retrying,
                 "written": self.persister.written if self.persister else 0,
+                "pending": self.persister.pending if self.persister else 0,
+                "retrying": self.persister.retrying if self.persister else False,
                 "failed_batches": self.persister.failed_batches if self.persister else 0,
+                "rejected": self.persister.rejected if self.persister else 0,
+                "dropped": self.persister.dropped if self.persister else 0,
             },
             "sensor": self.sensor.status() if self.sensor else None,
             "rules": {

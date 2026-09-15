@@ -1,7 +1,9 @@
 """Typed configuration, loaded once from the environment.
 
-Every environment-specific value in SentinelX lives here.  Nothing else in the
-codebase reads the environment directly.  Settings are grouped into nested models so that a
+Every environment-specific value in SentinelX lives here.  The few other environment
+reads are not settings: host detection (WSL, container, ``SYSTEMROOT``), CLI defaults
+and the ``--capture`` hand-off to the server; docs/deployment.md lists them.
+Settings are grouped into nested models so that a
 detector can be handed just ``settings.detection`` rather than the whole world,
 which keeps the security core testable without an environment at all.
 
@@ -468,6 +470,21 @@ class StorageSettings(BaseModel):
     database_echo: bool = False
     pool_size: int = Field(default=10, ge=1)
     max_overflow: int = Field(default=20, ge=0)
+    # A database that stops answering without refusing connections (a paused or
+    # partitioned server) would otherwise hold requests and writes for minutes, until
+    # the kernel gives up on the TCP connection. PostgreSQL only.
+    connect_timeout_seconds: float = Field(
+        default=10.0, gt=0, le=300, description="PostgreSQL: seconds to establish a connection."
+    )
+    statement_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=3600,
+        description="PostgreSQL: seconds a single statement may run before it is abandoned.",
+    )
+    pool_timeout_seconds: float = Field(
+        default=10.0, gt=0, le=300, description="Seconds to wait for a free pooled connection."
+    )
 
     redis_url: str = Field(default="redis://localhost:6379/0")
     redis_required: bool = Field(
@@ -764,11 +781,12 @@ class Settings(BaseSettings):
             if response.mode is ResponseMode.DETECT_ONLY:
                 return "DETECTION ONLY - no traffic will be modified"
             return "DRY RUN - response decisions are recorded and shown but not applied"
-        target = (
-            "but no firewall backend is configured, so they will be refused"
-            if backend == "null"
-            else f"and will modify the {backend} firewall on this host"
-        )
+        if backend == "null":
+            target = "but no firewall backend is configured, so they will be refused"
+        elif backend == "auto":
+            target = "and will modify this host's firewall (backend chosen automatically)"
+        else:
+            target = f"and will modify the {backend} firewall on this host"
         if self.prevention_active:
             return f"PREVENTION ACTIVE - automatic responses are enforced {target}"
         if response.mode is ResponseMode.MANUAL_APPROVAL:

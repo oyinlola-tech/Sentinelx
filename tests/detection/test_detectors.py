@@ -483,3 +483,16 @@ class TestStaleWindows:
 
         assert brute_force(attack) > 0
         assert brute_force(attack + session) == brute_force(attack)
+
+
+def test_unknown_name_in_enabled_detectors_is_a_configuration_error() -> None:
+    # "auth_brute_force" is a plausible guess, but the detector is registered as
+    # "ssh_brute_force": the allow-list used to silently enable nothing at all.
+    from sentinelx.common.errors import ConfigurationError
+    from sentinelx.config.settings import DetectionSettings
+    from sentinelx.detection.engine import default_detectors
+
+    with pytest.raises(ConfigurationError, match="auth_brute_force"):
+        default_detectors(DetectionSettings(enabled_detectors=["auth_brute_force"]))
+    selected = default_detectors(DetectionSettings(enabled_detectors=["ssh_brute_force"]))
+    assert [d.name for d in selected] == ["ssh_brute_force"]

@@ -119,7 +119,7 @@ docker-build: ## Build the API and dashboard images
 docker-up: ## Start PostgreSQL, Redis, API and dashboard
 	@test -f .env || (echo "create .env first: cp .env.example .env" && exit 1)
 	docker compose up -d --build
-	@echo "API http://127.0.0.1:$${API_PORT:-8000}/api/docs   dashboard http://127.0.0.1:$${DASHBOARD_PORT:-3000}"
+	@echo "dashboard, API and event stream: http://$$(docker compose port proxy 8080)"
 
 .PHONY: docker-down
 docker-down: ## Stop the stack (data volumes are kept)

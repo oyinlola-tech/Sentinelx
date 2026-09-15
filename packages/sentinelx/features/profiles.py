@@ -234,8 +234,13 @@ class SourceProfile:
         self.dns_times.add(timestamp)
         # Classify once, here, using the parser's pre-computed label length and
         # entropy, so the tunnelling detector never re-scans the window per packet.
-        label_length = dns.get("max_label_length") or 0
-        entropy = dns.get("name_entropy") or 0.0
+        # Type-checked like the detector does: metadata can come from third-party
+        # parsers (register_app_parser), and this runs outside the engine's fault
+        # isolation, so a string here would otherwise stop the whole pipeline.
+        raw_length = dns.get("max_label_length")
+        raw_entropy = dns.get("name_entropy")
+        label_length = raw_length if isinstance(raw_length, int) else 0
+        entropy = float(raw_entropy) if isinstance(raw_entropy, int | float) else 0.0
         leftmost = len(name.split(".", 1)[0])
         if label_length >= self.dns_long_label or (
             leftmost >= 20 and entropy >= self.dns_high_entropy

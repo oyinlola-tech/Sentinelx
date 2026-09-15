@@ -152,6 +152,7 @@ unshare -rn sh -c 'ip link set lo up && ip link add sx0 type dummy && \
 
 - `tests/kernel/test_live_capture.py` captures from `lo` and `any` with the AF_PACKET and libpcap backends and with `auto`, checks that every frame decodes, that a BPF filter is applied in the kernel, and that an invalid BPF filter is refused rather than ignored.
 - `tests/kernel/test_firewall.py` runs the nftables and iptables adapters through the response engine and verifies with real UDP traffic: block, unblock, expiry, re-block, rate limiting and teardown.
+- `tests/kernel/test_response_modes.py` runs automatic response against real netfilter: duplicate decisions, rate limits and escalation from a rate limit to a block.
 
 `tests/kernel/conftest.py` marks every kernel test `root` and skips it unless the process has both capabilities and the two test addresses are assigned locally, so `make test`, the CI backend and portability jobs, and other operating systems skip them. The CI kernel job runs them and fails if any is skipped. The target needs unprivileged user namespaces to be enabled (some distributions disable them) and the `ip`, `nft` and `iptables` commands.
 
@@ -323,12 +324,12 @@ Because `tests/detection/test_rules.py` loads every file in `rules/` (with a 60-
 
 ## Database migrations
 
-SQLAlchemy models are in `packages/sentinelx/storage/models.py`; Alembic revisions are in `packages/sentinelx/storage/migrations/versions/`, named `YYYYMMDD_<revision>_<slug>.py`. The Alembic environment reads the database URL from SentinelX settings (`DATABASE_URL`), renders batch operations so that `ALTER TABLE` migrations also work on SQLite, and compares column types.
+SQLAlchemy models are in `packages/sentinelx/storage/models.py`; Alembic revisions are in `packages/sentinelx/storage/migrations/versions/`, named `YYYYMMDD_<revision>_<slug>.py`. The Alembic environment reads the database URL from SentinelX settings (`DATABASE_URL`), renders batch operations so that `ALTER TABLE` migrations also work on SQLite, and compares column types. Batch mode rebuilds the table on SQLite and cannot carry over an expression index, so for the `users` table (which has one on `lower(username)`) use a plain `op.add_column`, as revision `60413ece4dff` does.
 
 How the schema is prepared at startup (`Database._prepare_schema` in `storage/database.py`):
 
 - An in-memory SQLite database (the test default) is created directly from the models.
-- A SQLite file is migrated to the latest revision automatically. A file created before migrations were tracked is stamped at the initial revision first.
+- A SQLite file is migrated to the latest revision automatically. A database with tables but no `alembic_version` is adopted first (`adopt_unversioned` in `storage/migrate.py`): stamped at the latest revision if its schema matches the models, otherwise at the initial revision. `sentinelx db upgrade` does the same on any database.
 - PostgreSQL is never changed automatically. Startup fails with `database schema is at revision <x> but this version of SentinelX needs <head>; run: sentinelx db upgrade` unless the database is at the latest revision.
 
 Every model change therefore needs a migration.
@@ -375,7 +376,7 @@ npm run build
 - **API access.** The browser only talks to its own origin. `next.config.ts` rewrites `/api/*` to `SENTINELX_API_URL`, and the development server also forwards WebSocket upgrades, so the event stream uses the same origin by default. Use the client in `src/lib/api.ts`: `useSWR<T>("/path")` for reads (the global fetcher is configured in `src/app/providers.tsx`) and `api<T>(path, { method, json })` for JSON writes. For a non-JSON body, pass `body` and `headers` instead of `json`, as the PCAP Lab upload does (`body: file`, `Content-Type: application/octet-stream`). The client attaches the CSRF header and refreshes the session on a 401. Do not call `fetch` directly for API requests.
 - **Live updates.** Subscribe to WebSocket events with `useEvents().subscribe([...types], handler)` from `src/lib/events.tsx`.
 - **No mock data.** Every view shows data from the API. Where the API has no data, show an empty state; do not invent sample rows or placeholder numbers. The login page's example explanation is the only fixed example: it is copied from the engine's real output for the `tcp_port_scan` fixture and labelled on screen as an example.
-- **Loading, empty and error states.** Every data-driven view handles all three with the primitives in `src/components/ui/primitives.tsx`: `Skeleton` or `TableSkeleton` while loading, `EmptyState` when there is nothing to show, and `ErrorState` (with `onRetry` where a retry makes sense) on failure.
+- **Loading, empty and error states.** Every data-driven view handles all three with the primitives in `src/components/ui/primitives.tsx`: `Skeleton` or `TableSkeleton` while loading, `EmptyState` when there is nothing to show, and `ErrorState` (with `onRetry` where a retry makes sense) on failure. A view that throws while rendering, for example on an API response of an unexpected shape, is caught by `src/app/(console)/error.tsx`, which shows an error panel with a **Try again** button. Components in the shell (top bar, footer, event tape) render on every page and must check the type of API data before using it, so that malformed data cannot take every page down.
 - **Permissions.** Hide or disable actions the user's role cannot perform with `useSession().can("analyst")` or `can("admin")`. The API enforces roles regardless; this only keeps the interface honest.
 - **Feedback.** Report the outcome of an action with `useToast()`.
 - **Accessibility.** Give every form control a label (`Field` with `htmlFor`), give icon-only buttons an `aria-label`, mark decorative icons `aria-hidden`, use `role="status"` with `aria-live="polite"` for progress and validation messages, use `scope="col"` on table headers, and mark the current item in a list with `aria-current`. `eslint-config-next` enables a subset of `jsx-a11y` checks as warnings; they do not replace checking with a keyboard and a screen reader.
@@ -388,14 +389,16 @@ Tests live under `tests/` and run with `.venv/bin/python -m pytest` (`make test`
 
 | Path | Covers |
 |---|---|
-| `tests/unit/` | CLI commands and exit codes, configuration and logging (including secret redaction in tracebacks), capability detection, network utilities and models, scoring and correlation, sliding windows |
+| `tests/unit/` | CLI commands and exit codes, configuration and logging (including secret redaction in tracebacks), capability detection, network utilities and models, scoring and correlation, sliding windows. `test_cli_matrix.py` enumerates every command from the Typer app and checks help, usage errors, exit codes (0 success, 1 runtime failure, 2 usage error), JSON output and doctor accuracy; `test_event_bus.py` checks that security events wait for room in a full handler queue instead of being dropped |
 | `tests/capture/` | Packet decoding and application parsers, capture sources, the capture-file reader (`test_pcapfile.py`: pcap and pcapng formats, timestamp resolutions, per-interface link types, hostile files, reproducible fixtures), and the committed PCAP suite (`test_pcap_suite.py`, see [PCAP test suite](#pcap-test-suite)) |
-| `tests/detection/` | Built-in detectors (including `TestDocumentedEvasions`), rules (including every file in `rules/`), anomaly detection |
-| `tests/response/` | Response engine and safety guard; pf and Windows Firewall adapters against recorded command results (`test_platform_firewalls.py`) |
+| `tests/detection/` | Built-in detectors (including `TestDocumentedEvasions`), rules (including every file in `rules/`), anomaly detection. The matrix files cover each area exhaustively: `test_parser_matrix.py` (every link type, IPv4 options and fragments, IPv6 extension headers, all TCP flag values, DNS edge cases, and a truncation and fuzz sweep proving `decode` never raises), `test_feature_matrix.py` (feature extraction with exact expected values), `test_detector_matrix.py` (every detector at its exact threshold boundary), `test_rule_matrix.py` (rule loading, validation, every field and operator, hostile rule content), `test_risk_matrix.py` (determinism, per-factor direction, bounds) and `test_correlation_matrix.py` (grouping, windows, duplicates, escalation, caps) |
+| `tests/response/` | Response engine and safety guard; pf and Windows Firewall adapters against recorded command results (`test_platform_firewalls.py`); `test_response_matrix.py` (modes, approvals, expiry, duplicates, webhooks, failures and safety, with firewall commands observed through a recording runner or fake `nft` and `iptables` scripts) |
 | `tests/api/test_api.py` | The HTTP API and WebSocket, with the fixtures in `tests/api/conftest.py` |
+| `tests/api/test_endpoint_matrix.py` | Every HTTP operation listed once with its access level: the table must match the live routes; unauthenticated, per-role, malformed-input and hostile-path checks; pagination and filters, rate limiting, a database outage, and that no response leaks a traceback, file path, password hash or secret |
+| `tests/api/test_auth_matrix.py` | Login and lockout, disabled accounts, forced password changes, token expiry and forgery, refresh rotation, logout, cookie sessions with CSRF, the password policy, secrets in logs, and role enforcement including the last-administrator guard |
 | `tests/api/test_security_hardening.py` | Regression tests from the security review: concurrent refresh-token and WebSocket-ticket reuse, access-token revocation on sign-out, two-level lockout, forged `X-Forwarded-For`, metrics behind a proxy and non-ASCII metrics tokens, YAML alias expansion, oversized scenario parameters, prevention confirmation and environment precedence, replay and live detector parity, and operator-address protection |
-| `tests/integration/` | The full pipeline, storage on SQLite and optionally PostgreSQL and Redis, and schema checks at startup (`test_schema.py`) |
-| `tests/kernel/` | Real capture and firewall tests, run only by `make test-kernel` (see [Kernel tests](#kernel-tests)) |
+| `tests/integration/` | The full pipeline, storage on SQLite and optionally PostgreSQL and Redis, and schema checks at startup (`test_schema.py`). `test_storage_matrix.py` covers schema, constraints, migrations, sessions, event persistence through database outages (simulated with an in-process TCP proxy), query counts and Redis shared state, on a SQLite file and, when the test URLs are set, on PostgreSQL and Redis |
+| `tests/kernel/` | Real capture, firewall and automatic response tests, run only by `make test-kernel` (see [Kernel tests](#kernel-tests)) |
 
 ### PCAP test suite
 
@@ -421,7 +424,7 @@ Registered markers:
 
 | Marker | Meaning | Current use |
 |---|---|---|
-| `integration` | Requires external services (PostgreSQL or Redis) | PostgreSQL storage test parameters and Redis tests in `tests/integration/test_storage.py`. They run only when `SENTINELX_TEST_POSTGRES_URL` or `SENTINELX_TEST_REDIS_URL` is set. `tests/integration/test_schema.py` uses a plain `skipif` on the PostgreSQL variable |
+| `integration` | Requires external services (PostgreSQL or Redis) | PostgreSQL storage test parameters and Redis tests in `tests/integration/test_storage.py` and `tests/integration/test_storage_matrix.py`. They run only when `SENTINELX_TEST_POSTGRES_URL` or `SENTINELX_TEST_REDIS_URL` is set. `tests/integration/test_schema.py` uses a plain `skipif` on the PostgreSQL variable |
 | `root` | Requires root privileges (live capture or firewall) | Added to every test in `tests/kernel/` by its `conftest.py` |
 | `slow` | Long-running benchmark or replay test | Registered, not currently applied to any test |
 

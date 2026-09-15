@@ -554,6 +554,41 @@ class TestWorkflows:
         analytics = (await client.get("/stats/analytics", headers=admin)).json()
         assert analytics["false_positives"] == 1 and analytics["timeline"]
 
+    async def test_resolving_an_incident_stops_live_correlation_into_it(
+        self, client: httpx.AsyncClient, admin: dict[str, str], platform: Platform
+    ) -> None:
+        from sentinelx.capture import MockCapture
+        from sentinelx.testing import get_scenario, shift_to
+
+        if platform.pipeline is None:
+            raise RuntimeError("pipeline missing")
+        await platform.pipeline.run(
+            MockCapture(shift_to(get_scenario("mixed_intrusion").frames, time.time() - 30))
+        )
+        listed = await eventually(
+            lambda: client.get("/incidents", headers=admin), lambda body: body["total"] >= 1
+        )
+        incident_id = listed["items"][0]["incident_id"]
+        resolved = await client.patch(
+            f"/incidents/{incident_id}", headers=admin, json={"status": "resolved"}
+        )
+        assert resolved.status_code == 200
+        assert incident_id not in {
+            i.incident_id for i in platform.pipeline.correlation.open_incidents()
+        }
+        # The same attacker again (cooldown off, so it is reported again): a new
+        # incident, and the resolved one stays resolved.
+        platform.settings.detection.detection_cooldown_seconds = 0
+        await platform.pipeline.run(
+            MockCapture(shift_to(get_scenario("mixed_intrusion", seed=44).frames, time.time()))
+        )
+        again = await eventually(
+            lambda: client.get("/incidents", headers=admin), lambda body: body["total"] >= 2
+        )
+        assert again["total"] == 2
+        old = (await client.get(f"/incidents/{incident_id}", headers=admin)).json()
+        assert old["status"] == "resolved"
+
 
 async def eventually(
     request: Callable[[], Awaitable[httpx.Response]],

@@ -43,7 +43,10 @@ async def actions(
     platform: PlatformDep,
     target: str | None = Query(default=None, max_length=64),
     outcome: list[str] = Query(default=[], max_length=10),
-    include_alerts: bool = Query(default=False, description="Include one alert per detection"),
+    include_alerts: bool = Query(
+        default=False,
+        description="Include stored alert rows (current versions do not store alerts; see /alerts)",
+    ),
     include_replays: bool = Query(default=False, description="Include decisions from replays"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0, le=1_000_000),

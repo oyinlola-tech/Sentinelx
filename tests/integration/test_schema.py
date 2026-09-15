@@ -84,3 +84,29 @@ async def test_outdated_postgresql_schema_is_refused() -> None:
         async with admin.connect() as connection:
             await connection.exec_driver_sql("DROP DATABASE IF EXISTS sx_schema_test WITH (FORCE)")
         await admin.dispose()
+
+
+async def test_driver_network_errors_become_storage_errors(tmp_path: Path) -> None:
+    # A stopped PostgreSQL container vanishes from Docker DNS: asyncpg raises a bare
+    # socket.gaierror that SQLAlchemy does not wrap, which the API turned into a 500.
+    import socket
+
+    from sentinelx.common.errors import StorageError
+    from sentinelx.config.settings import StorageSettings
+    from sentinelx.storage.database import Database
+
+    database = Database(StorageSettings(database_url=f"sqlite+aiosqlite:///{tmp_path / 'x.db'}"))
+    await database.connect()
+    driver_globals = {"__name__": "asyncpg.connect_utils", "socket": socket}
+    exec(  # noqa: S102 - builds a function that appears to live in the driver package
+        "def connect_addr():\n    raise socket.gaierror(-2, 'Name or service not known')",
+        driver_globals,
+    )
+    with pytest.raises(StorageError, match="database unavailable"):
+        async with database.session():
+            driver_globals["connect_addr"]()
+    # An OSError from application code inside a session is not a storage outage.
+    with pytest.raises(FileNotFoundError):
+        async with database.session():
+            raise FileNotFoundError(str(tmp_path / "missing.txt"))
+    await database.close()

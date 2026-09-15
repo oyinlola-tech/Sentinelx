@@ -73,6 +73,8 @@ _GENERIC_FAILURE = "invalid username or password"
 ACCOUNT_LOCK_MULTIPLIER = 4
 #: Concurrent Argon2 operations. Each uses ~64 MiB with the library defaults.
 HASH_CONCURRENCY = 4
+#: Largest user id a token subject may name (the API's ``user_id`` bound).
+_MAX_USER_ID = 2**31 - 1
 
 
 class AuthError(SentinelXError):
@@ -227,7 +229,6 @@ class AuthService:
             stored.password_hash = new_hash
             stored.must_change_password = False
             await users.end_sessions(stored.id)  # every other session ends
-            await self._end_access_tokens(stored.id)
             pair = await self._issue(
                 users, Principal(stored.id, stored.username, UserRole(stored.role))
             )
@@ -254,7 +255,6 @@ class AuthService:
             user.failed_logins = 0
             user.locked_until = None
             await users.end_sessions(user.id)
-        await self._end_access_tokens(user_id)
 
     # ------------------------------------------------------------------ login
 
@@ -440,6 +440,16 @@ class AuthService:
             raise AuthError("invalid token") from exc
         if claims.get("type") != expected_type:
             raise AuthError("invalid token")
+        # ``sub`` is used as a database key. Anything but a plausible user id is refused
+        # here, rather than becoming a ValueError or an integer-overflow driver error.
+        subject = claims.get("sub")
+        if not (
+            isinstance(subject, str)
+            and subject.isascii()
+            and subject.isdigit()
+            and 1 <= int(subject) <= _MAX_USER_ID
+        ):
+            raise AuthError("invalid token")
         return claims
 
     async def authenticate(self, access_token: str) -> Principal:
@@ -453,13 +463,15 @@ class AuthService:
         token_id = str(claims["jti"])
         if await self.state.cache_get(f"revoked-access:{token_id}") is not None:
             raise AuthError("token revoked")
-        ended = await self.state.cache_get(f"sessions-ended:{claims['sub']}")
-        if isinstance(ended, int) and int(claims["iat"]) < ended:
-            raise AuthError("session ended")
         async with self.database.session() as session:
             user = await UserRepository(session).get(int(claims["sub"]))
         if user is None or not user.is_active:
             raise AuthError("account disabled")
+        ended = user.sessions_ended_at
+        if ended is not None and ended.tzinfo is None:
+            ended = ended.replace(tzinfo=UTC)  # SQLite returns naive UTC datetimes
+        if ended is not None and int(claims["iat"]) < int(ended.timestamp()):
+            raise AuthError("session ended")
         return Principal(
             user.id,
             user.username,
@@ -499,22 +511,8 @@ class AuthService:
         """Sign the user out everywhere: refresh and access tokens stop working now."""
         async with self.database.session() as session:
             await UserRepository(session).end_sessions(principal.user_id)
-        await self._end_access_tokens(principal.user_id)
         if principal.token_id:
             await self._revoke_access_token(principal.token_id)
-
-    async def _end_access_tokens(self, user_id: int) -> None:
-        """Deny every access token issued to the user before now.
-
-        Access tokens are self-contained, so without this, sessions signed out by a
-        logout or password change would keep working until their tokens expired.
-        Tokens issued in the same second (the caller's fresh pair) stay valid.
-        """
-        await self.state.cache_set(
-            f"sessions-ended:{user_id}",
-            int(datetime.now(UTC).timestamp()),
-            ttl_seconds=self.settings.access_token_ttl_seconds,
-        )
 
     async def _revoke_access_token(self, token_id: str) -> None:
         """Deny an access token until it would have expired anyway."""

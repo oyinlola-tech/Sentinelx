@@ -43,7 +43,7 @@ Automatic prevention is active (`ResponseSettings.prevention_active`) **only** w
 | `MANUAL APPROVAL` | `DRY_RUN=false`, mode `manual_approval` | `MANUAL APPROVAL - approved responses are enforced <target>` |
 | `PREVENTION ACTIVE` | `DRY_RUN=false`, mode `automatic` | `PREVENTION ACTIVE - automatic responses are enforced <target>` |
 
-`<target>` is `and will modify the <backend> firewall on this host`, or, with `FIREWALL_BACKEND=null` (possible only with `detect_only`), `but no firewall backend is configured, so they will be refused`.
+`<target>` is `and will modify the <backend> firewall on this host`; with `FIREWALL_BACKEND=auto`, `and will modify this host's firewall (backend chosen automatically)`; or, with `FIREWALL_BACKEND=null` (possible only with `detect_only`), `but no firewall backend is configured, so they will be refused`.
 
 Boolean settings are validated strictly. `DRY_RUN` accepts the usual true and false spellings (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); anything else, including a typo such as `ture`, stops startup with a validation error. Flat aliases (`RESPONSE_MODE`, `DRY_RUN`, `FIREWALL_BACKEND`) are read from the environment and from `.env`; the nested form (`RESPONSE__...`) wins when both are set at the same level, and the environment wins over `.env`.
 
@@ -105,7 +105,7 @@ Running `mixed_intrusion` from `packages/sentinelx/testing/scenarios.py` through
 
 The pipeline calls this for every scored detection.
 
-1. Record an `alert` decision (`executed`).
+1. Record an `alert` decision (`executed`). It is kept in memory and counted in `sentinelx_responses_total`, but never published or stored: the detection itself is the alert.
 2. If `webhook_url` is set and `risk.score >= webhook_min_risk`, queue the webhook (see [Webhook](#webhook)).
 3. Read `detection.recommended_action`. If it is not preventive, or it is `unblock_ip`, stop.
 4. If `risk.score < scoring.auto_block_threshold` (default 85), record the action as `skipped` with the reason `not applied: risk N is below the automatic response threshold of 85` and stop. This decision is not published or audited.
@@ -122,7 +122,7 @@ The pipeline calls this after `handle_detection` when the correlation result for
 The engine then:
 
 1. does nothing if `incident.risk.score < auto_block_threshold`;
-2. for each address in `incident.affected_sources`, sorted, that is not already in the block registry: sends a `temporary_block` for `default_block_seconds` to the automatic path. The incident's risk rationale becomes the evidence.
+2. for each address in `incident.affected_sources`, sorted, that is not already blocked (a source that is only rate limited is included, so it can be escalated to a block): sends a `temporary_block` for `default_block_seconds` to the automatic path. The incident's risk rationale becomes the evidence.
 
 ### The block registry
 
@@ -132,7 +132,7 @@ The engine keeps a registry of active entries keyed by canonical network. Target
 
 `ResponseEngine._automatic` handles each proposed action in this order:
 
-1. **Already blocked.** For `block_ip` and `temporary_block`, if the target is already in the block registry, the decision is `skipped` with the reason suffix `; already blocked`. It is not published or audited.
+1. **Already blocked or rate limited.** If the target is already blocked, any preventive action is `skipped` with the reason suffix `; already blocked`. If the target is rate limited, a further `rate_limit` is `skipped` with `; already rate limited`, but a block proceeds and replaces the rate limit (escalation). A rate limit therefore never replaces a block, which would downgrade it and, on expiry, remove it. These skips are not published or audited.
 2. **`detect_only`.** The decision is `skipped` and audited.
 3. **Safety guard.** If the guard refuses the target, the decision is `failed` with the error `safety guard: <reason>`, and it is audited. This check runs **before** queueing, so an administrator is never asked to approve an action that cannot be carried out.
 4. **`manual_approval`.** A `PendingAction` is queued with action, target, reason, risk, duration, detection or incident id, evidence, `action_id` and `created_at`, and `response.pending_approval` is published. If an action of the same type for the same target is already pending, no duplicate is queued. The decision is `pending_approval`. See [Manual approval](#manual-approval) for the queue's limits.
@@ -144,11 +144,11 @@ The engine keeps a registry of active entries keyed by canonical network. Target
 
 - **Dry run on.** The decision is `simulated` and the firewall is not called.
 - **Dry run off.** The adapter is called under the engine lock:
-  - If the firewall has not been set up in this process, `setup()` runs first (see [Engine startup](#engine-startup)).
+  - If the firewall has not been set up in this process, `setup()` runs first (see [Engine startup](#engine-startup)). A setup that failed earlier is retried here, and a second failure fails the action.
   - For blocks and rate limits, the safety guard checks the target **again**.
   - `block_ip`, `temporary_block` and `quarantine` call `firewall.block(network, duration, comment)`. The comment is the decision reason cut to 120 characters. `ip.blocked` is published.
   - `rate_limit` calls `firewall.rate_limit(network, packets_per_second, duration)`. `ip.blocked` is published.
-  - `unblock_ip` calls `firewall.unblock(network)`, and `ip.unblocked` is published. The outcome is `executed` if the firewall removed an entry, and `skipped` if nothing was there to remove.
+  - `unblock_ip` refuses a target with an IPv6 zone identifier before any command, setup included, then calls `firewall.unblock(network)`, and `ip.unblocked` is published. The outcome is `executed` if the firewall removed an entry, and `skipped` if nothing was there to remove.
 - A `FirewallError` (including a failed setup, a permission error, or a refusal by the `null` backend), `SafetyViolationError` or `ValueError` during execution produces a `failed` decision that contains the error message. It is never raised to the caller.
 - A successful block, temporary block, quarantine or rate limit also increments the source's `previous_responses` count in the risk engine.
 
@@ -162,11 +162,11 @@ The engine keeps a registry of active entries keyed by canonical network. Target
 | `pending_approval` | `requires_approval` is true. |
 | `simulated` | `dry_run` is true. |
 | `executed` | `executed` is true. |
-| `skipped` | Anything else: `detect_only`, below threshold, already blocked, or an unblock with nothing to remove. |
+| `skipped` | Anything else: `detect_only`, below threshold, already blocked or rate limited, or an unblock with nothing to remove. |
 
-Every finalised decision is counted in `sentinelx_responses_total{action,outcome}`. Decisions other than `alert` are published as `response.decided` and stored in the `response_actions` table, except those recorded as non-actions (below threshold, already blocked, webhook). Preventive decisions are also written to the audit log (see [Audit trail](#audit-trail)). The engine keeps the most recent decisions in memory, dropping the oldest 1,000 when it holds more than 5,000.
+Every finalised decision is counted in `sentinelx_responses_total{action,outcome}`. Decisions other than `alert` are published as `response.decided` and stored in the `response_actions` table, except those recorded as non-actions (below threshold, already blocked or rate limited, webhook). Preventive decisions are also written to the audit log (see [Audit trail](#audit-trail)). The engine keeps the most recent decisions in memory, dropping the oldest 1,000 when it holds more than 5,000.
 
-**Replays.** A pipeline running a replay tags every published decision (and every detection and incident) with its `replay_id`. The firewall action log (`GET /api/v1/firewall/actions`, the Firewall page) excludes decisions with a `replay_id` and any stored `alert` rows unless `include_replays=true` or `include_alerts=true` is passed. Replays never change the firewall: they run with `DRY_RUN=true` and the `null` backend against the in-memory simulator, and `manual_approval` is treated as `automatic` so decisions appear as simulated instead of queueing approvals (`simulation_settings` in `assembly.py`, shared by CLI, API and dashboard replays).
+**Replays.** A pipeline running a replay tags every published decision (and every detection and incident) with its `replay_id`. The firewall action log (`GET /api/v1/firewall/actions`, the Firewall page) excludes decisions with a `replay_id` unless `include_replays=true` is passed. `alert` decisions are never stored, so `include_alerts=true` returns no alert rows on current versions, only rows stored by older versions, if any. For alerting, use `GET /api/v1/alerts` (untriaged high-risk detections and pending approvals) or the [webhook](#webhook). Replays never change the firewall: they run with `DRY_RUN=true` and the `null` backend against the in-memory simulator, and `manual_approval` is treated as `automatic` so decisions appear as simulated instead of queueing approvals (`simulation_settings` in `assembly.py`, shared by CLI, API and dashboard replays).
 
 ### Manual approval
 
@@ -212,7 +212,7 @@ A temporary block created by a short-lived CLI command is expired by whichever S
 
 `ResponseEngine.start(known_expiries)`:
 
-1. Calls `firewall.setup()` when prevention is active or the mode is `manual_approval`. If setup fails, startup is aborted with the error.
+1. Calls `firewall.setup()` when `DRY_RUN=false` and the mode is `automatic` or `manual_approval`. With dry run on, the firewall is not touched at start, not even to create an empty table. If setup fails, `firewall_setup_failed` is logged and startup continues: detection keeps running, and every action that needs the firewall retries setup and fails with the error if it fails again.
 2. Loads the firewall's current entries (`list_blocked`) into the block registry, so blocks that survived a restart are known. Entries without an expiry take one from `known_expiries` when given. A listing failure is logged as `firewall_list_failed` and does not stop startup.
 3. Starts the expiry reaper and the webhook delivery worker.
 
@@ -257,6 +257,7 @@ The decision's `error` contains `safety guard: <reason>`. The code itself appear
 | # | Code | Refused when | Example reason text |
 | --- | --- | --- | --- |
 | 1 | `invalid_address` | The target is empty, has leading or trailing whitespace, or contains any whitespace or non-printable (control) character. Rejecting these prevents forged audit and log entries. | `target contains whitespace or control characters` |
+| 1a | `invalid_address` | The target contains `%`, an IPv6 zone identifier (`fe80::1%eth0`). A zone is not part of an address a firewall matches on, and its text is free-form. | `IPv6 zone identifiers ('%...') cannot be blocked; give the address alone` |
 | 2 | `invalid_address` | Python's `ipaddress.ip_network(target, strict=False)` cannot parse the target. A bare address becomes a /32 or /128, and host bits are cleared (`203.0.113.7/28` becomes `203.0.113.0/28`). | `'not-an-ip' is not a valid IP network` |
 | 3 | `default_route` | The prefix length is 0. | `a /0 prefix would block all traffic` |
 | 4 | `prefix_too_wide` | The prefix covers more addresses than `max_block_prefix_hosts` (default 256, which is a /24). | `10.0.0.0/16 (65536 addresses) exceeds the maximum of 256 addresses (response.max_block_prefix_hosts)` |
@@ -271,6 +272,8 @@ The decision's `error` contains `safety guard: <reason>`. The code itself appear
 The example reasons were produced by `SafetyGuard.evaluate()` with an allowlist of `192.0.2.0/28`, a management address of `198.51.100.7`, a local address of `10.0.0.5` and an operator address of `203.0.113.77` injected in place of discovery, a failing address enumeration for check 8, and, for check 11, `max_blocked_addresses=1` with one active block.
 
 Overlap is checked in both directions. Blocking `10.0.0.0/24` fails when the sensor is `10.0.0.5`, even though the /24 itself is not listed.
+
+**Embedded IPv4 addresses.** An IPv6 target that carries an IPv4 address inside it is also checked as that IPv4 network: IPv4-mapped (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`, for prefixes of /48 or longer) and Teredo (`2001::/32`: the server address for /64 or longer, and the client address for /96 or longer). Checks 5, 6, 7, 9 and 10 are repeated for the embedded network, so `::ffff:127.0.0.1` or `2002:7f00:1::1` is refused like `127.0.0.1`. These refusals use the same codes with the suffix `_embedded` (for example `special_address_embedded`), and the reason ends with, for example, `(embedded IPv4-mapped IPv4 127.0.0.1/32)`.
 
 **Host addresses** come from `psutil` (`system/interfaces.py`), include every IPv4 and IPv6 address on every interface (IPv6 zone suffixes removed), and are cached for 10 seconds so a burst of blocks does not enumerate interfaces each time. A failed enumeration is never cached.
 
@@ -295,6 +298,8 @@ POST /api/v1/firewall/check        (analyst role)
 ```
 
 The response is `{"target", "allowed", "network", "reason", "dry_run"}`. Use it to confirm that your management addresses are protected before you enable prevention.
+
+The dashboard's block dialog runs this check as you type, and the block button stays disabled until the check has succeeded for the current target. If the check request fails (for example because of the API rate limit or a lost connection), the dialog shows the error with a **Check again** button instead of silently leaving the button disabled.
 
 ### Guard settings
 
@@ -335,7 +340,7 @@ The automatic threshold is `SCORING__AUTO_BLOCK_THRESHOLD`, default 85.0. See [r
 
 ## Firewall adapters
 
-`create_firewall(settings.response)` (`firewall/__init__.py`) builds the adapter selected by `FIREWALL_BACKEND`. The response engine is the only component that calls an adapter, and it only passes networks that have already passed the safety guard.
+`create_firewall(settings.response)` (`firewall/__init__.py`) builds the adapter selected by `FIREWALL_BACKEND`. The response engine is the only component that calls an adapter, and it only passes networks that have already passed the safety guard (or, for an unblock, have been validated). As a second line of defence, every adapter turns a network into command text through `firewall_address()` (`firewall/base.py`), which raises `FirewallError` for an address carrying an IPv6 zone identifier, so that text can never reach `nft`, `iptables`, `pfctl` or a PowerShell script.
 
 | Backend | Platforms | Mechanism | Native expiry | Rate limiting | Tested against |
 | --- | --- | --- | --- | --- | --- |
@@ -361,7 +366,7 @@ The nftables, iptables, pf and Windows Firewall adapters run commands through `C
 - **Arguments are passed as a list.** No code path invokes a shell. On Linux and macOS commands run with `asyncio.create_subprocess_exec`; on Windows they run with `subprocess.run` in a worker thread, which works with every event loop type.
 - **The binary path is fixed once.** It is resolved with `shutil.which` at construction, and a missing binary raises `FirewallError` (`<binary> is not installed or not on PATH`). Windows PowerShell is located under `%SYSTEMROOT%` rather than through `PATH`.
 - **Arguments are checked.** Every argument must be a `str`, and any argument that contains a control character (any code below 0x20, or 0x7F) is refused (`refusing firewall argument containing control characters`).
-- **Addresses come from `ipaddress` objects**, never from raw input.
+- **Addresses come from `ipaddress` objects**, never from raw input, and pass through `firewall_address()`, which refuses IPv6 zone identifiers.
 - **Every command has a timeout** (10 seconds by default, 30 for PowerShell). On timeout the process is killed and `FirewallError` is raised. If the calling task is cancelled, the child process is killed before the cancellation propagates.
 - **Every command is logged** at debug level as `firewall_command`, with its return code and duration. A non-zero exit raises `FirewallError` with the command's stderr, unless the caller passed `check=False`.
 - **Capabilities are passed to child processes on Linux.** Capabilities granted by file capabilities (`setcap` on the interpreter) belong to the Python process only and are dropped when it executes `nft` or `iptables`. Before each command, the runner raises `CAP_NET_ADMIN` into the process's ambient set (adding it to the inheritable set first), so child processes inherit it. Without this, blocks under `setcap` failed with `Operation not permitted`. Root needs nothing; a process that does not hold the capability raises nothing, and the command fails with a permission error.
@@ -458,7 +463,7 @@ block drop out quick from any to <sentinelx_block>
 
 - ignores `RESPONSE_MODE`;
 - honours `DRY_RUN` (a dry-run request returns a `simulated` decision);
-- runs the safety guard for every action except `unblock_ip`, so an unblock is never refused by the allowlist;
+- runs the safety guard for every action except `unblock_ip`, so an unblock is never refused by the allowlist. An unblock target must still be a valid network without an IPv6 zone identifier; otherwise the decision is `failed` with an error starting `invalid target:`, in dry run too, rather than a simulated unblock;
 - clamps `duration` to between 1 second and `max_block_seconds`; and
 - uses `default_block_seconds` when a `temporary_block` has no duration.
 
@@ -472,7 +477,7 @@ sentinelx unblock [TARGET] [--reason/-r TEXT] [--yes/-y] [--json]
 sentinelx blocked [--json]
 ```
 
-- **Prompts.** A missing target or reason is prompted for. The reason is recorded in the audit log.
+- **Prompts.** A missing target or reason is prompted for in a terminal. Without a terminal (for example when standard input is a pipe), a missing target or `--reason` is a usage error and the command exits 2. The reason is recorded in the audit log.
 - **Action type.** `--rate-limit` selects `rate_limit`. Otherwise, `--duration` selects `temporary_block`, and no duration selects a permanent `block_ip`.
 - **Confirmation.** When `DRY_RUN=false`, the command shows the safety banner and asks for confirmation unless `--yes` is given.
 - **Output and exit code.** The command prints the outcome and reason, and exits with status 1 when the decision has an error (for example, a safety refusal).
@@ -491,8 +496,8 @@ sentinelx blocked
 Operational notes that follow from each CLI command using its own engine:
 
 - **`null` backend.** With `DRY_RUN=false`, a CLI block fails with the `NullFirewall` refusal.
-- **Setup.** In `detect_only` or dry-run `automatic` mode the CLI engine does not set up the firewall at start, but the first real change does, so a CLI block creates the nftables table or iptables chain if it does not exist.
-- **Privileges.** When prevention is active or the mode is `manual_approval`, each CLI command runs firewall setup at startup and needs the same privileges as the service, even for commands that only read.
+- **Setup.** In `detect_only` mode, or with `DRY_RUN=true` in any mode, the CLI engine does not set up the firewall at start, but the first real change does, so a CLI block creates the nftables table or iptables chain if it does not exist.
+- **Privileges.** When `DRY_RUN=false` and the mode is `automatic` or `manual_approval`, each CLI command attempts firewall setup at startup. Without the privileges the setup failure is logged and the command continues; a command that changes the firewall then fails.
 - **No persistence.** CLI commands run with persistence off, so their decisions reach the audit log but not the `response_actions` or `blocked_sources` tables.
 - **Server state.** A running server learns about a CLI block on its next registry refresh (see [The block registry](#the-block-registry)) or restart.
 
@@ -507,7 +512,7 @@ All of these endpoints require an authenticated user (see [api.md](api.md)).
 | `POST /api/v1/firewall/check` | analyst | `{"target": str}` |
 | `GET /api/v1/firewall` | viewer | Response status, adapter health, active entries (refreshed), block history, recent actions, pending approvals |
 | `GET /api/v1/firewall/blocked` | viewer | Active entries, refreshed from the adapter |
-| `GET /api/v1/firewall/actions` | viewer | `target`, `outcome` (repeatable), `include_alerts`, `include_replays`, `limit` (1-500), `offset` |
+| `GET /api/v1/firewall/actions` | viewer | `target`, `outcome` (repeatable), `include_alerts` (returns only alert rows stored by older versions; current versions store none), `include_replays`, `limit` (1-500), `offset` |
 | `GET /api/v1/firewall/approvals` | viewer | Pending approvals |
 | `POST /api/v1/firewall/approvals/{action_id}/approve` | admin | none |
 | `POST /api/v1/firewall/approvals/{action_id}/reject` | admin | `{"reason": str (0-500)}` |
@@ -539,7 +544,7 @@ Audit records are written directly to the `audit_events` table, not through the 
 
 Each response audit record carries `target`, `reason`, `outcome` and the full decision payload in `details`. Settings records carry a `{"changes": {field: {"from", "to"}}}` diff, and details pass through the same secret redaction as logs before storage.
 
-These events are **not** audited: `alert` and `webhook` decisions, below-threshold proposals and "already blocked" skips. They are still counted in `sentinelx_responses_total`.
+These events are **not** audited: `alert` and `webhook` decisions, below-threshold proposals and "already blocked" or "already rate limited" skips. They are still counted in `sentinelx_responses_total`.
 
 If an audit write fails inside the response engine, the error is logged as `audit_write_failed` and the firewall change is kept.
 

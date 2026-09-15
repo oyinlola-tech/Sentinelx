@@ -24,6 +24,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from sentinelx.common.enums import UserRole
 from sentinelx.common.netutils import in_any_network, parse_ip, parse_networks
@@ -38,10 +39,12 @@ __all__ = [
     "REFRESH_COOKIE",
     "Admin",
     "Analyst",
+    "BodySizeLimitMiddleware",
     "PlatformDep",
     "RateLimitMiddleware",
     "SecurityHeadersMiddleware",
     "Viewer",
+    "app_path",
     "clear_auth_cookies",
     "client_ip",
     "get_platform",
@@ -55,6 +58,20 @@ ACCESS_COOKIE = "sx_access"
 REFRESH_COOKIE = "sx_refresh"
 CSRF_COOKIE = "sx_csrf"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def app_path(request: Request) -> str:
+    """The request path without the ASGI ``root_path`` prefix.
+
+    With ``api.root_path`` set, a request may arrive as ``/prefix/api/v1/...`` (the
+    prefix kept, as ASGI servers pass it) or without it (a proxy that strips it). Path
+    checks must see ``/api/v1/...`` either way, or the prefixed form escapes them.
+    """
+    path = request.url.path
+    root = request.scope.get("root_path") or ""
+    if root and (path == root or path.startswith(root.rstrip("/") + "/")):
+        path = path[len(root.rstrip("/")) :] or "/"
+    return path
 
 
 def get_platform(request: Request) -> Platform:
@@ -163,7 +180,7 @@ async def current_principal(
 
     # An account with a generated or reset password may only change it.
     allowed_paths = ("/api/v1/auth/change-password", "/api/v1/auth/me", "/api/v1/auth/logout")
-    if principal.must_change_password and request.url.path not in allowed_paths:
+    if principal.must_change_password and app_path(request) not in allowed_paths:
         raise HTTPException(status_code=403, detail="password change required before continuing")
     request.state.principal = principal
     platform.note_operator_address(client_ip(request))
@@ -194,7 +211,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         started = time.perf_counter()
         response = await call_next(request)
-        path = request.url.path
+        path = app_path(request)
         headers = response.headers
         headers["X-Content-Type-Options"] = "nosniff"
         headers["X-Frame-Options"] = "DENY"
@@ -225,7 +242,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        if not request.url.path.startswith("/api/") or request.url.path.endswith("/system/health"):
+        path = app_path(request)
+        if not path.startswith("/api/") or path == "/api/v1/system/health":
             return await call_next(request)
         platform: Platform = request.app.state.platform
         settings = platform.settings.api
@@ -245,3 +263,85 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         response.headers["X-RateLimit-Limit"] = str(settings.rate_limit_requests)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
         return response
+
+
+#: Largest request body accepted by any endpoint except the streamed capture upload.
+#: The biggest legitimate JSON body (a 20 KB rule, a 1,000-entry allowlist) is far below.
+MAX_JSON_BODY_BYTES = 1_048_576
+
+
+class BodySizeLimitMiddleware:
+    """Refuse request bodies over ``max_bytes`` before the application buffers them.
+
+    FastAPI reads a JSON body into memory in full, and nginx normally caps it; a bare
+    uvicorn deployment would otherwise accept an unbounded body on any route,
+    including unauthenticated sign-in. A declared ``Content-Length`` over the limit is
+    refused immediately. A chunked body is counted as it is read: past the limit the
+    application sees the body end, and whatever it answers is replaced by a 413. The
+    capture upload streams to disk under its own limits and is exempt.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_bytes: int = MAX_JSON_BODY_BYTES,
+        exempt: tuple[str, ...] = ("/api/v1/replay/upload",),
+    ) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        self.exempt = exempt
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        root = scope.get("root_path") or ""
+        if root and path.startswith(root.rstrip("/") + "/"):
+            path = path[len(root.rstrip("/")) :]
+        if path in self.exempt:
+            await self.app(scope, receive, send)
+            return
+        declared = dict(scope.get("headers", [])).get(b"content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > self.max_bytes):
+            await self._refuse(send)
+            return
+        received = 0
+        exceeded = False
+        refused = False
+
+        async def counting_receive() -> Message:
+            nonlocal received, exceeded
+            if exceeded:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    exceeded = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            nonlocal refused
+            if not exceeded:
+                await send(message)
+            elif not refused and message["type"] == "http.response.start":
+                refused = True
+                await self._refuse(send)
+
+        await self.app(scope, counting_receive, guarded_send)
+
+    async def _refuse(self, send: Send) -> None:
+        body = b'{"detail":"request body too large"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})

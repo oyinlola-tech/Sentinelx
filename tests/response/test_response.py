@@ -501,3 +501,29 @@ class TestIptablesExpiry:
             runner_v4=restarted_runner, runner_v6=FakeRunner()
         ).list_blocked()  # type: ignore[arg-type]
         assert entries[0].expires_at is not None and entries[0].temporary
+
+
+async def test_dry_run_unblock_of_an_invalid_target_is_refused_not_simulated() -> None:
+    engine, firewall, audit, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=True)
+    for target in ("notanip", "1.2.3.4; rm -rf /", "2001:db8::1%eth0", "10.0.0.0/33"):
+        decision = await engine.manual_action(
+            ActionType.UNBLOCK_IP, target, actor="admin", reason="cleanup"
+        )
+        assert decision.outcome == "failed" and "invalid target" in (decision.error or "")
+    assert firewall.operations == []
+    ok = await engine.manual_action(ActionType.UNBLOCK_IP, "203.0.113.9", actor="admin", reason="x")
+    assert ok.outcome == "simulated"
+
+
+async def test_manual_rate_limit_never_downgrades_an_existing_block() -> None:
+    engine, firewall, _, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=False)
+    blocked = await engine.manual_action(
+        ActionType.BLOCK_IP, "203.0.113.5", actor="admin", reason="attacker"
+    )
+    assert blocked.outcome == "executed"
+    weaker = await engine.manual_action(
+        ActionType.RATE_LIMIT, "203.0.113.5", actor="admin", reason="soften", duration=600
+    )
+    assert weaker.outcome == "failed" and "unblock it first" in (weaker.error or "")
+    assert firewall.operations == [("block", "203.0.113.5/32")]
+    assert not (await engine.blocked())[0].rate_limited

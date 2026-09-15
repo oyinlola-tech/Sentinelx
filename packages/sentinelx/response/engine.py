@@ -162,8 +162,16 @@ class ResponseEngine:
                 that cannot store an expiry themselves (pf, Windows Firewall) report
                 blocks without one; this restores the deadline so they still expire.
         """
-        if self.settings.prevention_active or self.settings.mode is ResponseMode.MANUAL_APPROVAL:
-            await self._ensure_firewall_ready()
+        # Dry run never touches the firewall - not even to create an (empty) table.
+        # Any action genuinely applied later (a manual block, say) sets it up on first use.
+        if not self.settings.dry_run and self.settings.mode in (
+            ResponseMode.AUTOMATIC,
+            ResponseMode.MANUAL_APPROVAL,
+        ):
+            # A setup failure is logged; detection must keep running without a firewall
+            # (see sentinelx.firewall), and each action retries setup and fails loudly.
+            with contextlib.suppress(FirewallError):
+                await self._ensure_firewall_ready()
         known = known_expiries or {}
         try:
             for entry in await self.firewall.list_blocked():
@@ -385,7 +393,30 @@ class ResponseEngine:
             duration_seconds=duration,
         )
         if action is ActionType.UNBLOCK_IP:
+            # Unblocking never needs the protections (removing a block is always safe),
+            # but the target must still be a real network: dry run included, so an
+            # invalid target is refused rather than recorded as a simulated unblock.
+            try:
+                if "%" in target:
+                    raise ValueError("IPv6 zone identifiers ('%...') are not firewall addresses")
+                parse_network(target)
+            except ValueError as exc:
+                return await self._finalise(
+                    replace(base, error=f"invalid target: {exc}"), source=source, actor=actor
+                )
             return await self._execute(base, source=source, actor=actor)
+        existing = self._blocks.get(self._block_key(target))
+        if action is ActionType.RATE_LIMIT and existing is not None and not existing.rate_limited:
+            # Applying it would replace the block with a weaker rule (and, on expiry,
+            # remove the protection entirely). Downgrading is a deliberate two-step choice.
+            return await self._finalise(
+                replace(
+                    base,
+                    error=f"{existing.network} is blocked; unblock it first to rate limit it instead",
+                ),
+                source=source,
+                actor=actor,
+            )
         try:
             self.guard.check(target)
         except SafetyViolationError as exc:
@@ -482,6 +513,9 @@ class ResponseEngine:
 
     async def _apply(self, decision: ResponseDecision) -> bool:
         action = decision.action
+        if action is ActionType.UNBLOCK_IP and "%" in decision.target:
+            # Unblock skips the safety guard, so validate before any command (setup included).
+            raise ValueError("IPv6 zone identifiers ('%...') are not firewall addresses")
         await self._ensure_firewall_ready()
         if action in (ActionType.BLOCK_IP, ActionType.TEMPORARY_BLOCK, ActionType.QUARANTINE):
             network = self.guard.check(decision.target)
@@ -524,8 +558,6 @@ class ResponseEngine:
                 )
             return True
         if action is ActionType.UNBLOCK_IP:
-            if "%" in decision.target:
-                raise ValueError("IPv6 zone identifiers ('%...') are not firewall addresses")
             network = parse_network(decision.target)
             removed = await self.firewall.unblock(network)
             self._blocks.pop(str(network), None)

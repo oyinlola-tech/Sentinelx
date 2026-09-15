@@ -13,6 +13,7 @@ reports what was actually observed.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import sys
@@ -25,7 +26,7 @@ import httpx
 from sentinelx.config.settings import Settings
 from sentinelx.system.capabilities import PlatformCapabilities, detect_capabilities
 
-__all__ = ["Check", "run_diagnostics"]
+__all__ = ["Check", "run_diagnostics", "url_host"]
 
 Status = Literal["PASS", "WARN", "FAIL", "INFO"]
 
@@ -59,21 +60,65 @@ class Check:
         return asdict(self)
 
 
+def url_host(host: str) -> str:
+    """``host`` as it must appear in a URL: IPv6 literals need brackets."""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
 def _module_present(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
 def _secret_was_configured(settings: Settings) -> bool:
     """Whether JWT_SECRET came from the environment or .env, not the dev fallback."""
-    if os.environ.get("JWT_SECRET") or os.environ.get("API__JWT_SECRET"):
+    names = {"JWT_SECRET", "API__JWT_SECRET"}
+    # Settings names are case-insensitive, so jwt_secret=... configures the secret too.
+    if any(value and key.upper() in names for key, value in os.environ.items()):
         return True
     env_file = settings.model_config.get("env_file")
     if isinstance(env_file, str | Path) and Path(env_file).is_file():
         from dotenv import dotenv_values
 
-        values = {k.upper(): v for k, v in dotenv_values(env_file).items()}
-        return bool(values.get("JWT_SECRET") or values.get("API__JWT_SECRET"))
+        encoding = settings.model_config.get("env_file_encoding") or "utf-8"
+        values = dotenv_values(env_file, encoding=encoding)
+        return any(value and key.upper() in names for key, value in values.items())
     return False
+
+
+def _ml_check(settings: Settings) -> Check:
+    """The ML detector is enabled: can it actually run?
+
+    The server skips an unloadable model with only a log line, so detection carries on
+    without it. Doctor is where that must be visible.
+    """
+    missing = [name for name in ("numpy", "sklearn", "joblib") if not _module_present(name)]
+    if missing:
+        return Check(
+            "machine learning",
+            "FAIL",
+            f"ANOMALY__ML_ENABLED=true but {', '.join(missing)} not installed",
+            'pip install -e ".[ml]"',
+        )
+    from sentinelx.anomaly.ml import load_model
+
+    path = Path(settings.anomaly.ml_model_path)
+    try:
+        # The same checks the server applies: presence, ownership, permissions, format.
+        bundle = load_model(path)
+    except Exception as exc:
+        return Check(
+            "machine learning",
+            "FAIL",
+            f"ANOMALY__ML_ENABLED=true but the model cannot be used, so the ML detector "
+            f"is disabled: {exc}"[:600],
+            "train one: sentinelx anomaly train NORMAL.pcap (or set ANOMALY__ML_MODEL_PATH)",
+        )
+    info = bundle.info()
+    return Check(
+        "machine learning",
+        "PASS",
+        f"model {path} loaded ({info.get('samples')} samples, trained {info.get('trained_at')})",
+    )
 
 
 def _platform_checks(settings: Settings, capabilities: PlatformCapabilities) -> list[Check]:
@@ -117,17 +162,8 @@ def _platform_checks(settings: Settings, capabilities: PlatformCapabilities) -> 
             "pip install -e ." if missing else "",
         )
     )
-    if settings.anomaly.ml_enabled and not (
-        _module_present("sklearn") and _module_present("numpy")
-    ):
-        checks.append(
-            Check(
-                "machine learning",
-                "FAIL",
-                "ANOMALY__ML_ENABLED=true but scikit-learn/numpy are not installed",
-                'pip install -e ".[ml]"',
-            )
-        )
+    if settings.anomaly.ml_enabled:
+        checks.append(_ml_check(settings))
 
     for label, capability, missing_status in (
         ("pcap replay", capabilities.pcap_replay, "FAIL"),
@@ -176,7 +212,10 @@ def _platform_checks(settings: Settings, capabilities: PlatformCapabilities) -> 
             Check(
                 "firewall backend",
                 "PASS" if firewall.available else ("FAIL" if needs_firewall else "WARN"),
-                f"{firewall.backend}: {firewall.detail}",
+                # "null" is what an unresolved "auto" reports; its detail already says why.
+                firewall.detail
+                if firewall.backend == "null"
+                else f"{firewall.backend}: {firewall.detail}",
                 "" if firewall.available else firewall.remedy,
             )
         )
@@ -307,19 +346,34 @@ async def _service_checks(settings: Settings) -> list[Check]:
         await database.close()
 
     state = SharedState(settings.storage)
-    await state.connect()
-    if state.degraded:
+    try:
+        # With STORAGE__REDIS_REQUIRED=true connect() raises instead of degrading; that
+        # is a finding to report, not a reason to abandon every other check.
+        await state.connect()
+    except Exception as exc:
         checks.append(
             Check(
                 "redis",
-                "FAIL" if settings.storage.redis_required else "WARN",
-                "unreachable: rate limits and tickets are per process",
+                "FAIL",
+                f"{exc} (STORAGE__REDIS_REQUIRED=true)"[:300],
                 "start Redis or set REDIS_URL",
             )
         )
     else:
-        checks.append(Check("redis", "PASS", "connected"))
-    await state.close()
+        if state.degraded:
+            checks.append(
+                Check(
+                    "redis",
+                    "FAIL" if settings.storage.redis_required else "WARN",
+                    "unreachable: rate limits and tickets are per process",
+                    "start Redis or set REDIS_URL",
+                )
+            )
+        else:
+            checks.append(Check("redis", "PASS", "connected"))
+    finally:
+        with contextlib.suppress(Exception):
+            await state.close()
     return checks
 
 
@@ -331,7 +385,7 @@ async def _probe(url: str, name: str, expect: str, identify: str) -> Check:
     try:
         async with httpx.AsyncClient(timeout=2.0, follow_redirects=False) as client:
             response = await client.get(url)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         return Check(
             name, "WARN", f"not reachable at {url} ({type(exc).__name__})", f"start the {expect}"
         )
@@ -384,7 +438,8 @@ async def run_diagnostics(
     host = settings.api.host if settings.api.host not in {"0.0.0.0", "::"} else "127.0.0.1"
     checks.append(
         await _probe(
-            (api_url or f"http://{host}:{settings.api.port}").rstrip("/") + "/api/v1/system/health",
+            (api_url or f"http://{url_host(host)}:{settings.api.port}").rstrip("/")
+            + "/api/v1/system/health",
             "api",
             "API with: sentinelx start",
             "api",

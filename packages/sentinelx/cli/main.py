@@ -33,6 +33,20 @@ app = typer.Typer(
 JsonOption = Annotated[bool, typer.Option("--json", help="Machine-readable JSON on stdout.")]
 
 
+START_CAPTURE_VARIABLE = "SENTINELX_START_CAPTURE"
+
+#: uvicorn's access and connection loggers print request paths with their query strings,
+#: including the WebSocket ``?ticket=`` credential, at INFO. Keep them to warnings and
+#: errors (a failed bind is still shown). SentinelX does not log each request; request
+#: counts and latencies are exported as metrics.
+UVICORN_LOG_CONFIG: dict[str, Any] = {
+    "version": 1,
+    "incremental": True,
+    "loggers": {
+        name: {"level": "WARNING"} for name in ("uvicorn.error", "uvicorn.access", "uvicorn.asgi")
+    },
+}
+
 MENU: list[tuple[str, list[str]]] = [
     ("Show platform status", ["status"]),
     ("List network interfaces", ["interfaces"]),
@@ -88,7 +102,9 @@ def _menu() -> None:
 @app.command(rich_help_panel="Operate")
 def start(
     host: Annotated[str | None, typer.Option(help="Listen address (API_HOST).")] = None,
-    port: Annotated[int | None, typer.Option(help="Listen port (API_PORT).")] = None,
+    port: Annotated[
+        int | None, typer.Option(help="Listen port (API_PORT).", min=1, max=65535)
+    ] = None,
     capture: Annotated[
         bool,
         typer.Option(
@@ -103,25 +119,35 @@ def start(
     """Start the API, WebSocket stream and detection pipeline."""
     import uvicorn
 
+    from sentinelx.services.diagnostics import url_host
+
     settings = load_settings(quiet=False)
     console.print(safety_panel(settings.safety_banner()))
     listen_host = host or settings.api.host
-    listen_port = port or settings.api.port
+    listen_port = settings.api.port if port is None else port
     if (
         listen_host not in ("127.0.0.1", "localhost", "::1")
         and settings.environment != "production"
     ):
         err.print(f"[yellow]listening on {listen_host}: the API is reachable from the network[/]")
 
-    if capture:
-        # Started from the application lifespan so it shares the server's event loop.
-        import os
+    import os
 
-        os.environ["SENTINELX_START_CAPTURE"] = interface or settings.capture.interface
+    # The server reads this variable in its lifespan so capture shares the server's event
+    # loop. Set it only for --capture: one inherited from the parent shell must not
+    # start a capture nobody asked for.
+    if capture:
+        os.environ[START_CAPTURE_VARIABLE] = interface or settings.capture.interface
+    else:
+        os.environ.pop(START_CAPTURE_VARIABLE, None)
     docs = "   docs /api/docs" if settings.api.docs_enabled else "   (API docs off in production)"
+    # A wildcard bind is not an address a browser can open; show the loopback one.
+    shown_host = {"0.0.0.0": "127.0.0.1", "::": "::1", "": "127.0.0.1"}.get(
+        listen_host, listen_host
+    )
+    authority = f"{url_host(shown_host)}:{listen_port}"
     console.print(
-        f"API    http://{listen_host}:{listen_port}/api/v1{docs}\n"
-        f"Events ws://{listen_host}:{listen_port}/api/v1/ws/events"
+        f"API    http://{authority}/api/v1{docs}\nEvents ws://{authority}/api/v1/ws/events"
     )
     uvicorn.run(
         "sentinelx.api.server:app",
@@ -129,7 +155,11 @@ def start(
         port=listen_port,
         reload=reload,
         workers=1,
-        log_level=settings.telemetry.log_level.lower(),
+        # No uvicorn handlers: its records reach the root handler configure_logging
+        # installed (SentinelX format and redaction). log_level=None stops uvicorn from
+        # resetting the levels below, and a dict config is re-applied in a --reload child.
+        log_config=UVICORN_LOG_CONFIG,
+        log_level=None,
         proxy_headers=bool(settings.api.trusted_proxies),
         forwarded_allow_ips=",".join(settings.api.trusted_proxies) or None,
         server_header=False,

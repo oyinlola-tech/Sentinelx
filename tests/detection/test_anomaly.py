@@ -124,6 +124,32 @@ class TestMachineLearning:
         with pytest.raises(ConfigurationError, match="writable"):
             load_model(path)
 
+    def test_model_in_a_directory_others_can_write_is_refused(self, bundle, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+        from sentinelx.anomaly.ml import load_model, save_model
+        from sentinelx.common.errors import ConfigurationError
+
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        path = shared / "model.joblib"
+        save_model(bundle, path)
+        shared.chmod(0o777)  # anyone could swap the file for a malicious pickle
+        with pytest.raises(ConfigurationError, match="directory"):
+            load_model(path)
+        shared.chmod(0o1777)  # sticky, like /tmp: others cannot replace our file
+        assert load_model(path).version == bundle.version
+        shared.chmod(0o700)
+
+    def test_posix_permission_checks_are_skipped_on_windows(
+        self, bundle, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        import sentinelx.anomaly.ml as ml
+
+        path = tmp_path / "model.joblib"
+        ml.save_model(bundle, path)
+        path.chmod(0o666)  # what Windows reports for every writable file
+        monkeypatch.setattr(ml.os, "name", "nt")
+        ml._check_file_is_trusted(path)  # must not raise
+
     def test_missing_or_incompatible_model(self, tmp_path: Path) -> None:
         pytest.importorskip("joblib")
         import joblib
@@ -157,3 +183,21 @@ async def test_anomaly_detector_disabled_in_dashboard_can_be_switched_back_on() 
     # Previously the detector was never attached, so this toggle returned "not found".
     assert pipeline.detection.set_enabled("statistical_anomaly", True)
     assert detector.enabled is True
+
+
+def test_enabled_detectors_allow_list_also_governs_anomaly_detectors() -> None:
+    from sentinelx.assembly import attach_anomaly_detectors
+    from sentinelx.config.settings import Settings
+    from sentinelx.firewall import MemoryFirewall
+    from sentinelx.pipeline import Pipeline
+
+    only_scans = Settings(detection={"enabled_detectors": ["tcp_port_scan"]})
+    assert (
+        attach_anomaly_detectors(Pipeline(only_scans, firewall=MemoryFirewall()), only_scans) == []
+    )
+    with_anomaly = Settings(
+        detection={"enabled_detectors": ["tcp_port_scan", "statistical_anomaly"]}
+    )
+    assert attach_anomaly_detectors(
+        Pipeline(with_anomaly, firewall=MemoryFirewall()), with_anomaly
+    ) == ["statistical_anomaly"]

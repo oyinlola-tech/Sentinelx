@@ -120,9 +120,7 @@ def tcp(
 ) -> bytes:
     offset = data_offset if data_offset is not None else 5 + len(options) // 4
     return (
-        struct.pack(
-            "!HHIIBBHHH", sport, dport, seq, ack, offset << 4, flags, window, 0, urgent
-        )
+        struct.pack("!HHIIBBHHH", sport, dport, seq, ack, offset << 4, flags, window, 0, urgent)
         + options
         + payload
     )
@@ -265,7 +263,9 @@ class TestLinkLayer:
     @pytest.mark.parametrize("ha_len", [6, 0])
     def test_linux_cooked_v1(self, dec: PacketDecoder, ha_len: int) -> None:
         header = struct.pack("!HHH8sH", 0, 1, ha_len, SRC_MAC + b"\x00\x00", 0x0800)
-        event = one(dec, header + ipv4("192.0.2.1", "192.0.2.2", 17, udp(53, 5353)), LinkType.LINUX_SLL)
+        event = one(
+            dec, header + ipv4("192.0.2.1", "192.0.2.2", 17, udp(53, 5353)), LinkType.LINUX_SLL
+        )
         assert event is not None and event.dst_port == 5353 and event.dst_mac is None
         assert event.src_mac == ("0a:0b:0c:0d:0e:0f" if ha_len == 6 else None)
 
@@ -284,7 +284,9 @@ class TestLinkLayer:
         assert v6 is not None and v6.src_ip == "2001:db8::a" and v6.dst_port == 4
         assert one(dec, b"\x50" + b"\x00" * 40, link) is None  # version 5
 
-    @pytest.mark.parametrize(("family", "expected"), [(2, "10.0.0.1"), (24, "::1"), (28, "::1"), (30, "::1")])
+    @pytest.mark.parametrize(
+        ("family", "expected"), [(2, "10.0.0.1"), (24, "::1"), (28, "::1"), (30, "::1")]
+    )
     @pytest.mark.parametrize("order", ["native", "swapped"])
     def test_bsd_loopback_both_byte_orders(
         self, dec: PacketDecoder, family: int, expected: str, order: str
@@ -306,7 +308,9 @@ class TestLinkLayer:
         assert dec.stats() == {"decoded": 0, "failed": 1}
 
     @pytest.mark.parametrize("ethertype", [0x88CC, 0x0842, 0x05DC, 0x0000, 0xFFFF])
-    def test_unknown_ethertype_is_a_counted_failure(self, dec: PacketDecoder, ethertype: int) -> None:
+    def test_unknown_ethertype_is_a_counted_failure(
+        self, dec: PacketDecoder, ethertype: int
+    ) -> None:
         assert one(dec, eth(b"\x45" + b"\x00" * 40, ethertype)) is None
         assert dec.failed == 1
 
@@ -318,7 +322,9 @@ class TestIpv4:
     @pytest.mark.parametrize("option_words", range(0, 11))
     def test_options_shift_transport_header(self, dec: PacketDecoder, option_words: int) -> None:
         options = b"\x01" * (4 * option_words)  # NOPs
-        event = one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 6, tcp(1234, 80 + option_words), options=options)))
+        event = one(
+            dec, eth(ipv4("10.0.0.1", "10.0.0.2", 6, tcp(1234, 80 + option_words), options=options))
+        )
         assert event is not None and event.src_port == 1234 and event.dst_port == 80 + option_words
 
     @pytest.mark.parametrize("ihl", [0, 1, 4])
@@ -334,7 +340,9 @@ class TestIpv4:
         event = one(dec, eth(packet))
         assert event is not None and event.dst_port == 8 and event.payload_length == 12
 
-    def test_total_length_smaller_than_capture_strips_ethernet_padding(self, dec: PacketDecoder) -> None:
+    def test_total_length_smaller_than_capture_strips_ethernet_padding(
+        self, dec: PacketDecoder
+    ) -> None:
         packet = ipv4("10.0.0.1", "10.0.0.2", 17, udp(7, 8, b"ab"))
         event = one(dec, eth(packet + b"\x00" * 18))  # padded to the 60-byte minimum
         assert event is not None and event.payload_length == 2
@@ -344,18 +352,30 @@ class TestIpv4:
         self, dec: PacketDecoder, total_length: int
     ) -> None:
         """TSO/GRO captures report total length 0; the packet must still decode."""
-        packet = ipv4("10.0.0.1", "10.0.0.2", 6, tcp(1, 2, payload=b"hi"), total_length=total_length)
+        packet = ipv4(
+            "10.0.0.1", "10.0.0.2", 6, tcp(1, 2, payload=b"hi"), total_length=total_length
+        )
         event = one(dec, eth(packet))
         assert event is not None and event.dst_port == 2 and event.payload_length == 2
 
     def test_first_fragment_keeps_ports(self, dec: PacketDecoder) -> None:
-        event = one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 17, udp(1000, 53, b"x" * 30), more_fragments=True)))
+        event = one(
+            dec,
+            eth(ipv4("10.0.0.1", "10.0.0.2", 17, udp(1000, 53, b"x" * 30), more_fragments=True)),
+        )
         assert event is not None and event.src_port == 1000 and "fragment" not in event.metadata
         info = layers.decode_ipv4(ipv4("10.0.0.1", "10.0.0.2", 17, b"x" * 8, more_fragments=True))
-        assert info is not None and info.is_fragment and info.more_fragments and info.fragment_offset == 0
+        assert (
+            info is not None
+            and info.is_fragment
+            and info.more_fragments
+            and info.fragment_offset == 0
+        )
 
     @pytest.mark.parametrize("more", [True, False])
-    def test_non_first_fragment_has_no_transport_fields(self, dec: PacketDecoder, more: bool) -> None:
+    def test_non_first_fragment_has_no_transport_fields(
+        self, dec: PacketDecoder, more: bool
+    ) -> None:
         body = tcp(1111, 2222)  # would be misread as ports if the offset were ignored
         event = one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 6, body, frag=185, more_fragments=more)))
         assert event is not None and event.protocol is Protocol.TCP
@@ -365,7 +385,12 @@ class TestIpv4:
     def test_header_fields(self) -> None:
         info = layers.decode_ipv4(ipv4("1.2.3.4", "5.6.7.8", 99, b"zz", ttl=7))
         assert info is not None
-        assert (info.version, info.ttl, info.protocol_number, info.identification) == (4, 7, 99, 0x1234)
+        assert (info.version, info.ttl, info.protocol_number, info.identification) == (
+            4,
+            7,
+            99,
+            0x1234,
+        )
         assert info.dscp == 10 and info.payload == b"zz" and info.total_length == 22
         # Traffic class 0x29 = DSCP 10 with an ECN bit set; DSCP must match IPv4's.
         v6 = layers.decode_ipv6(ipv6("::1", "::2", 17, udp(1, 2), traffic_class=0x29))
@@ -375,7 +400,9 @@ class TestIpv4:
         assert one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 17, udp(1, 2), version=6))) is None
 
     @pytest.mark.parametrize("proto", [0, 2, 47, 50, 89, 255])
-    def test_unknown_ip_protocol_is_kept_as_generic_ip(self, dec: PacketDecoder, proto: int) -> None:
+    def test_unknown_ip_protocol_is_kept_as_generic_ip(
+        self, dec: PacketDecoder, proto: int
+    ) -> None:
         event = one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", proto, b"\xde\xad\xbe\xef" * 5)))
         assert event is not None and event.protocol is Protocol.IPV4
         assert event.src_port is None and event.payload_length == 0 and event.tcp_flags is None
@@ -407,7 +434,9 @@ class TestIpv6:
     def test_non_first_fragment_has_no_transport_fields(self, dec: PacketDecoder) -> None:
         """Mirror of the IPv4 rule: data in a non-first fragment is not a header."""
         frag = struct.pack("!BBHI", 6, 0, (100 << 3) | 0, 0xABCD)
-        event = one(dec, eth(ipv6("2001:db8::1", "2001:db8::2", 44, frag + tcp(1111, 2222)), 0x86DD))
+        event = one(
+            dec, eth(ipv6("2001:db8::1", "2001:db8::2", 44, frag + tcp(1111, 2222)), 0x86DD)
+        )
         assert event is not None
         assert event.src_port is None and event.dst_port is None and event.tcp_flags is None
         assert event.metadata["fragment"] == {"offset": 800, "more": False}
@@ -456,11 +485,15 @@ class TestIpv6:
         assert event is not None and event.payload_length == 4
 
     def test_icmpv6_echo(self, dec: PacketDecoder) -> None:
-        event = one(dec, eth(ipv6("fe80::1", "fe80::2", 58, icmp(128, 0, b"\x12\x34\x00\x05")), 0x86DD))
+        event = one(
+            dec, eth(ipv6("fe80::1", "fe80::2", 58, icmp(128, 0, b"\x12\x34\x00\x05")), 0x86DD)
+        )
         assert event is not None and event.protocol is Protocol.ICMPV6
         assert event.metadata["icmp"]["identifier"] == 0x1234
         assert event.metadata["icmp"]["sequence"] == 5
-        neighbour = one(dec, eth(ipv6("fe80::1", "ff02::1", 58, icmp(135, 0, b"\x00" * 20)), 0x86DD))
+        neighbour = one(
+            dec, eth(ipv6("fe80::1", "ff02::1", 58, icmp(135, 0, b"\x00" * 20)), 0x86DD)
+        )
         assert neighbour is not None and neighbour.metadata["icmp"]["type"] == 135
         assert neighbour.metadata["icmp"]["identifier"] is None
 
@@ -477,11 +510,19 @@ class TestTcp:
 
     def test_options_and_payload(self, dec: PacketDecoder) -> None:
         options = b"\x02\x04\x05\xb4" + b"\x04\x02" + b"\x01" + b"\x03\x03\x07" + b"\x01\x01"
-        segment = tcp(1, 2, 0x18, options=options, payload=b"hello", seq=7, ack=9, window=512, urgent=3)
+        segment = tcp(
+            1, 2, 0x18, options=options, payload=b"hello", seq=7, ack=9, window=512, urgent=3
+        )
         info = layers.decode_tcp(segment)
         assert info is not None
         assert info.header_length == 20 + len(options) and info.options_raw == options
-        assert (info.seq, info.ack, info.window, info.urgent_pointer, info.payload) == (7, 9, 512, 3, b"hello")
+        assert (info.seq, info.ack, info.window, info.urgent_pointer, info.payload) == (
+            7,
+            9,
+            512,
+            3,
+            b"hello",
+        )
         event = one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 6, segment)))
         assert event is not None and event.payload_length == 5
 
@@ -489,7 +530,10 @@ class TestTcp:
     def test_data_offset_below_minimum_is_a_counted_failure(
         self, dec: PacketDecoder, data_offset: int
     ) -> None:
-        assert one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 6, tcp(1, 2, data_offset=data_offset)))) is None
+        assert (
+            one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 6, tcp(1, 2, data_offset=data_offset))))
+            is None
+        )
         assert dec.stats() == {"decoded": 0, "failed": 1}
 
     def test_data_offset_beyond_capture_is_clamped(self, dec: PacketDecoder) -> None:
@@ -511,7 +555,13 @@ class TestUdpIcmpArp:
 
     @pytest.mark.parametrize(
         ("icmp_type", "code", "echo_request", "unreachable", "has_id"),
-        [(8, 0, True, False, True), (0, 0, False, False, True), (3, 3, False, True, False), (11, 0, False, False, False), (13, 0, False, False, True)],
+        [
+            (8, 0, True, False, True),
+            (0, 0, False, False, True),
+            (3, 3, False, True, False),
+            (11, 0, False, False, False),
+            (13, 0, False, False, True),
+        ],
     )
     def test_icmp_types(
         self,
@@ -522,7 +572,17 @@ class TestUdpIcmpArp:
         unreachable: bool,
         has_id: bool,
     ) -> None:
-        event = one(dec, eth(ipv4("10.0.0.1", "10.0.0.2", 1, icmp(icmp_type, code, b"\x00\x07\x00\x09" + b"p" * 16))))
+        event = one(
+            dec,
+            eth(
+                ipv4(
+                    "10.0.0.1",
+                    "10.0.0.2",
+                    1,
+                    icmp(icmp_type, code, b"\x00\x07\x00\x09" + b"p" * 16),
+                )
+            ),
+        )
         assert event is not None and event.protocol is Protocol.ICMP
         meta = event.metadata["icmp"]
         assert (meta["type"], meta["code"]) == (icmp_type, code)
@@ -557,7 +617,9 @@ class TestUdpIcmpArp:
 
 class TestDns:
     def test_query_via_decoder(self, dec: PacketDecoder) -> None:
-        message = dns_header() + dns_name("x7f2k9qp3mzr8v1bq4w6.Example.com") + struct.pack("!HH", 16, 1)
+        message = (
+            dns_header() + dns_name("x7f2k9qp3mzr8v1bq4w6.Example.com") + struct.pack("!HH", 16, 1)
+        )
         event = one(dec, eth(ipv4("10.0.0.5", "10.0.0.1", 17, udp(40000, 53, message))))
         assert event is not None
         dns = event.metadata["dns"]
@@ -638,7 +700,13 @@ class TestDns:
 
     @pytest.mark.parametrize("label_type", [0x40, 0x80])
     def test_reserved_label_types_do_not_produce_oversized_labels(self, label_type: int) -> None:
-        payload = dns_header() + bytes([label_type | 0x05]) + b"z" * 200 + b"\x00" + struct.pack("!HH", 1, 1)
+        payload = (
+            dns_header()
+            + bytes([label_type | 0x05])
+            + b"z" * 200
+            + b"\x00"
+            + struct.pack("!HH", 1, 1)
+        )
         info = parse_dns(payload)
         assert info is not None and info.max_label_length <= 63
 
@@ -674,7 +742,9 @@ class TestHttp:
             b"POST /api/login?next=/ HTTP/1.1\r\nHost: portal.example\r\n"
             b"User-Agent: curl/8.0\r\nAuthorization: Bearer s3cr3t\r\n\r\n{}"
         )
-        event = one(dec, eth(ipv4("10.0.0.5", "10.0.0.80", 6, tcp(50000, 8080, 0x18, payload=request))))
+        event = one(
+            dec, eth(ipv4("10.0.0.5", "10.0.0.80", 6, tcp(50000, 8080, 0x18, payload=request)))
+        )
         assert event is not None
         assert event.metadata["http"] == {
             "is_request": True,
@@ -689,13 +759,20 @@ class TestHttp:
 
     def test_response_metadata(self, dec: PacketDecoder) -> None:
         response = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
-        event = one(dec, eth(ipv4("10.0.0.80", "10.0.0.5", 6, tcp(80, 50000, 0x18, payload=response))))
+        event = one(
+            dec, eth(ipv4("10.0.0.80", "10.0.0.5", 6, tcp(80, 50000, 0x18, payload=response)))
+        )
         assert event is not None
-        assert event.metadata["http"]["status_code"] == 503 and not event.metadata["http"]["is_request"]
+        assert (
+            event.metadata["http"]["status_code"] == 503
+            and not event.metadata["http"]["is_request"]
+        )
 
     def test_http_on_unregistered_port_is_not_parsed(self, dec: PacketDecoder) -> None:
         request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
-        event = one(dec, eth(ipv4("10.0.0.5", "10.0.0.80", 6, tcp(50000, 9999, 0x18, payload=request))))
+        event = one(
+            dec, eth(ipv4("10.0.0.5", "10.0.0.80", 6, tcp(50000, 9999, 0x18, payload=request)))
+        )
         assert event is not None and "http" not in event.metadata
 
     @pytest.mark.parametrize(
@@ -713,7 +790,9 @@ class TestHttp:
 
     def test_header_and_path_caps(self) -> None:
         headers = b"".join(b"X-Filler-%d: v\r\n" % i for i in range(100))
-        request = b"GET /" + b"a" * 2000 + b" HTTP/1.1\r\n" + headers + b"Host: late.example\r\n\r\n"
+        request = (
+            b"GET /" + b"a" * 2000 + b" HTTP/1.1\r\n" + headers + b"Host: late.example\r\n\r\n"
+        )
         info = parse_http(request)
         assert info is not None and info.path is not None and len(info.path) == 512
         assert info.host is None  # beyond the 40-header scan cap
@@ -777,13 +856,54 @@ class TestTls:
 def _valid_frames() -> list[tuple[bytes, int]]:
     dns = dns_header() + dns_name("www.example.com") + struct.pack("!HH", 1, 1)
     return [
-        (eth(ipv4("10.0.0.1", "10.0.0.2", 6, tcp(1, 80, 0x18, options=b"\x01" * 4, payload=b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"), options=b"\x01" * 8)), LinkType.ETHERNET),
-        (eth(ipv4("10.0.0.1", "10.0.0.2", 17, udp(4000, 53, dns)), vlans=(10, 20)), LinkType.ETHERNET),
+        (
+            eth(
+                ipv4(
+                    "10.0.0.1",
+                    "10.0.0.2",
+                    6,
+                    tcp(
+                        1,
+                        80,
+                        0x18,
+                        options=b"\x01" * 4,
+                        payload=b"GET / HTTP/1.1\r\nHost: a\r\n\r\n",
+                    ),
+                    options=b"\x01" * 8,
+                )
+            ),
+            LinkType.ETHERNET,
+        ),
+        (
+            eth(ipv4("10.0.0.1", "10.0.0.2", 17, udp(4000, 53, dns)), vlans=(10, 20)),
+            LinkType.ETHERNET,
+        ),
         (eth(ipv4("10.0.0.1", "10.0.0.2", 1, icmp(8))), LinkType.ETHERNET),
         (eth(arp(1, "10.0.0.1", "10.0.0.2"), 0x0806), LinkType.ETHERNET),
-        (eth(ipv6("2001:db8::1", "2001:db8::2", 0, ext_header(44, 0) + struct.pack("!BBHI", 6, 0, 1, 9) + tcp(5, 443, 0x18, payload=client_hello())), 0x86DD), LinkType.ETHERNET),
-        (struct.pack("!HHH8sH", 0, 1, 6, SRC_MAC + b"\x00\x00", 0x0800) + ipv4("10.0.0.1", "10.0.0.2", 17, udp(1, 2)), LinkType.LINUX_SLL),
-        (struct.pack("!HHIHBB8s", 0x86DD, 0, 1, 1, 0, 6, SRC_MAC + b"\x00\x00") + ipv6("::1", "::2", 58, icmp(128)), LinkType.LINUX_SLL2),
+        (
+            eth(
+                ipv6(
+                    "2001:db8::1",
+                    "2001:db8::2",
+                    0,
+                    ext_header(44, 0)
+                    + struct.pack("!BBHI", 6, 0, 1, 9)
+                    + tcp(5, 443, 0x18, payload=client_hello()),
+                ),
+                0x86DD,
+            ),
+            LinkType.ETHERNET,
+        ),
+        (
+            struct.pack("!HHH8sH", 0, 1, 6, SRC_MAC + b"\x00\x00", 0x0800)
+            + ipv4("10.0.0.1", "10.0.0.2", 17, udp(1, 2)),
+            LinkType.LINUX_SLL,
+        ),
+        (
+            struct.pack("!HHIHBB8s", 0x86DD, 0, 1, 1, 0, 6, SRC_MAC + b"\x00\x00")
+            + ipv6("::1", "::2", 58, icmp(128)),
+            LinkType.LINUX_SLL2,
+        ),
         (struct.pack("=I", 2) + ipv4("127.0.0.1", "127.0.0.1", 6, tcp(1, 2)), LinkType.NULL),
         (ipv4("10.0.0.1", "10.0.0.2", 17, udp(53, 53, dns)), LinkType.RAW),
     ]
@@ -791,7 +911,17 @@ def _valid_frames() -> list[tuple[bytes, int]]:
 
 #: Header boundaries (in bytes from the start of the frame) below which each of the
 #: frames above cannot yield an event: link + network + transport minimums.
-_MIN_DECODABLE = [14 + 28 + 20, 22 + 20 + 8, 14 + 20 + 4, 14 + 28, 14 + 40 + 8 + 8 + 20, 16 + 20 + 8, 20 + 40 + 4, 4 + 20 + 20, 20 + 8]
+_MIN_DECODABLE = [
+    14 + 28 + 20,
+    22 + 20 + 8,
+    14 + 20 + 4,
+    14 + 28,
+    14 + 40 + 8 + 8 + 20,
+    16 + 20 + 8,
+    20 + 40 + 4,
+    4 + 20 + 20,
+    20 + 8,
+]
 
 
 class TestRobustness:
@@ -816,7 +946,15 @@ class TestRobustness:
     def test_seeded_random_bytes_never_raise(self) -> None:
         rng = random.Random(0x5E)
         decoder = PacketDecoder()
-        links = [LinkType.ETHERNET, LinkType.RAW, LinkType.LINUX_SLL, LinkType.LINUX_SLL2, LinkType.NULL, LinkType.IPV6, 999]
+        links = [
+            LinkType.ETHERNET,
+            LinkType.RAW,
+            LinkType.LINUX_SLL,
+            LinkType.LINUX_SLL2,
+            LinkType.NULL,
+            LinkType.IPV6,
+            999,
+        ]
         started = time.perf_counter()
         count = 4000
         for _ in range(count):
@@ -824,7 +962,12 @@ class TestRobustness:
             data = rng.randbytes(size)
             if size >= 14 and rng.random() < 0.5:
                 # Steer half the frames past the link layer into IPv4/IPv6 decoding.
-                data = data[:12] + rng.choice([b"\x08\x00", b"\x86\xdd", b"\x08\x06", b"\x81\x00"]) + bytes([rng.choice([0x45, 0x4F, 0x60])]) + data[15:]
+                data = (
+                    data[:12]
+                    + rng.choice([b"\x08\x00", b"\x86\xdd", b"\x08\x06", b"\x81\x00"])
+                    + bytes([rng.choice([0x45, 0x4F, 0x60])])
+                    + data[15:]
+                )
             decoder.decode(data, TS, rng.choice(links))
         assert decoder.decoded + decoder.failed == count
         assert time.perf_counter() - started < 10
@@ -847,7 +990,12 @@ class TestRobustness:
 
     def test_application_parsers_fuzz(self) -> None:
         rng = random.Random(77)
-        seeds = [client_hello(), server_hello(), dns_header() + dns_name("a.b.c") + b"\x00\x01\x00\x01", b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"]
+        seeds = [
+            client_hello(),
+            server_hello(),
+            dns_header() + dns_name("a.b.c") + b"\x00\x01\x00\x01",
+            b"GET / HTTP/1.1\r\nHost: a\r\n\r\n",
+        ]
         for _ in range(3000):
             base = bytearray(rng.choice(seeds))
             for _ in range(rng.randint(1, 6)):

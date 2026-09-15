@@ -17,7 +17,7 @@ operator to type it; the API refuses the change without it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -97,6 +97,9 @@ class ConfigService:
         self.database = database
         self.audit = audit
         self.bus = bus
+        #: Reports whether the configured firewall can actually be changed. Set by the
+        #: platform; enabling prevention is refused while it reports a failure.
+        self.firewall_probe: Callable[[], Awaitable[dict[str, object]]] | None = None
         self.listeners: list[Callable[[str, set[str]], None]] = []
         """Called with (section, changed fields) after a change is applied. Components
         that pre-parse settings at construction (allowlists, window sizes) refresh here."""
@@ -175,6 +178,17 @@ class ConfigService:
                 f"this change allows SentinelX to modify this host's firewall; "
                 f"resend with confirmation '{PREVENTION_CONFIRMATION}'"
             )
+        if enabling and self.firewall_probe is not None:
+            # Do not announce PREVENTION ACTIVE for a firewall that cannot be changed
+            # (missing privileges, missing binary): every block would fail.
+            health = await self.firewall_probe()
+            if not health.get("ok"):
+                detail = health.get("error") or health.get("reason") or health.get("state")
+                raise ConfigurationError(
+                    f"the {health.get('backend', 'configured')} firewall cannot be used on this "
+                    f"host ({detail}); prevention was not enabled. Run 'sentinelx capabilities' "
+                    "for what is missing"
+                )
         try:
             applied = self._apply(section, changes, allow_prevention=enabling)
         except ValidationError as exc:

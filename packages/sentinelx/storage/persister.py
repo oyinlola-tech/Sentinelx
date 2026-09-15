@@ -129,11 +129,12 @@ class EventPersister:
         self._minute_stats: dict[str, Any] | None = None
         self._minute_start_frames: int = 0
         self._minute_detections = 0
+        self._in_flight = 0
 
     @property
     def pending(self) -> int:
-        """Events accepted from the bus and not yet written."""
-        return len(self._pending)
+        """Events accepted from the bus and not yet committed (including a write in progress)."""
+        return len(self._pending) + self._in_flight
 
     @property
     def retrying(self) -> bool:
@@ -223,8 +224,14 @@ class EventPersister:
         async with self._lock:
             batch_size = self.settings.storage.batch_size
             while self._pending:
-                batch = [self._pending.popleft() for _ in range(min(batch_size, len(self._pending)))]
-                unwritten = await self._write_isolating(batch)
+                batch = [
+                    self._pending.popleft() for _ in range(min(batch_size, len(self._pending)))
+                ]
+                self._in_flight = len(batch)
+                try:
+                    unwritten = await self._write_isolating(batch)
+                finally:
+                    self._in_flight = 0
                 if unwritten:
                     self._pending.extendleft(reversed(unwritten))
                     self._backoff = min(max(self._backoff * 2, 0.5), self.max_backoff_seconds)
@@ -306,6 +313,15 @@ class EventPersister:
                 if event.type is EventType.DETECTION_CREATED
             ]
             seen_detections = await detections.existing_ids(detection_ids)
+            # A retry after a commit whose acknowledgement was lost must not fail on
+            # decisions that were stored: skip them, as for detections.
+            seen_decisions = await actions.existing_decision_ids(
+                [
+                    str(event.payload["decision_id"])
+                    for event in batch
+                    if event.type is EventType.RESPONSE_DECIDED
+                ]
+            )
             for event in batch:
                 if event.type is EventType.DETECTION_CREATED:
                     payload = event.payload
@@ -324,6 +340,9 @@ class EventPersister:
                         payload["incident_id"],
                     )
                 elif event.type is EventType.RESPONSE_DECIDED:
+                    if payload["decision_id"] in seen_decisions:
+                        continue
+                    seen_decisions.add(payload["decision_id"])
                     await actions.add(self._action(payload, sensor))
                 elif event.type is EventType.IP_BLOCKED:
                     expires = payload.get("expires_at")

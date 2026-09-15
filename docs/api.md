@@ -102,7 +102,9 @@ WebSocket on one origin.
   (`HS256` by default; `HS384` and `HS512` are accepted). Claims: `sub` (user id),
   `iss` (`api.jwt_issuer`, default `sentinelx`), `iat`, `exp`, `jti`, `type`
   (`access`), `username`, `role`, `pwd_change`. Verification pins the configured
-  algorithm and requires `exp`, `iat`, `sub`, `jti` and `type`.
+  algorithm and requires `exp`, `iat`, `sub`, `jti` and `type`. `sub` must be ASCII
+  decimal digits naming a user id from 1 to 2^31-1; any other subject is rejected as an
+  invalid token.
 - Access token lifetime: `api.access_token_ttl_seconds`, default **900 seconds**
   (15 minutes), allowed range 60 to 86400. The absolute expiry is returned as
   `expires_at`.
@@ -113,15 +115,16 @@ WebSocket on one origin.
   expiry.
 - The access token used to sign out or change a password is rejected afterwards with
   `401 {"detail": "token revoked"}`. Sign-out, a password change and an administrative
-  password reset also record a per-user cut-off (cache key `sessions-ended:{user_id}`,
-  kept for one access-token lifetime): every access token for that user issued before
-  that second is rejected with `401 {"detail": "session ended"}`, in every session. The
-  cut-off has one-second resolution, so a token issued in the same second stays valid;
-  this is what lets the caller of a password change keep the new session it receives.
-  Revocations and cut-offs are kept in Redis. When Redis is unavailable they are kept in
-  process memory, so they apply only to that process (a `sentinelx users
-  reset-password` run in another process then does not end the server's access tokens)
-  and are lost on restart.
+  password reset also record a per-user cut-off in the database (`users.sessions_ended_at`):
+  every access token for that user issued before that second is rejected with
+  `401 {"detail": "session ended"}`, in every session. The cut-off is checked on every
+  request, so it survives Redis outages and restarts and applies to every process,
+  including a `sentinelx users reset-password` run from the CLI. It is stored in whole
+  seconds, so a token issued in the same second stays valid; this is what lets the
+  caller of a password change keep the new session it receives.
+  Revocations of individual access tokens are kept in Redis. When Redis is unavailable
+  they are kept in process memory, so they apply only to that process until Redis
+  returns; on reconnect they are written back to Redis.
 - The JWT secret must be at least 32 characters. Outside production an unset secret is
   replaced by a random per-process value, so tokens do not survive a restart.
 
@@ -129,7 +132,8 @@ WebSocket on one origin.
 
 `POST /api/v1/auth/refresh` accepts the refresh token from the `sx_refresh` cookie
 or, if there is no cookie, from a JSON body `{"refresh_token": "..."}`. With neither it
-returns `401 {"detail": "refresh token required"}`.
+returns `401 {"detail": "refresh token required"}`. A body sent as `application/json`
+that is not valid JSON returns `422 {"detail": "request body is not valid JSON"}`.
 
 - Each refresh token id is stored server-side. A refresh claims the presented token
   with a single conditional `UPDATE` (only a token that is not yet revoked can be
@@ -281,9 +285,9 @@ route modules in `packages/sentinelx/api/routes/`.
 | POST | `/auth/ws-ticket` | Any | Issue a single-use, 30-second WebSocket ticket. |
 | GET | `/users` | admin | List users. |
 | POST | `/users` | admin | Create a user: `{"username", "password", "role"}` (`role` defaults to `viewer`). 201. |
-| PATCH | `/users/{user_id}` | admin | Change `role` and/or `is_active`. Deactivation revokes the user's refresh tokens. You cannot demote or deactivate yourself, or demote the last active administrator. |
+| PATCH | `/users/{user_id}` | admin | Change `role` and/or `is_active`. Deactivation revokes the user's refresh tokens. You cannot demote or deactivate yourself, or demote or deactivate the last active administrator, even with concurrent requests (422 `at least one active administrator must remain`, or `cannot demote the last administrator`). |
 | POST | `/users/{user_id}/reset-password` | admin | `{"new_password"}`. Forces a change at next login, clears the account lock, deletes unused refresh tokens and ends every access token issued before now. 204. |
-| DELETE | `/users/{user_id}` | admin | Delete a user. Not yourself, not the last active administrator. 204. |
+| DELETE | `/users/{user_id}` | admin | Delete a user. Not yourself, not the last active administrator, even with concurrent requests (422). 204. |
 
 `user_id` must be an integer from 1 to 2,147,483,647; anything else is a 422.
 
@@ -292,7 +296,7 @@ route modules in `packages/sentinelx/api/routes/`.
 | Method | Path | Role | Purpose |
 |---|---|---|---|
 | GET | `/system/health` | Public | Liveness probe: `{"status": "ok" \| "degraded" \| "error", "version"}`. Not rate limited. |
-| GET | `/system/status` | viewer | Full health report: components (database, Redis, firewall, event bus, persister, sensor, rules), process metrics, pipeline status, safety posture. |
+| GET | `/system/status` | viewer | Full health report: components (database, Redis, firewall, event bus, persister, sensor, rules), process metrics, pipeline status, safety posture. `components.persister` has `ok` (false only while writes are failing and being retried), `written`, `pending` (events buffered or being written), `retrying`, `failed_batches`, `rejected` (events the database refused while healthy) and `dropped` (events discarded when the buffer overflowed). |
 | GET | `/system/capabilities` | viewer | What this host can do: detection engine, PCAP replay, interface enumeration, packet capture, live capture, firewall control, automatic blocking and privileged access, each with `available`, `status`, `detail` and `remedy`, plus per-backend firewall availability. Cached for 30 seconds. The same report as `sentinelx capabilities`. |
 | GET | `/sensors` | viewer | Sensor status (a single-element list). |
 | GET | `/interfaces` | viewer | Network interfaces available for capture. |
@@ -307,11 +311,11 @@ route modules in `packages/sentinelx/api/routes/`.
 | Method | Path | Role | Purpose |
 |---|---|---|---|
 | GET | `/detections` | viewer | Detections, paginated and filtered. |
-| GET | `/detections/{detection_id}` | viewer | One detection with its evidence, risk breakdown and response actions (including alerts and replay decisions). |
+| GET | `/detections/{detection_id}` | viewer | One detection with its evidence, risk breakdown and stored response actions (including replay decisions). |
 | PATCH | `/detections/{detection_id}` | analyst | Triage: `{"status": "new" \| "acknowledged" \| "false_positive" \| "resolved"}`. |
 | GET | `/incidents` | viewer | Correlated incidents, paginated and filtered. |
 | GET | `/incidents/{incident_id}` | viewer | One incident with its detections and actions. |
-| PATCH | `/incidents/{incident_id}` | analyst | Any of `status`, `assigned_to` (up to 64 characters), `notes` (up to 10,000 characters). An empty body is a 422. Publishes `incident.updated` with the incident and `updated_by`, so other open dashboards refresh. |
+| PATCH | `/incidents/{incident_id}` | analyst | Any of `status`, `assigned_to` (up to 64 characters), `notes` (up to 10,000 characters). An empty body is a 422. Publishes `incident.updated` with the incident and `updated_by`, so other open dashboards refresh. Setting `status` to `resolved` or `false_positive` also closes the incident in the live correlation engine: new activity from the source opens a new incident, and the closed one no longer drives automatic responses. |
 | GET | `/alerts` | viewer | Untriaged detections at or above `response.webhook_min_risk` in the last `hours` (default 24, max 720), plus pending approvals. |
 | GET | `/threats` | viewer | Detections grouped by source address. Query: `hours` (1 to 720, default 24), `limit` (1 to 500, default 100). |
 
@@ -321,8 +325,8 @@ route modules in `packages/sentinelx/api/routes/`.
 |---|---|---|---|
 | GET | `/firewall` | viewer | Firewall overview: response engine status, backend health, active blocks, the last 200 block records, the last 200 response actions (alerts and replay decisions excluded) and pending approvals. |
 | GET | `/firewall/blocked` | viewer | Currently blocked addresses (refreshed from the backend). |
-| GET | `/firewall/actions` | viewer | Response action history, paginated. Filters: `target`, `outcome` (repeatable), `include_alerts` (default `false`), `include_replays` (default `false`). |
-| POST | `/firewall/check` | analyst | `{"target"}`: preview whether the safety guard would permit acting on it. |
+| GET | `/firewall/actions` | viewer | Response action history, paginated. Filters: `target`, `outcome` (repeatable), `include_alerts` (default `false`; current versions store no alert rows, see below), `include_replays` (default `false`). |
+| POST | `/firewall/check` | analyst | `{"target"}`: preview whether the safety guard would permit acting on it. The dashboard's block dialog calls it as you type and keeps blocking disabled until it succeeds; if the check fails (for example rate limited or API unreachable) the dialog says so and offers **Check again**. |
 | POST | `/firewall/block` | admin | Block or rate limit an address or prefix. Honours `DRY_RUN` and the safety guard. |
 | POST | `/firewall/unblock` | admin | `{"target", "reason"}`: remove a block. |
 | GET | `/firewall/approvals` | viewer | Actions waiting for approval (`RESPONSE_MODE=manual_approval`), excluding requests older than 24 hours. |
@@ -332,9 +336,14 @@ route modules in `packages/sentinelx/api/routes/`.
 | PUT | `/firewall/allowlist` | admin | `{"networks": [...]}` (up to 1,000 entries): replace the never-block allowlist. Loopback is always retained. |
 
 By default the action history lists only decisions that changed, or could have
-changed, the firewall on the live sensor. Alerts (one per detection) and decisions
-made during PCAP replays are stored too, but are returned only with
-`include_alerts=true` or `include_replays=true`.
+changed, the firewall on the live sensor. Decisions made during PCAP replays are stored
+too, and are returned with `include_replays=true`.
+
+`alert` decisions are never published or stored: the detection itself is the alert.
+`include_alerts=true` therefore returns no alert rows on current versions, only rows
+stored by older versions, if any. For alerting, use `GET /api/v1/alerts` (untriaged
+high-risk detections and pending approvals) or configure a webhook
+(`RESPONSE__WEBHOOK_URL`).
 
 `POST /firewall/block` body:
 
@@ -492,8 +501,10 @@ Error bodies are JSON with a `detail` field. Handlers are installed in
 | 404 | Capture interface does not exist | `{"detail": "...", "available": [...]}` |
 | 409 | Operation conflicts with current state (capture errors, missing OS permission, replay not running, duplicate username) | `{"detail": "..."}` |
 | 413 | Upload `Content-Length` over the limit, or a streamed upload body that exceeds the limit or the space left in the upload quota | `{"detail": "upload exceeds the <N> MB limit"}` or `{"detail": "upload exceeds the <N> MB that can be accepted"}` |
+| 413 | Any other request body over 1 MiB (1,048,576 bytes), by declared `Content-Length` (or a non-numeric one) or as the body streams in. The capture upload is exempt and has its own limits | `{"detail": "request body too large"}` |
 | 415 | Upload with an unsupported `Content-Type` | `{"detail": "send the capture as application/octet-stream"}` |
 | 422 | Request validation (FastAPI) | `{"detail": [{"type", "loc", "msg", "input", ...}]}` |
+| 422 | `POST /auth/refresh` with a JSON content type and a body that is not valid JSON | `{"detail": "request body is not valid JSON"}` |
 | 422 | Invalid rule | `{"detail": "rule is invalid", "problems": [...]}` |
 | 422 | Safety guard refusal raised by a service | `{"detail": "refused by safety guard: <reason>", "target": "..."}` |
 | 422 | Configuration or PCAP error (including an upload that is not a pcap or pcapng capture, and invalid scenario parameters), password policy, business rule | `{"detail": "..."}` |
@@ -501,7 +512,7 @@ Error bodies are JSON with a `detail` field. Handlers are installed in
 | 429 | API or login rate limit | `{"detail": "rate limit exceeded"}` or `{"detail": "too many login attempts; try again later"}` + `Retry-After` |
 | 502 | Firewall command failed | `{"detail": "firewall operation failed: ..."}` |
 | 507 | Upload refused because the upload area already holds `CAPTURE__UPLOAD_QUOTA_MB` or more | `{"detail": "the upload area is full (...); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB"}` |
-| 503 | Database unavailable | `{"detail": "storage unavailable", "error_id": "<12 hex chars>"}` |
+| 503 | Database unavailable: at startup, or during a request (a lost or refused connection, or an exhausted connection pool: SQLAlchemy `OperationalError`, `InterfaceError`, `DisconnectionError` or pool `TimeoutError`) | `{"detail": "storage unavailable", "error_id": "<12 hex chars>"}` |
 | 500 | Unexpected error | `{"detail": "internal error", "error_id": "<12 hex chars>"}` |
 
 For 500 and 503 the exception detail is written to the server log under the same
@@ -522,14 +533,17 @@ accept `limit` and `offset` and return:
 ```
 
 `total` is the number of matching rows before `limit`/`offset`. `offset` is 0 to
-1,000,000 on every paginated endpoint; a larger value is a 422.
+1,000,000 on every paginated endpoint; a larger value is a 422. Every ordering has a
+unique tie-breaker (the detection, incident or row id), so rows that share a timestamp
+or risk score, common in bursts and replays, are never repeated or skipped between
+pages.
 
 | Endpoint | `limit` default / max | Filters |
 |---|---|---|
 | `GET /detections` | 50 / 500 | `severity`, `detector` (max 50), `category`, `status` (all repeatable); `source_ip`, `destination_ip`, `protocol`, `incident_id`, `replay_id`, `since`, `until`, `min_risk` (0 to 100), `q` (free text over title, description, source IP and detector, max 200 chars), `order` = `newest` (default) \| `oldest` \| `risk` |
 | `GET /incidents` | 50 / 500 | `status`, `severity` (repeatable); `min_risk`, `replay_id`, `since` |
 | `GET /audit` | 100 / 500 | `actor`, `action`, `target`, `since` |
-| `GET /firewall/actions` | 100 / 500 | `target`, `outcome` (repeatable, max 10), `include_alerts`, `include_replays` |
+| `GET /firewall/actions` | 100 / 500 | `target`, `outcome` (repeatable, max 10), `include_alerts` (only alert rows stored by older versions), `include_replays` |
 
 - Repeatable parameters are passed multiple times: `?severity=high&severity=critical`.
 - `severity` values: `info`, `low`, `medium`, `high`, `critical`.
@@ -549,7 +563,10 @@ accept `limit` and `offset` and return:
 ## Rate limiting and client addresses
 
 `RateLimitMiddleware` (`api/security.py`) applies a sliding-window limit per client
-address to every path under `/api/` except `/api/v1/system/health`.
+address to every path under `/api/` except `/api/v1/system/health`. When `API__ROOT_PATH`
+is set, the prefix is removed before this and the other path checks (security headers,
+the forced-password-change exemptions), so a request that arrives with the prefix is
+treated exactly like one without it.
 
 | Setting | Env var | Default |
 |---|---|---|
@@ -647,7 +664,7 @@ see the code instead of a bare HTTP 403. Nothing but the close frame is sent.
 |---|---|---|
 | 4401 | Ticket missing, invalid, expired or already used; or, at a periodic account check, the account was deactivated or deleted | Request a new ticket and reconnect (a deactivated account will be refused). |
 | 4403 | At a periodic account check, the user's role differs from the role the stream was opened with | Request a new ticket and reconnect; the subscription is recomputed for the new role. |
-| 1008 | Origin not allowed (`origin not allowed`), or an unknown event type in `types` (`unknown event type`) | Fix the configuration or request; do not retry blindly. |
+| 1008 | Origin not allowed (`origin not allowed`), an unknown event type in `types` (`unknown event type`), or a `types` list containing only types the role may not receive (`no permitted event types`) | Fix the configuration or request; do not retry blindly. |
 | 4429 | The user already holds 10 open streams in this API process | Close unused streams, then back off before retrying. |
 | 1000 | Normal close | |
 
@@ -658,8 +675,9 @@ A client whose single send stalls for 10 seconds is disconnected.
 `types` is an optional comma-separated list of event types (at most the first 32
 are considered). An unknown type closes the connection with 1008. Without `types` the
 client receives every type its role allows. Viewers never receive `audit.event` or
-`config.changed`; requesting them as a viewer silently drops them from the
-subscription.
+`config.changed`; requesting them as a viewer alongside permitted types silently drops
+them from the subscription, and requesting only them closes the connection with 1008.
+Events of a type that is not in the subscription are never sent.
 
 ### Messages
 

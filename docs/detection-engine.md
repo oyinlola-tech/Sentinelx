@@ -63,7 +63,7 @@ The scan structures are the exception. Distinct TCP destination ports and hosts 
 
 - **Packets sent by a source** are folded into that source's profile: packet size, destination host, TCP destination port, bare SYNs (which also count as connection attempts), UDP destination ports, ICMP packets, DNS queries and HTTP requests.
 - **Replies update the original sender.** When a SYN-ACK or RST is seen, it is recorded in the profile of the packet's destination (the host that sent the SYN), as `syn_ack_received`, or as `rst_received` and `refused_connections`. This is how the extractor knows a source's probes are being refused.
-- **Short sessions are recorded at teardown.** A flow is short-lived when its handshake completed (SYN, SYN-ACK and ACK all seen), a FIN or RST has been seen, and its duration is under 5 seconds. On the first FIN or RST of such a flow, the responder port is recorded in the initiator's `short_sessions`, once per flow. This is the brute-force signal.
+- **Short sessions are recorded at teardown.** A flow is short-lived when its handshake completed (SYN, SYN-ACK and ACK all seen; a SYN-ACK timestamped before its SYN, as happens when captures from two taps are merged, still counts), a FIN or RST has been seen, and its duration is under 5 seconds. On the first FIN or RST of such a flow, the responder port is recorded in the initiator's `short_sessions`, once per flow. This is the brute-force signal.
 - **UDP service replies are not counted as scanning.** A UDP packet from a port below 1024 to a port at or above 1024 is treated as a server reply and is not added to `udp_ports`; otherwise every DNS resolver would look like a UDP scanner.
 - **DNS queries are classified once.** A query is added to `dns_suspicious` (keyed by its parent domain, the last two labels, or three when the second-to-last label has three characters or fewer) when its longest label is at least `dns_long_label_length`, or when its leftmost label is at least 20 characters and its entropy is at least `dns_high_entropy_threshold`.
 
@@ -80,6 +80,9 @@ An IDS is a resource-exhaustion target, so state is capped:
 - At most `max_tracked_sources` profiles (default 50,000) and four times that many flows. When a new source arrives at the cap, profiles idle for longer than W are evicted first, then the least recently seen 10%. Flows are evicted the same way, using a 120-second idle limit.
 - Every 2,048 packets a sweep removes flows idle for 120 seconds and profiles idle for 2W.
 - Evictions are counted (`evicted_sources`, `evicted_flows` in `FeatureExtractor.state()`), so a quiet network can be told apart from one that is shedding state.
+- Memory is roughly 16 KB per tracked source: 50,000 sources with 200,000 connections were measured at 823 MB. Size the sensor for `max_tracked_sources`, or lower it on a small host.
+
+If packet time jumps backwards by more than W (a clock correction on the sensor, or captures concatenated out of order), all profiles and flows are discarded and the reset is counted in `clock_resets` in `FeatureExtractor.state()`. Windows only move forward, so after such a step nothing would expire until packet time caught up, and ordinary sources would accumulate events indefinitely. Reordering within W is unaffected.
 
 Changing any window setting at runtime rebuilds the extractor, which discards all traffic state.
 
@@ -122,7 +125,7 @@ This allowlist is separate from `RESPONSE__ALLOWLIST_NETWORKS` (addresses that m
 
 ### 4. Cooldown and escalation
 
-A port scan is thousands of packets, and a threshold detector would otherwise fire on every packet past its threshold. The engine remembers, for each `(detection.detector, detection.source_ip)` pair, the packet time, severity and confidence of the last detection it let through. A new detection for the same pair within `DETECTION__DETECTION_COOLDOWN_SECONDS` (default 60) of that time is suppressed and counted in `suppressed_cooldown` and `sentinelx_detections_suppressed_total{reason="cooldown"}`, unless it escalates.
+A port scan is thousands of packets, and a threshold detector would otherwise fire on every packet past its threshold. The engine remembers, for each `(detection.detector, detection.source_ip)` pair, the packet time, severity and confidence of the last detection it let through. A new detection for the same pair within `DETECTION__DETECTION_COOLDOWN_SECONDS` (default 60) of that time, in either direction, is suppressed and counted in `suppressed_cooldown` and `sentinelx_detections_suppressed_total{reason="cooldown"}`, unless it escalates.
 
 A repeat escalates, and is emitted despite the cooldown, when either:
 
@@ -133,7 +136,7 @@ Escalations are counted in `escalations`. Every emitted detection, escalated or 
 
 The reason for escalation: detectors fire as soon as a threshold is crossed, when evidence is thinnest. Without it, the record of a scan would stay frozen at "20 ports, confidence 0.6" while the scan grew to thousands of ports. Because confidence saturates below 1.0 and severity has five levels, each pair can escalate only a few times per cooldown. The test `test_cooldown_collapses_repeats_but_allows_escalation` in `tests/detection/test_detectors.py` pins this: a 1,200-packet ICMP flood produces between one and four `icmp_flood` detections, with more than 500 suppressed.
 
-Behaviour that persists after the cooldown has elapsed is reported again. Cooldown state is pruned of expired entries once it exceeds 100,000 pairs. The cooldown length is read from the settings on every evaluation, so a runtime change to `detection_cooldown_seconds` (dashboard or `PATCH /api/v1/config/detection`) takes effect immediately in the running server.
+Behaviour that persists after the cooldown has elapsed is reported again. The comparison uses the absolute time difference, so if packet time steps back by more than the cooldown, the earlier report does not suppress the source until packet time catches up with it. Cooldown state is pruned of expired entries once it exceeds 100,000 pairs. The cooldown length is read from the settings on every evaluation, so a runtime change to `detection_cooldown_seconds` (dashboard or `PATCH /api/v1/config/detection`) takes effect immediately in the running server.
 
 For emitted detections the engine also:
 
@@ -160,7 +163,7 @@ For emitted detections the engine also:
 
 Within the mode:
 
-- If `DETECTION__ENABLED_DETECTORS` is non-empty, only built-in detectors whose names appear in it are kept. It does not affect rules or anomaly detectors.
+- If `DETECTION__ENABLED_DETECTORS` is non-empty, only built-in detectors whose names appear in it are kept. It does not affect rules or anomaly detectors. Every name must be a registered detector name (the eleven built-in names listed above, or `statistical_anomaly` or `ml_anomaly`); an unknown name raises `ConfigurationError` listing the known names when the detection engine is built (`default_detectors()`), instead of silently enabling nothing. Use registered names, not detection names: the brute-force detector is `ssh_brute_force`, not `auth_brute_force`.
 - Built-in and anomaly detectors named in `DETECTION__DISABLED_DETECTORS` are instantiated but start disabled, so they can be re-enabled at runtime.
 - The statistical detector is attached when `ANOMALY__ENABLED=true`; the ML detector when `ANOMALY__ML_ENABLED=true` and a trusted model loads (see [Model file checks](#model-file-checks)).
 - In the platform and API replays, rules disabled in the dashboard or with `sentinelx rules` are left out. `sentinelx replay`, `sentinelx monitor` and the benchmark have no database and load every valid rule file from the rules directory.
@@ -364,7 +367,7 @@ Code: `packages/sentinelx/detection/scanning.py` (`UdpScanDetector`).
 1. Distinct UDP destination ports in the scan window is at least `udp_scan_unique_ports`. Packets from a source port below 1024 to a destination port at or above 1024 are not counted (they look like service replies).
 2. The detection is suppressed when DNS queries from the source are more than 80% of its UDP packets. The DNS count covers W, while the UDP packet count covers the scan window.
 
-The detector does not use ICMP port-unreachable replies, despite its description string mentioning them.
+The detector does not use ICMP port-unreachable replies.
 
 **Output.** Severity medium, action `alert`, confidence 0.55-0.90 at 4 times the threshold. Evidence: `unique_udp_ports`, `observation_window_seconds`, `udp_packets`.
 
@@ -500,7 +503,7 @@ Traffic is accumulated in intervals of `sample_interval_seconds` of packet time 
 | `packets_per_second` | total packet rate | 50 |
 | `bytes_per_second` | total byte rate | 50,000 |
 
-An interval closes when the first packet after its end arrives. Empty intervals in a gap are closed as observations of zero traffic, up to 3,600 per packet; after a longer gap the sampler resynchronises to the current packet.
+An interval closes when the first packet after its end arrives. Empty intervals in a gap are closed as observations of zero traffic, up to 3,600 per packet; after a longer gap the sampler resynchronises to the current packet. If packet time steps backwards by more than one interval, the current interval restarts at the new packet time, so the packets that follow are not piled into one interval and scored as a rate spike.
 
 ### Baseline and score
 
@@ -541,7 +544,7 @@ The statistical detector is attached through `assembly.py` everywhere a pipeline
 
 Code: `packages/sentinelx/anomaly/ml.py` (`MlAnomalyDetector`, registered as `ml_anomaly`).
 
-The ML layer is optional and off by default (`ANOMALY__ML_ENABLED=false`). Its dependencies (NumPy, scikit-learn and joblib) are not installed by default; install the `ml` extra, for example `pip install "sentinelx[ml]"` or `pip install -e ".[ml]"` (the Docker image includes it). Without them, training, saving and loading a model raise `ConfigurationError` naming the missing packages (`require_ml_dependencies()` in `anomaly/ml.py`), and `sentinelx doctor` reports a failed "machine learning" check when `ANOMALY__ML_ENABLED=true`. It scores per-source behaviour with a scikit-learn Isolation Forest trained on the sensor's own normal traffic. It finds combinations of behaviour that are rare on that network. Rare is not the same as malicious, attacks that resemble normal traffic are invisible to it, and its quality depends entirely on the training capture being clean. Its detections are leads for review, which is why they are capped at low confidence and always recommend `alert`.
+The ML layer is optional and off by default (`ANOMALY__ML_ENABLED=false`). Its dependencies (NumPy, scikit-learn and joblib) are not installed by default; install the `ml` extra, for example `pip install "sentinelx[ml]"` or `pip install -e ".[ml]"` (the Docker image includes it). Without them, training, saving and loading a model raise `ConfigurationError` naming the missing packages (`require_ml_dependencies()` in `anomaly/ml.py`); `sentinelx anomaly train` checks this before reading any capture. When `ANOMALY__ML_ENABLED=true`, `sentinelx doctor` reports a "machine learning" check: FAIL when the packages are missing or when the model at `ANOMALY__ML_MODEL_PATH` fails the same loading checks the server applies (see [Model file checks](#model-file-checks)), PASS with the model's sample count and training time when it loads. It scores per-source behaviour with a scikit-learn Isolation Forest trained on the sensor's own normal traffic. It finds combinations of behaviour that are rare on that network. Rare is not the same as malicious, attacks that resemble normal traffic are invisible to it, and its quality depends entirely on the training capture being clean. Its detections are leads for review, which is why they are capped at low confidence and always recommend `alert`.
 
 ### Feature vector
 
@@ -571,6 +574,8 @@ The saved score scale maps the fitted model's decision boundary (`offset_`) to 0
 
 The command does not read `ANOMALY__ML_CONTAMINATION`; pass `--contamination` explicitly if you need a different value.
 
+After saving, the command loads the model back with the server's checks. If SentinelX would refuse to load it (for example because its directory is writable by other users), the command prints the reason and exits 1, although the file was written. A directory or file that cannot be written also exits 1 with a message.
+
 ### Model file checks
 
 Model files are joblib pickles, and loading a pickle can execute code. `save_model()` writes the file with mode 600. `load_model()` refuses a file, raising `ConfigurationError`, when:
@@ -578,10 +583,11 @@ Model files are joblib pickles, and loading a pickle can execute code. `save_mod
 - it does not exist;
 - it is group-writable or world-writable;
 - it is not owned by the user running SentinelX;
+- its directory is writable by the group or by other users, unless the directory has the sticky bit set (another user could replace the file; `chmod 700` the directory);
 - its stored format is not `MODEL_FORMAT_VERSION`;
 - its stored feature list differs from the current feature list.
 
-The ML dependencies must also be installed. These checks reduce the risk of loading a tampered model; they do not make it safe to load a model from an untrusted source. When a pipeline is assembled, a model that fails any check is logged as `ml_model_unavailable` and the ML detector is left out; detection continues without it.
+The permission, ownership and directory checks are POSIX checks and are skipped on Windows, where ownership is expressed in ACLs that SentinelX does not inspect; there, keep the model in a directory only you can write, such as one under your user profile. The ML dependencies must also be installed. These checks reduce the risk of loading a tampered model; they do not make it safe to load a model from an untrusted source. When a pipeline is assembled, a model that fails any check is logged as `ml_model_unavailable` and the ML detector is left out; detection continues without it.
 
 ### Scoring at runtime
 

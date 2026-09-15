@@ -39,6 +39,10 @@ function BlockForm({ onClose, initialTarget = "", initialReason = "", onDone }: 
   const [duration, setDuration] = useState(900);
   const [rateLimit, setRateLimit] = useState(false);
   const [checked, setChecked] = useState<SafetyReport | null>(null);
+  // Why the safety check could not run (rate limited, API unreachable). Blocking stays
+  // disabled until it succeeds, so the operator must be told why instead of guessing.
+  const [checkError, setCheckError] = useState<{ target: string; message: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
   const trimmed = target.trim();
   const report = checked && checked.target === trimmed ? checked : null;
@@ -47,11 +51,17 @@ function BlockForm({ onClose, initialTarget = "", initialReason = "", onDone }: 
     if (trimmed.length < 2) return;
     const handle = setTimeout(() => {
       api<SafetyReport>("/firewall/check", { method: "POST", json: { target: trimmed } })
-        .then((result) => setChecked({ ...result, target: trimmed }))
-        .catch(() => setChecked(null));
+        .then((result) => {
+          setChecked({ ...result, target: trimmed });
+          setCheckError(null);
+        })
+        .catch((error: unknown) => {
+          setChecked(null);
+          setCheckError({ target: trimmed, message: error instanceof Error ? error.message : "request failed" });
+        });
     }, 250);
     return () => clearTimeout(handle);
-  }, [trimmed]);
+  }, [trimmed, attempt]);
 
   async function submit() {
     setBusy(true);
@@ -79,6 +89,12 @@ function BlockForm({ onClose, initialTarget = "", initialReason = "", onDone }: 
         <Field label="Address or network" htmlFor="block-target" hint="A single address, or a small CIDR prefix">
           <Input id="block-target" value={target} onChange={(event) => setTarget(event.target.value)} className="font-mono" placeholder="203.0.113.45" maxLength={64} />
         </Field>
+        {!report && checkError?.target === trimmed && (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-sev-medium/40 bg-sev-medium/10 px-3 py-2 text-sm text-sev-medium" role="alert">
+            <span>Could not check this address with the safety guard ({checkError.message}). Blocking stays disabled until the check succeeds.</span>
+            <Button size="sm" variant="secondary" onClick={() => setAttempt((value) => value + 1)}>Check again</Button>
+          </div>
+        )}
         {report && (
           <div className={`flex gap-2 rounded-md border px-3 py-2 text-sm ${report.allowed ? "border-ok/40 bg-ok/10 text-ok" : "border-sev-critical/40 bg-sev-critical/10 text-sev-critical"}`} role="status">
             {report.allowed ? <ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden /> : <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden />}

@@ -7,11 +7,13 @@ state leaks between cases and no test depends on the machine's environment.
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 
 import pytest
 import structlog
+from structlog._config import BoundLoggerLazyProxy
 
 from sentinelx.capture.base import RawFrame
 from sentinelx.common.models import PacketEvent
@@ -41,12 +43,32 @@ _SETTINGS_ENV = (
 )
 
 
+def _uncache_module_loggers() -> None:
+    """Undo structlog's first-use caching on SentinelX module loggers.
+
+    An app started by an earlier test configures logging with caching on; each module
+    logger then keeps the processors of that moment forever, and later tests that
+    capture logs (structlog.testing.capture_logs) see nothing - an order-dependent
+    failure. Removing the cached ``bind`` makes the proxy read the current config.
+    """
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("sentinelx"):
+            continue
+        for value in vars(module).values():
+            if isinstance(value, BoundLoggerLazyProxy):
+                value.__dict__.pop("bind", None)
+
+
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     for name in _SETTINGS_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)  # no stray .env or sentinelx.db from the repo
-    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
+        cache_logger_on_first_use=False,
+    )
+    _uncache_module_loggers()
     reset_event_bus()
     yield
     reset_event_bus()

@@ -260,15 +260,15 @@ How values are resolved:
 | Link | Ethernet (DLT 1), with up to 4 stacked 802.1Q or 802.1ad VLAN tags | Source and destination MAC, ethertype, first VLAN ID (stored as `metadata.vlan_id`) |
 | | Linux cooked capture v1 (DLT 113) and v2 (DLT 276) | Ethertype, source MAC when the address is at least 6 bytes |
 | | Raw IP (DLT 101, 228, 229) | Family from the IP version nibble |
-| | BSD loopback (DLT 0) | Family from the 4-byte header |
+| | BSD loopback (DLT 0) | Family from the 4-byte header, read in either byte order so a capture taken on a host of the other endianness still decodes |
 | ARP | Ethernet/IPv4 ARP only | Operation (request, reply, other), sender MAC, sender and target IP |
 | IPv4 | Header with options (IHL honoured) | Addresses, protocol, TTL, DSCP, identification, fragment offset and more-fragments flag. The payload is trimmed to the header's total length, but never beyond the captured bytes |
-| IPv6 | Fixed header plus up to 8 extension headers, and a fragment header | Addresses, next header, hop limit (stored as TTL), traffic class |
+| IPv6 | Fixed header plus up to 8 extension headers (hop-by-hop, routing, destination options, mobility, HIP, shim6, AH with its own length rule, and fragment) | Addresses, next header, hop limit (stored as TTL), DSCP (the upper six bits of the traffic class, excluding ECN), identification, fragment offset and more-fragments flag. The payload is trimmed to the header's payload length (unless that is 0, a jumbogram, or larger than the captured bytes), so a link trailer is not read as transport data |
 | TCP | Header with options | Ports, flags, sequence and acknowledgement numbers, window, payload |
 | UDP | Header | Ports, payload |
 | ICMP and ICMPv6 | Type, code; identifier and sequence for echo (and ICMP timestamp) messages | `metadata.icmp` with `type`, `code`, `identifier`, `sequence`, `is_echo_request`, `is_unreachable` |
 
-A non-first IPv4 fragment carries no transport header, so it is recorded with `metadata.fragment` (`offset`, `more`) and no ports instead of misreading payload bytes as ports.
+A non-first IPv4 or IPv6 fragment carries no transport header, so it is recorded with `metadata.fragment` (`offset`, `more`) and no ports instead of misreading payload bytes as ports. For IPv6 the extension header walk stops at the fragment header of a non-first fragment.
 
 Every `PacketEvent` has a timestamp, source and destination IP, protocol, wire length, interface and direction, plus ports, TCP flags, TTL, MAC addresses and payload length where the protocol has them. Missing fields are `None` rather than zero, so "port 0" and "no port" stay distinguishable.
 
@@ -280,10 +280,13 @@ Application parsers run on the transport payload when either port matches. They 
 
 **DNS** (UDP and TCP, ports 53, 5353, 5355). Stored as `metadata.dns`.
 
+- Over TCP, the segment must start with the 2-byte length prefix (RFC 1035 section 4.2.2); the prefix is skipped before parsing. A TCP segment shorter than 14 bytes, or whose first two bytes are below 12 (for example a continuation segment), yields no DNS metadata.
+
 - Parses the 12-byte header and up to 16 questions. Answer, authority and additional records are counted but not parsed.
 - Exposes `transaction_id`, `is_response`, `rcode`, `query_name` and `query_type` (from the first question), `answer_count`, `is_nxdomain`, `max_label_length` (longest label across all questions) and `name_entropy` (Shannon entropy of the leftmost label, in bits per character).
 - **Compression pointer loop protection.** Compression pointers are followed, but a pointer to an offset already visited, or beyond the end of the message, ends the name. A name is also cut off after 64 labels. A crafted message with a pointer loop therefore terminates instead of spinning. `tests/capture/test_parser.py` covers this case.
 - Labels are decoded as ASCII, with undecodable bytes replaced.
+- A label whose type bits are `01` or `10` (the obsolete extended label type and the reserved type) ends the name instead of being read as a length.
 
 **HTTP/1.x** (TCP, ports 80, 8080, 8000, 8008, 8888, 3000). Stored as `metadata.http`.
 
@@ -306,9 +309,7 @@ Additional parsers can be registered with `register_app_parser(name, parser, pro
 ### Known decoder limitations
 
 - **No reassembly.** IP fragments are not reassembled and TCP streams are not reconstructed. HTTP and TLS metadata comes only from a segment that starts a message or handshake.
-- **DNS over TCP is misparsed.** The DNS parser runs on TCP payloads on port 53 but does not skip the 2-byte length prefix that DNS over TCP uses, so the resulting `metadata.dns` fields are wrong.
 - **TLS 1.3 ServerHello reports TLS 1.2.** The `supported_versions` extension is read only in its ClientHello form, so a ServerHello that selects TLS 1.3 reports its record version (`TLS1.2`).
-- **Non-first IPv6 fragments are misread.** The IPv6 decoder skips the fragment header but does not record the fragment offset, so a non-first fragment's payload is decoded as a transport header (with invented ports) or dropped as a TCP parse error.
 - **Only Ethernet/IPv4 ARP** is decoded. Other ethertypes (for example LLDP) are counted as decode failures at the network layer.
 
 ## Malformed packet handling
@@ -321,6 +322,7 @@ Malformed frames are normal on real networks, and a sensor that crashes on one i
 - Header lengths are clamped to the captured bytes, so a truncated snapshot or a lying length field never produces a negative or out-of-range slice.
 - Loops over attacker-controlled structure are bounded: 4 VLAN tags, 8 IPv6 extension headers, 16 DNS questions, 64 DNS labels, 40 HTTP header lines, 4,096 bytes of HTTP payload, 64 TLS cipher suites kept.
 - An exception inside an application parser is caught and counted; the packet is still processed.
+- `PacketDecoder.decode()` never raises. An unexpected exception anywhere in link, network or transport decoding (which would be a bug) is caught, counted as a decode failure with `layer="internal"`, and the frame is skipped, so one hostile frame cannot stop capture.
 
 Failures are counted in two places: `decoded` and `failed` on the decoder (`pipeline.decoder` in `GET /api/v1/system/status` and `GET /api/v1/metrics/summary`), and the Prometheus counter `sentinelx_parse_errors_total{layer=...}`. `tests/capture/test_parser.py` checks that malformed frames never raise and that failures are counted.
 

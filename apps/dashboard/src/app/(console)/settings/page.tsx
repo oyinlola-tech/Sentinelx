@@ -362,7 +362,7 @@ function HealthPanel() {
                 const detail = name === "event_bus" ? `${component.published} published · ${component.dropped} dropped · ${component.subscribers} subscribers`
                   : name === "rules" ? ((component.problems as string[] | undefined)?.join("; ") || "all rules valid")
                   : name === "redis" ? (degraded ? "unreachable: rate limits and tickets are per-process" : "connected")
-                  : name === "persister" ? `${component.written} events written · ${component.failed_batches} failed batches`
+                  : name === "persister" ? `${component.written} events written · ${component.pending ?? 0} waiting${component.retrying ? " · retrying writes" : ""}${Number(component.dropped ?? 0) + Number(component.rejected ?? 0) > 0 ? ` · ${component.dropped ?? 0} dropped, ${component.rejected ?? 0} rejected` : ""}`
                   : name === "firewall" ? `${component.backend}${component.enforcing ? " · enforcing" : " · not enforcing"}${component.error ? ` · ${component.error}` : ""}`
                   : String(component.url ?? component.dialect ?? "");
                 return (

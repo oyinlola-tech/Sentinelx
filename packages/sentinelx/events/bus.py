@@ -28,7 +28,14 @@ from sentinelx.common.models import new_id, utcnow
 from sentinelx.telemetry.logging import get_logger
 from sentinelx.telemetry.metrics import metrics
 
-__all__ = ["Event", "EventBus", "EventType", "get_event_bus", "reset_event_bus"]
+__all__ = [
+    "DURABLE_EVENT_TYPES",
+    "Event",
+    "EventBus",
+    "EventType",
+    "get_event_bus",
+    "reset_event_bus",
+]
 
 log = get_logger(__name__)
 
@@ -57,6 +64,24 @@ class EventType(StrEnum):
     AUDIT_EVENT = "audit.event"
     RULE_CHANGED = "rule.changed"
     CONFIG_CHANGED = "config.changed"
+
+
+#: Security records that must reach storage. When the handler queue is full, publishing
+#: one of these waits for room (bounded by :data:`DURABLE_PUBLISH_WAIT_SECONDS`) instead
+#: of dropping it: a burst slows the publisher rather than losing detections. Everything
+#: else (statistics, progress, health) is still dropped under pressure.
+DURABLE_EVENT_TYPES: frozenset[EventType] = frozenset(
+    {
+        EventType.DETECTION_CREATED,
+        EventType.INCIDENT_OPENED,
+        EventType.INCIDENT_UPDATED,
+        EventType.INCIDENT_CLOSED,
+        EventType.RESPONSE_DECIDED,
+        EventType.IP_BLOCKED,
+        EventType.IP_UNBLOCKED,
+    }
+)
+DURABLE_PUBLISH_WAIT_SECONDS = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +171,12 @@ class EventBus:
     # ------------------------------------------------------------- publishing
 
     async def publish(self, event_type: EventType, payload: dict[str, Any]) -> Event:
-        """Publish an event. Never raises, never blocks on a slow subscriber."""
+        """Publish an event. Never raises, never blocks on a slow subscriber.
+
+        Storage handlers are different: a security record (:data:`DURABLE_EVENT_TYPES`)
+        waits for room in a full handler queue for up to ten seconds before it is
+        dropped, counted and logged as an error.
+        """
         event = Event(type=event_type, payload=payload)
         self._published += 1
         metrics.events_published.labels(event_type=event_type.value).inc()
@@ -168,9 +198,23 @@ class EventBus:
             try:
                 self._handler_queue.put_nowait(event)
             except asyncio.QueueFull:
+                worker_running = self._worker is not None and not self._worker.done()
+                if event_type in DURABLE_EVENT_TYPES and worker_running:
+                    try:
+                        await asyncio.wait_for(
+                            self._handler_queue.put(event), timeout=DURABLE_PUBLISH_WAIT_SECONDS
+                        )
+                        return event
+                    except TimeoutError:
+                        pass
                 self._dropped += 1
                 metrics.events_dropped.labels(target="handlers").inc()
-                log.warning("event_handler_queue_full", type=event_type.value)
+                if event_type in DURABLE_EVENT_TYPES:
+                    log.error(
+                        "security_event_dropped", type=event_type.value, reason="handler queue full"
+                    )
+                else:
+                    log.warning("event_handler_queue_full", type=event_type.value)
         return event
 
     def publish_nowait(self, event_type: EventType, payload: dict[str, Any]) -> None:

@@ -287,13 +287,14 @@ class UdpScanDetector(Detector):
     """Detects UDP port sweeps.
 
     UDP scanning is noisier to detect than TCP because there is no handshake to
-    observe. The usable signals are the distinct-port count and the ICMP
-    port-unreachable replies that closed UDP ports generate, so this detector
-    uses both and says which it relied on.
+    observe. This detector counts the distinct UDP destination ports one source
+    contacts within the window, and ignores sources whose UDP traffic is
+    overwhelmingly DNS. It does not use the ICMP port-unreachable replies that
+    closed ports generate.
     """
 
     name = "udp_scan"
-    description = "Many distinct UDP ports probed, typically drawing ICMP unreachable replies."
+    description = "Many distinct UDP ports probed by one source."
     category = ThreatCategory.RECONNAISSANCE
     default_severity = Severity.MEDIUM
     references = ("https://attack.mitre.org/techniques/T1046/",)

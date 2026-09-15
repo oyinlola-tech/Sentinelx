@@ -267,24 +267,24 @@ remedy where one applies. It exits with status 1 if any check is `FAIL`.
 | Check | Result |
 |---|---|
 | `python` | FAIL below 3.12. |
-| `configuration` | FAIL (and exit 1) if settings fail validation, with the remedy `run: sentinelx config` (which prints the validation errors). |
+| `configuration` | FAIL (and exit 1) if settings fail validation: `settings failed validation (the errors are printed on stderr)`, with the remedy `fix the listed settings in the environment or .env`. |
 | `operating system` | INFO: operating system, architecture and Python version. |
 | `wsl`, `container` | INFO, only when detected. |
 | `dependencies` | FAIL if a required package, or the database driver for `DATABASE_URL`, cannot be imported. |
-| `machine learning` | FAIL, only when `ANOMALY__ML_ENABLED=true` without the `ml` extra. |
+| `machine learning` | Only when `ANOMALY__ML_ENABLED=true`. FAIL without the `ml` extra (NumPy, scikit-learn, joblib), or when the model at `ANOMALY__ML_MODEL_PATH` cannot be loaded with the checks the server applies (presence, ownership, permissions, format), since the server would then run without the ML detector. PASS with the model's sample count and training time when it loads. |
 | `pcap replay` | FAIL if the capture reader does not work. |
 | `interface enumeration`, `packet capture backend`, `live capture` | WARN when unavailable. |
 | `capture interface` | FAIL if `CAPTURE_INTERFACE` is not `any` and does not exist. |
-| `firewall backend` | With `null`: INFO, or FAIL if the configuration needs a firewall (dry run off and mode not `detect_only`). Otherwise PASS, WARN when unusable, or FAIL when unusable and needed. |
+| `firewall backend` | With `null`: INFO, or FAIL if the configuration needs a firewall (dry run off and mode not `detect_only`). Otherwise PASS, WARN when unusable, or FAIL when unusable and needed. When `auto` finds nothing usable, the detail says why and the remedy is to install a supported firewall and run with the privileges it needs, or to name a backend. |
 | `automatic blocking` | PASS when a usable firewall exists; FAIL if prevention is active without one; INFO otherwise. |
 | `safety posture` | WARN when automatic prevention is active. |
 | `rules` | FAIL if the rules directory is missing or any rule file is invalid; WARN if no rules load. |
 | `pcap directory` | FAIL if `PCAP_DIRECTORY` cannot be created or written. |
-| `jwt secret` | FAIL if shorter than 32 characters. If not set in the environment or `.env`: WARN in development, FAIL in production. |
+| `jwt secret` | FAIL if shorter than 32 characters. If not set in the environment or `.env` (variable names matched case-insensitively, as settings are): WARN in development, FAIL in production. |
 | `database` | FAIL if the database cannot be reached (remedy `check DATABASE_URL`). `doctor` connects without preparing the schema, so it never migrates the database it inspects. |
 | `migrations` | PASS when the schema is at the latest revision. Behind the latest revision: WARN for SQLite ("SQLite databases are migrated automatically when SentinelX starts"; this includes a new SQLite file before the first `sentinelx start`), FAIL for PostgreSQL (remedy `run: sentinelx db upgrade`). |
-| `redis` | WARN when unreachable; FAIL if `STORAGE__REDIS_REQUIRED=true`. |
-| `api` | Probes `/api/v1/system/health` at `--api-url` (default `http://API_HOST:API_PORT`, with `0.0.0.0` read as `127.0.0.1`). |
+| `redis` | WARN when unreachable; FAIL if `STORAGE__REDIS_REQUIRED=true`. The remaining checks still run in both cases. |
+| `api` | Probes `/api/v1/system/health` at `--api-url` (default `http://API_HOST:API_PORT`, with `0.0.0.0` and `::` read as `127.0.0.1`, and an IPv6 `API_HOST` written in brackets). |
 | `dashboard` | Probes `/runtime-config` at `--dashboard-url` (default `SENTINELX_DASHBOARD_URL`, else `http://127.0.0.1:3000`). |
 
 The two probes report PASS only when the answer identifies itself as SentinelX. Not
@@ -420,9 +420,8 @@ Compose default.
 
 Because the stack defaults to `ENVIRONMENT=production`, the rules in
 [Production validation](#production-validation) apply: authentication cookies are
-`Secure`, interactive API docs are disabled (`make docker-up` still prints an
-`/api/docs` URL, which returns 404 in production), SQLite is refused, and a short
-`JWT_SECRET` stops the API from starting. Browsers send `Secure` cookies over plain
+`Secure`, interactive API docs are disabled (`/api/docs` returns 404), SQLite is
+refused, and a short `JWT_SECRET` stops the API from starting. Browsers send `Secure` cookies over plain
 HTTP only to `localhost` and `127.0.0.1`; from any other address, serve the stack
 over HTTPS.
 
@@ -693,7 +692,8 @@ at startup. `.env.example` lists the most common variables.
   prevention off by editing the environment and restarting. `sentinelx config`
   (optionally `--section <name>`, `--json`) shows the effective settings with the same
   redaction as `GET /api/v1/config`: secret-named fields as `[redacted]`, URL passwords
-  hidden, and the webhook URL as `scheme://host/…`.
+  hidden, and the webhook URL as `scheme://host/…`. An unknown section name prints the
+  available sections and exits with status 2.
 - **Confirmation**: turning dry run off, or enabling automatic prevention, at runtime
   requires the confirmation phrase `ENABLE PREVENTION` (typed in the dashboard;
   `confirmation` in the API request; `--confirm-prevention` on the CLI). The change is
@@ -723,7 +723,7 @@ at startup. `.env.example` lists the most common variables.
 | `CAPTURE__HOME_NETWORKS` | | `["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","fd00::/8"]` | yes | Prefixes treated as inside; used to label packet direction. |
 | `CAPTURE__PCAP_DIRECTORY` | `PCAP_DIRECTORY` | `pcaps` | no | Directory for uploaded (`uploads/`), generated and replayed capture files. |
 | `CAPTURE__MAX_PCAP_SIZE_MB` | | `512` | no | Maximum capture file size (at least 1). |
-| `CAPTURE__UPLOAD_QUOTA_MB` | | `2048` | no | Total space uploaded captures may use; uploads are refused once it is full. |
+| `CAPTURE__UPLOAD_QUOTA_MB` | | `2048` | no | Total space uploaded captures may use; uploads are refused once it is full (at least 1). |
 
 ### Detection (`detection`)
 
@@ -734,30 +734,30 @@ per-source state.
 | Env var | Flat alias | Default | Runtime | Description |
 |---|---|---|---|---|
 | `DETECTION__MODE` | `DETECTION_MODE` | `balanced` | yes | `disabled`, `signature_only`, `balanced` or `aggressive`. |
-| `DETECTION__ENABLED_DETECTORS` | | `[]` | yes | Allow-list of detector names. Empty means all detectors for the mode. |
+| `DETECTION__ENABLED_DETECTORS` | | `[]` | yes | Allow-list of detector names. Empty means all detectors for the mode. An unknown name stops the detection engine from being built with an error listing the known names (the brute-force detector is `ssh_brute_force`). |
 | `DETECTION__DISABLED_DETECTORS` | | `[]` | yes | Detectors to turn off. |
-| `DETECTION__PORT_SCAN_WINDOW_SECONDS` | | `15.0` | yes | Port scan observation window. |
+| `DETECTION__PORT_SCAN_WINDOW_SECONDS` | | `15.0` | yes | Port scan observation window (greater than 0). |
 | `DETECTION__PORT_SCAN_UNIQUE_PORTS` | | `20` | yes | Distinct destination ports from one source that trigger (at least 2). |
 | `DETECTION__PORT_SCAN_MIN_SYN_RATIO` | | `0.7` | yes | Fraction of packets that must be bare SYNs (0 to 1). |
 | `DETECTION__HORIZONTAL_SCAN_UNIQUE_HOSTS` | | `25` | yes | Distinct destination hosts on one port (a sweep; at least 2). |
 | `DETECTION__UDP_SCAN_UNIQUE_PORTS` | | `25` | yes | Distinct UDP destination ports that trigger (at least 2). |
-| `DETECTION__BRUTE_FORCE_WINDOW_SECONDS` | | `60.0` | yes | Brute force observation window. |
+| `DETECTION__BRUTE_FORCE_WINDOW_SECONDS` | | `60.0` | yes | Brute force observation window (greater than 0). |
 | `DETECTION__BRUTE_FORCE_ATTEMPTS` | | `15` | yes | Attempts within the window that trigger (at least 2). |
 | `DETECTION__BRUTE_FORCE_PORTS` | | `[22,23,21,3389,445,5900,1433,3306,5432]` | yes | Services where repeated short-lived connections imply credential guessing. |
-| `DETECTION__CONNECTION_RATE_WINDOW_SECONDS` | | `10.0` | yes | Connection rate window. |
-| `DETECTION__CONNECTION_RATE_THRESHOLD` | | `200` | yes | New connections in the window that trigger. |
-| `DETECTION__SYN_FLOOD_THRESHOLD` | | `500` | yes | SYN flood threshold. |
-| `DETECTION__ICMP_FLOOD_WINDOW_SECONDS` | | `10.0` | yes | ICMP flood window. |
-| `DETECTION__ICMP_FLOOD_THRESHOLD` | | `200` | yes | ICMP packets in the window that trigger. |
-| `DETECTION__HTTP_FLOOD_WINDOW_SECONDS` | | `10.0` | yes | HTTP flood window. |
-| `DETECTION__HTTP_FLOOD_THRESHOLD` | | `300` | yes | HTTP requests in the window that trigger. |
-| `DETECTION__DNS_WINDOW_SECONDS` | | `30.0` | yes | DNS observation window. |
-| `DETECTION__DNS_QUERY_THRESHOLD` | | `300` | yes | Queries from one client in the window that trigger. |
-| `DETECTION__DNS_UNIQUE_DOMAIN_THRESHOLD` | | `100` | yes | Distinct names from one client suggesting tunnelling or DGA. |
+| `DETECTION__CONNECTION_RATE_WINDOW_SECONDS` | | `10.0` | yes | Connection rate window (greater than 0). |
+| `DETECTION__CONNECTION_RATE_THRESHOLD` | | `200` | yes | New connections in the window that trigger (at least 1). |
+| `DETECTION__SYN_FLOOD_THRESHOLD` | | `500` | yes | SYN flood threshold (at least 1). |
+| `DETECTION__ICMP_FLOOD_WINDOW_SECONDS` | | `10.0` | yes | ICMP flood window (greater than 0). |
+| `DETECTION__ICMP_FLOOD_THRESHOLD` | | `200` | yes | ICMP packets in the window that trigger (at least 1). |
+| `DETECTION__HTTP_FLOOD_WINDOW_SECONDS` | | `10.0` | yes | HTTP flood window (greater than 0). |
+| `DETECTION__HTTP_FLOOD_THRESHOLD` | | `300` | yes | HTTP requests in the window that trigger (at least 1). |
+| `DETECTION__DNS_WINDOW_SECONDS` | | `30.0` | yes | DNS observation window (greater than 0). |
+| `DETECTION__DNS_QUERY_THRESHOLD` | | `300` | yes | Queries from one client in the window that trigger (at least 1). |
+| `DETECTION__DNS_UNIQUE_DOMAIN_THRESHOLD` | | `100` | yes | Distinct names from one client suggesting tunnelling or DGA (at least 1). |
 | `DETECTION__DNS_LONG_LABEL_LENGTH` | | `52` | yes | Label length (10 to 63) above which a name looks like encoded data. |
-| `DETECTION__DNS_HIGH_ENTROPY_THRESHOLD` | | `3.8` | yes | Shannon entropy (bits per character) suggesting an algorithmic name. |
-| `DETECTION__MAX_TRACKED_SOURCES` | | `50000` | no | Upper bound on tracked source addresses (at least 100). |
-| `DETECTION__DETECTION_COOLDOWN_SECONDS` | | `60.0` | yes | Suppress repeat detections of the same detector and source. |
+| `DETECTION__DNS_HIGH_ENTROPY_THRESHOLD` | | `3.8` | yes | Shannon entropy (bits per character) suggesting an algorithmic name (at least 0). |
+| `DETECTION__MAX_TRACKED_SOURCES` | | `50000` | no | Upper bound on tracked source addresses (at least 100). Allow roughly 16 KB of memory per source: 50,000 sources with 200,000 connections were measured at 823 MB. |
+| `DETECTION__DETECTION_COOLDOWN_SECONDS` | | `60.0` | yes | Suppress repeat detections of the same detector and source (at least 0). |
 | `DETECTION__DENYLIST_NETWORKS` | | `[]` | yes | Networks reported by the `denylist` detector when they appear in traffic. |
 | `DETECTION__ALLOWLIST_NETWORKS` | | `[]` | yes | Sources never reported on; applied before any detector runs. |
 
@@ -775,22 +775,22 @@ for how the score is used.
 | `SCORING__INTEL_WEIGHT` | | `15.0` | yes | Weight of threat intelligence matches (0 to 100). |
 | `SCORING__CORRELATION_WEIGHT` | | `15.0` | yes | Weight of correlation with other detectors (0 to 100). |
 | `SCORING__SENSITIVE_TARGET_WEIGHT` | | `10.0` | yes | Weight for sensitive targets (0 to 100). |
-| `SCORING__HISTORY_WINDOW_SECONDS` | | `3600.0` | yes | Look-back for source history. |
-| `SCORING__FREQUENCY_SATURATION` | | `10` | yes | Repeat count at which the frequency factor reaches full weight. |
-| `SCORING__HISTORY_SATURATION` | | `5` | yes | History count at which the history factor reaches full weight. |
+| `SCORING__HISTORY_WINDOW_SECONDS` | | `3600.0` | yes | Look-back for source history (greater than 0). |
+| `SCORING__FREQUENCY_SATURATION` | | `10` | yes | Repeat count at which the frequency factor reaches full weight (at least 1). |
+| `SCORING__HISTORY_SATURATION` | | `5` | yes | History count at which the history factor reaches full weight (at least 1). |
 | `SCORING__ALLOWLIST_PENALTY` | | `40.0` | yes | Points subtracted when an allowlisted source is still detected (0 to 100). |
 | `SCORING__AUTO_BLOCK_THRESHOLD` | | `85.0` | yes | Risk at or above which an automatic block may be proposed (0 to 100). Acted on only with `RESPONSE_MODE=automatic` and `DRY_RUN=false`. |
-| `SCORING__INCIDENT_THRESHOLD` | | `60.0` | yes | Defined, but not currently read by the platform. |
+| `SCORING__INCIDENT_THRESHOLD` | | `60.0` | yes | 0 to 100. Defined, but not currently read by the platform. |
 
 ### Correlation (`correlation`)
 
 | Env var | Flat alias | Default | Runtime | Description |
 |---|---|---|---|---|
 | `CORRELATION__ENABLED` | | `true` | yes | Fold related detections into incidents. |
-| `CORRELATION__WINDOW_SECONDS` | | `600.0` | yes | How long an incident stays open for new, related detections. |
-| `CORRELATION__MIN_DETECTIONS` | | `2` | yes | Detections needed to open an incident. |
-| `CORRELATION__STANDALONE_RISK_THRESHOLD` | | `85.0` | yes | A single detection at or above this risk opens an incident without corroboration. |
-| `CORRELATION__MAX_OPEN_INCIDENTS` | | `1000` | yes | Cap on open incidents. |
+| `CORRELATION__WINDOW_SECONDS` | | `600.0` | yes | How long an incident stays open for new, related detections (greater than 0). |
+| `CORRELATION__MIN_DETECTIONS` | | `2` | yes | Detections needed to open an incident (at least 1). |
+| `CORRELATION__STANDALONE_RISK_THRESHOLD` | | `85.0` | yes | A single detection at or above this risk opens an incident without corroboration (0 to 100). |
+| `CORRELATION__MAX_OPEN_INCIDENTS` | | `1000` | yes | Cap on open incidents (at least 1). |
 | `CORRELATION__GROUP_BY_SOURCE` | | `true` | yes | Group detections by source address. |
 | `CORRELATION__GROUP_BY_DESTINATION` | | `false` | yes | Group detections by destination address. |
 
@@ -801,13 +801,13 @@ for how the score is used.
 | `ANOMALY__ENABLED` | | `true` | yes | Statistical baselining detector. |
 | `ANOMALY__BASELINE_ALPHA` | | `0.05` | no | EWMA decay (0 to 1). Lower adapts more slowly. |
 | `ANOMALY__MIN_SAMPLES` | | `60` | yes | Observations before deviations are reported (at least 5). |
-| `ANOMALY__SAMPLE_INTERVAL_SECONDS` | | `1.0` | no | Sampling interval. |
-| `ANOMALY__ANOMALY_THRESHOLD` | | `0.85` | yes | Anomaly score at or above which a detection is emitted. |
-| `ANOMALY__SIGMA_SATURATION` | | `6.0` | yes | Deviation (in standard deviations) at which the score saturates. |
+| `ANOMALY__SAMPLE_INTERVAL_SECONDS` | | `1.0` | no | Sampling interval (greater than 0). |
+| `ANOMALY__ANOMALY_THRESHOLD` | | `0.85` | yes | Anomaly score at or above which a detection is emitted (0 to 1). |
+| `ANOMALY__SIGMA_SATURATION` | | `6.0` | yes | Deviation (in standard deviations) at which the score saturates (greater than 0). |
 | `ANOMALY__ML_ENABLED` | | `false` | no | Enable the Isolation Forest detector. Needs the `ml` extra and a trained model; a missing or untrusted model disables it with a logged error. |
-| `ANOMALY__ML_MODEL_PATH` | | `models/isolation_forest.joblib` | no | Model file. It must not be group- or world-writable and must be owned by the user running SentinelX. |
-| `ANOMALY__ML_CONTAMINATION` | | `0.02` | no | Defined, but not currently read by the platform (`sentinelx anomaly train --contamination` sets it for training). |
-| `ANOMALY__ML_MIN_SCORE` | | `0.75` | yes | Minimum ML score for a detection. |
+| `ANOMALY__ML_MODEL_PATH` | | `models/isolation_forest.joblib` | no | Model file. On POSIX systems it must not be group- or world-writable, must be owned by the user running SentinelX, and its directory must not be writable by the group or others (unless sticky). These checks are skipped on Windows; keep the model in a directory only you can write. |
+| `ANOMALY__ML_CONTAMINATION` | | `0.02` | no | Greater than 0 and less than 0.5. Defined, but not currently read by the platform (`sentinelx anomaly train --contamination` sets it for training). |
+| `ANOMALY__ML_MIN_SCORE` | | `0.75` | yes | Minimum ML score for a detection (0 to 1). |
 
 ### Response (`response`)
 
@@ -833,7 +833,7 @@ Read [response-engine.md](response-engine.md) before changing these.
 | `RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES` | | `false` | no | Allow the webhook host to resolve to loopback, private, link-local or reserved addresses (for an internal SIEM, for example). |
 | `RESPONSE__WEBHOOK_TIMEOUT_SECONDS` | | `5.0` | yes | Webhook timeout (greater than 0, up to 30). |
 | `RESPONSE__WEBHOOK_MIN_RISK` | | `60.0` | yes | Minimum risk score for webhook calls (0 to 100); also the threshold used by `GET /api/v1/alerts`. |
-| `RESPONSE__RATE_LIMIT_PACKETS_PER_SECOND` | | `100` | yes | Packet rate applied by `rate_limit` actions (nftables and iptables only). |
+| `RESPONSE__RATE_LIMIT_PACKETS_PER_SECOND` | | `100` | yes | Packet rate applied by `rate_limit` actions, nftables and iptables only (at least 1). |
 
 Validation: `RESPONSE_MODE=manual_approval` or `automatic` with `DRY_RUN=false` is
 rejected when `FIREWALL_BACKEND` is `null`. (`auto` passes this check even if it later
@@ -845,16 +845,16 @@ resolves to no usable backend; actions then fail with the reason.)
 |---|---|---|---|---|
 | `STORAGE__DATABASE_URL` | `DATABASE_URL` | `sqlite+aiosqlite:///./sentinelx.db` | no | SQLAlchemy URL. `postgresql://` and `postgres://` are mapped to the asyncpg driver; `sqlite://` to aiosqlite. PostgreSQL is the production target. |
 | `STORAGE__DATABASE_ECHO` | | `false` | no | Log SQL statements. |
-| `STORAGE__POOL_SIZE` | | `10` | no | Connection pool size (PostgreSQL). |
-| `STORAGE__MAX_OVERFLOW` | | `20` | no | Extra connections beyond the pool (PostgreSQL). |
+| `STORAGE__POOL_SIZE` | | `10` | no | Connection pool size for PostgreSQL (at least 1). |
+| `STORAGE__MAX_OVERFLOW` | | `20` | no | Extra connections beyond the pool for PostgreSQL (at least 0). |
 | `STORAGE__REDIS_URL` | `REDIS_URL` | `redis://localhost:6379/0` | no | Redis URL. |
 | `STORAGE__REDIS_REQUIRED` | | `false` | no | When false, Redis failures degrade to in-process state instead of failing. |
 | `STORAGE__REDIS_NAMESPACE` | | `sentinelx` | no | Key prefix (1 to 64 of `A-Za-z0-9_:-`). |
 | `STORAGE__RETENTION_DAYS` | `RETENTION_DAYS` | `30` | yes | Retention for detections, closed and replay incidents, response actions, inactive blocks, replay records and uploaded capture files (1 to 3650). |
-| `STORAGE__AUDIT_RETENTION_DAYS` | | `365` | yes | Retention for audit events. |
-| `STORAGE__METRICS_RETENTION_DAYS` | | `7` | yes | Retention for traffic summaries and system metrics. |
-| `STORAGE__BATCH_SIZE` | | `200` | no | Rows flushed to the database per write. |
-| `STORAGE__FLUSH_INTERVAL_SECONDS` | | `2.0` | no | Maximum delay before buffered rows are written. |
+| `STORAGE__AUDIT_RETENTION_DAYS` | | `365` | yes | Retention for audit events (at least 1). |
+| `STORAGE__METRICS_RETENTION_DAYS` | | `7` | yes | Retention for traffic summaries and system metrics (at least 1). |
+| `STORAGE__BATCH_SIZE` | | `200` | no | Rows flushed to the database per write (at least 1). |
+| `STORAGE__FLUSH_INTERVAL_SECONDS` | | `2.0` | no | Maximum delay before buffered rows are written (greater than 0). |
 
 ### API and authentication (`api`)
 
@@ -863,7 +863,7 @@ None of the API settings are runtime-editable.
 | Env var | Flat alias | Default | Description |
 |---|---|---|---|
 | `API__HOST` | `API_HOST` | `127.0.0.1` | Listen address (`sentinelx start --host` overrides). |
-| `API__PORT` | `API_PORT` | `8000` | Listen port (`--port` overrides). |
+| `API__PORT` | `API_PORT` | `8000` | Listen port, 1 to 65535 (`--port` overrides; `--port` outside 1 to 65535 is a usage error). |
 | `API__ROOT_PATH` | | empty | ASGI root path, for a proxy that mounts the API under a prefix. Cookie paths (`/api`, `/api/v1/auth`) are fixed, so browser sessions expect the API at `/api` on the dashboard's origin. |
 | `API__CORS_ORIGINS` | `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed browser origins; also used by the WebSocket origin check. Each must include a scheme. `*` is ignored by the CORS middleware and rejected in production. |
 | `API__JWT_SECRET` | `JWT_SECRET` | empty | Token signing key, at least 32 characters. Outside production an empty value is replaced by a random per-process secret. |
@@ -873,17 +873,17 @@ None of the API settings are runtime-editable.
 | `API__JWT_ISSUER` | | `sentinelx` | `iss` claim. |
 | `API__COOKIE_SECURE` | | `false` | Mark auth cookies `Secure` and send HSTS. Forced on in production. |
 | `API__PASSWORD_MIN_LENGTH` | | `12` | Minimum password length (8 to 128). |
-| `API__LOCKOUT_THRESHOLD` | | `5` | Consecutive failed logins before an account locks. |
+| `API__LOCKOUT_THRESHOLD` | | `5` | Consecutive failed logins before an account locks (at least 1). |
 | `API__LOCKOUT_SECONDS` | | `900` | Lock duration (at least 30). |
 | `API__AUTH_ENABLED` | | `true` | Development only; rejected as `false` in production. |
 | `API__BOOTSTRAP_ADMIN_USERNAME` | | `admin` | Name of the first administrator (3 to 64 characters). |
 | `API__BOOTSTRAP_ADMIN_PASSWORD` | | empty | Password for the first administrator, used only when the user table is empty. If empty, one is generated and printed once. |
-| `API__RATE_LIMIT_REQUESTS` | | `300` | Requests per client IP per window. |
-| `API__RATE_LIMIT_WINDOW_SECONDS` | | `60` | Rate limit window. |
-| `API__LOGIN_RATE_LIMIT_ATTEMPTS` | | `8` | Login attempts per client IP per window. |
-| `API__LOGIN_RATE_LIMIT_WINDOW_SECONDS` | | `300` | Login throttle window. |
+| `API__RATE_LIMIT_REQUESTS` | | `300` | Requests per client IP per window (at least 1). |
+| `API__RATE_LIMIT_WINDOW_SECONDS` | | `60` | Rate limit window (at least 1). |
+| `API__LOGIN_RATE_LIMIT_ATTEMPTS` | | `8` | Login attempts per client IP per window (at least 1). |
+| `API__LOGIN_RATE_LIMIT_WINDOW_SECONDS` | | `300` | Login throttle window (at least 1). |
 | `API__WEBSOCKET_MAX_QUEUE` | | `500` | Per-connection outbound event buffer (at least 10). |
-| `API__MAX_UPLOAD_MB` | | `200` | Upload limit; the effective limit is the smaller of this, `CAPTURE__MAX_PCAP_SIZE_MB` and the space left in `CAPTURE__UPLOAD_QUOTA_MB`. |
+| `API__MAX_UPLOAD_MB` | | `200` | Upload limit; the effective limit is the smaller of this, `CAPTURE__MAX_PCAP_SIZE_MB` and the space left in `CAPTURE__UPLOAD_QUOTA_MB`. At least 1. |
 | `API__TRUSTED_PROXIES` | | `[]` | CIDRs of reverse proxies whose `X-Forwarded-For` is believed. |
 | `API__METRICS_TOKEN` | | empty | Bearer token for `/api/v1/metrics`. Empty: loopback clients only, and never a request carrying a forwarding header. |
 | `API__DOCS_ENABLED` | | `true` | Serve `/api/docs`, `/api/redoc` and `/api/v1/openapi.json`. Forced off in production. |
@@ -899,6 +899,12 @@ None of the API settings are runtime-editable.
 | `TELEMETRY__METRICS_PATH` | | `/metrics` | no | Defined, but not currently read; the endpoint is always `/api/v1/metrics`. |
 | `TELEMETRY__PROFILE_PIPELINE` | | `false` | no | Defined, but not currently read. |
 
+Whatever the level, `sentinelx start` routes uvicorn's loggers through SentinelX
+logging (format and secret redaction) at WARNING, so uvicorn's access log, which would
+print WebSocket `?ticket=` credentials in query strings, is not written (request counts
+and latencies remain available as Prometheus metrics). Alembic's plugin announcements
+are also silenced at INFO.
+
 ### Variables outside the settings model
 
 | Variable | Read by | Purpose |
@@ -907,6 +913,13 @@ None of the API settings are runtime-editable.
 | `SENTINELX_PUBLIC_WS_URL` | dashboard `/runtime-config` | Optional WebSocket base URL for the browser. |
 | `SENTINELX_METRICS_TOKEN` | `sentinelx metrics --token` | Metrics token for the CLI. |
 | `SENTINELX_DASHBOARD_URL` | `sentinelx doctor` | Default dashboard address to probe. |
+| `SENTINELX_START_CAPTURE` | `sentinelx start` (internal) | Set by `sentinelx start --capture` to hand the interface to the server process. `sentinelx start` without `--capture` removes it, so a value inherited from the shell does not start a capture. Do not set it yourself: an ASGI server that loads `sentinelx.api.server:app` directly starts live capture on that interface when it is present. |
+| `WSL_DISTRO_NAME`, `WSL_INTEROP`, `KUBERNETES_SERVICE_HOST`, `container` | host detection (`sentinelx capabilities`, `sentinelx doctor`, the system API) | Read only, to recognise WSL, Kubernetes and container hosts; not SentinelX settings. |
+| `SYSTEMROOT` | Windows Firewall adapter, Npcap detection | Locates `powershell.exe` and `wpcap.dll` on Windows (default `C:\Windows`). |
+
+None of these are read from `.env`: set them in the process environment. The
+dashboard reads `SENTINELX_API_URL` when `next.config.ts` is evaluated (see
+[Known limitation](#known-limitation-dashboard-api-address-in-a-build)).
 
 ### Production validation
 
@@ -939,11 +952,8 @@ sentinelx db purge                   # apply retention policies now
 
 What happens at startup depends on the database:
 
-- **SQLite files** are migrated to the latest revision automatically. A SQLite
-  database created before migrations were tracked (it has tables but no
-  `alembic_version`) is first stamped at the initial revision (`540eb200aacd`) and
-  then upgraded, so upgrading SentinelX does not leave an existing file missing a
-  column. SQLite is for development and evaluation.
+- **SQLite files** are migrated to the latest revision automatically. SQLite is for
+  development and evaluation.
 - **PostgreSQL** is never changed automatically. If the schema is not at the latest
   revision, startup stops with
   `database schema is at revision <applied> but this version of SentinelX needs <head>; run: sentinelx db upgrade`.
@@ -953,12 +963,25 @@ What happens at startup depends on the database:
   for a SQLite file that is behind (it is migrated at the next start). `doctor` does not
   migrate either database.
 
+A database that has tables but no recorded revision (no `alembic_version` table), for
+example one created from the models by an older release or by a tool, is adopted before
+it is migrated, both by SQLite startup and by `sentinelx db upgrade` on any database.
+Its schema is compared with the current models: when they match it is stamped at the
+latest revision, otherwise at the initial revision (`540eb200aacd`), and the upgrade
+then applies whatever is missing. PostgreSQL startup does not adopt: an unversioned
+PostgreSQL database is refused until `sentinelx db upgrade` has run.
+
+`sentinelx db upgrade` and `sentinelx db current` print
+`error: database <url with password hidden>: <first line of the error>` and exit 1 when
+the database cannot be reached, instead of printing a traceback.
+
 Revisions:
 
 | Revision | Change |
 |---|---|
 | `540eb200aacd` | Initial schema. |
 | `a8829c9a233e` | Adds `response_actions.replay_id` (indexed), so response decisions from replays stay out of the live firewall log, and an index on `detections (status, timestamp)` for triage and analytics filters. |
+| `60413ece4dff` | Adds the nullable `users.sessions_ended_at`, the per-user session cut-off set by sign-out, password changes and resets, so it no longer depends on Redis. |
 
 `sentinelx db` configures Alembic programmatically from `DATABASE_URL`. `alembic.ini`
 at the repository root exists for developers running Alembic directly from a
@@ -1001,13 +1024,16 @@ When Redis is unreachable and `STORAGE__REDIS_REQUIRED=false` (the default):
 
 - SentinelX logs `redis_unavailable_degraded_mode` once and continues with in-process
   equivalents.
-- Rate limits, login throttling, WebSocket tickets, access-token revocations and the
-  per-user session cut-off (set by sign-out, password changes and resets) apply per
-  process rather than globally.
+- Rate limits, login throttling, WebSocket tickets and access-token revocations apply
+  per process rather than globally. The per-user session cut-off set by sign-out,
+  password changes and resets is stored in the database (`users.sessions_ended_at`) and
+  keeps applying everywhere.
 - `GET /api/v1/system/health` and `/system/status` report `"status": "degraded"`, and
   `sentinelx doctor` shows a warning.
-- Reconnection is attempted every 30 seconds; `redis_recovered` is logged when it
-  succeeds.
+- Reconnection is attempted at most every 30 seconds, on use and by the health check, so
+  health recovers without other traffic. On reconnection, cache entries written in
+  process memory during the outage (such as access-token revocations) are written back
+  to Redis, and `redis_recovered` is logged.
 
 With `STORAGE__REDIS_REQUIRED=true`, an unreachable Redis stops startup, and a Redis
 failure during operation raises an error instead of degrading, so affected requests

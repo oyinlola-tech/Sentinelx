@@ -292,7 +292,7 @@ sentinelx doctor --api-url http://127.0.0.1:8000 --dashboard-url http://127.0.0.
 
 `sentinelx doctor` checks Python, the operating system, architecture, WSL and containers, dependencies, PCAP replay, interface enumeration, the capture backend, live capture, the capture interface, the firewall backend, automatic blocking, the safety posture, rules, the PCAP directory, the JWT secret (from the environment or `.env`), the database, migrations and Redis. It also probes the API and the dashboard and confirms that what answers is SentinelX, not another service on the same port.
 
-Exit codes: `0` success, `1` failure (including any `doctor` FAIL), `2` invalid usage or configuration, `130` interrupted.
+Exit codes: `0` success, `1` failure (including any `doctor` FAIL), `2` invalid usage or configuration, `130` interrupted. Some specifics: `start --port` outside 1-65535, `config --section` with an unknown section, a nonexistent path given to `rules validate` or `monitor --pcap`, and `block` or `unblock` without a target when not run in a terminal are usage errors (2). `detections --id` or `incidents --id` with an unknown id exits 1, with or without `--json`. An unreachable database in `db upgrade` or `db current`, an unwritable output, report or model path, and a capture that cannot be opened by `monitor -i` print a message and exit 1 instead of a traceback.
 
 ## Dashboard
 
@@ -314,6 +314,8 @@ The dashboard is a Next.js application. The browser reaches the API on the dashb
 | Settings | Response mode (with a typed confirmation), detection thresholds, platform capabilities, health and users |
 
 Press `Ctrl+K` to search: an IP address opens that source's threats, and a detection or incident ID opens it directly.
+
+The shell around every page (top bar, footer and event tape) tolerates malformed API data. A page that receives a response of the wrong shape shows an error panel with **Try again** instead of taking the whole console down. The health row for the event persister in Settings shows events written and waiting, and, when they occur, retrying writes and dropped and rejected events.
 
 ## Detection engine
 
@@ -400,7 +402,7 @@ A safe path to enforcement:
 
 `manual_approval` or `automatic` with `DRY_RUN=false` and `FIREWALL_BACKEND=null` is rejected as invalid configuration. Turning dry run off or enabling automatic prevention from the dashboard or API requires the confirmation phrase `ENABLE PREVENTION` (`--confirm-prevention` with `sentinelx config set`), and the change is audited. Settings changed at runtime persist across restarts, with one exception: when the environment or `.env` sets `RESPONSE_MODE` or `DRY_RUN` explicitly, the environment wins at startup, so prevention can always be switched off by editing the environment and restarting.
 
-Whatever the mode, the safety guard refuses to block loopback, allowlisted, management and local addresses, and prefixes larger than a /24 by default.
+Whatever the mode, the safety guard refuses to block loopback, allowlisted, management and local addresses (also when written as an IPv4-mapped, 6to4, Teredo or NAT64 IPv6 address), IPv6 addresses with a zone identifier, and prefixes larger than a /24 by default.
 
 > **Warning:** a block applied on the wrong address can cut off your own access to the host. Test in `manual_approval` mode first. SentinelX's nftables rules live in their own `sentinelx` table and its pf rules in their own anchor, so removing that table or flushing that anchor removes every SentinelX block.
 
@@ -503,7 +505,7 @@ Threat model and controls: [docs/security.md](docs/security.md). To report a vul
 - **Throughput.** A single Python process handles thousands of packets per second, not millions. SentinelX suits home and lab networks, small offices, targeted segments via BPF filters, and offline analysis. It does not replace Suricata or Zeek on high-speed links.
 - **Threshold detectors are evadable.** Slow and distributed attacks can stay under per-source thresholds, as the benchmark's evasion experiments show.
 - **Encrypted traffic.** Only metadata is inspected (flows, DNS, TLS SNI and ALPN). There is no TLS decryption or payload signature matching in the style of Snort or Suricata.
-- **Single sensor state.** Detection state lives in the sensor process. Several sensors can share one database and Redis, but they do not share detection windows.
+- **Single sensor state.** Detection state lives in the sensor process. Several sensors can share one database and Redis, but they do not share detection windows. Plan for roughly 16 KB of memory per tracked source (`DETECTION__MAX_TRACKED_SOURCES`, default 50,000).
 - **Spoofed sources.** Blocking on source address can be abused with spoofed traffic. Prefer rate limits and short temporary blocks for floods.
 - **Only Linux x86_64 has been tested natively.** macOS and Windows capture and firewall adapters have been tested only against recorded command output, and Linux ARM64 has been run only under QEMU user-mode emulation (replay, capability detection and doctor; no live capture or firewall control). pf and Windows Firewall do not support rate limiting, and their temporary blocks expire only while SentinelX is running.
 - **No MFA or SSO.** Put the dashboard behind a VPN or an authenticating reverse proxy if it must be reachable beyond a trusted network.

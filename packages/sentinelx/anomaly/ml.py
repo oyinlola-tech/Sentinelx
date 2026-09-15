@@ -183,6 +183,15 @@ def save_model(bundle: ModelBundle, path: Path) -> None:
 
 
 def _check_file_is_trusted(path: Path) -> None:
+    """Refuse model files (and directories) another local user could have replaced.
+
+    A model is unpickled, so whoever can write it can run code as SentinelX. POSIX
+    permission bits are checked; on Windows every writable file reports mode 0o666 and
+    ownership is expressed in ACLs, so the POSIX checks would reject every model there
+    and are skipped (keep the model directory under a profile only you can write).
+    """
+    if os.name == "nt":
+        return
     info = path.stat()
     if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise ConfigurationError(
@@ -190,6 +199,14 @@ def _check_file_is_trusted(path: Path) -> None:
         )
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise ConfigurationError(f"refusing to load {path}: it is not owned by the current user")
+    parent = path.parent.stat()
+    writable_by_others = parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    sticky = parent.st_mode & stat.S_ISVTX
+    if writable_by_others and not sticky:
+        raise ConfigurationError(
+            f"refusing to load {path}: its directory {path.parent} is writable by other "
+            "users, who could replace the model (chmod 700 the directory)"
+        )
 
 
 def load_model(path: Path) -> ModelBundle:

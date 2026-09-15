@@ -15,7 +15,7 @@ from sentinelx.config.settings import Settings, reload_settings
 from sentinelx.services.platform import Platform
 from sentinelx.telemetry.logging import configure_logging
 
-__all__ = ["actor", "load_settings", "platform_context", "run"]
+__all__ = ["actor", "describe_os_error", "load_settings", "platform_context", "run"]
 
 
 def load_settings(*, quiet: bool = True) -> Settings:
@@ -51,8 +51,11 @@ def actor() -> str:
 def run[T](coroutine_factory: Callable[[], Awaitable[T]]) -> T:
     """Run an async command, mapping errors onto exit codes.
 
-    Exit 1 for platform errors (message shown, no traceback), 130 on Ctrl-C.
+    Exit 1 for platform and operating-system errors (message shown, no traceback),
+    130 on Ctrl-C.
     """
+    from rich.markup import escape
+
     from sentinelx.cli.output import err
 
     async def runner() -> T:
@@ -64,11 +67,23 @@ def run[T](coroutine_factory: Callable[[], Awaitable[T]]) -> T:
         err.print("[dim]interrupted[/]")
         raise typer.Exit(130) from None
     except SentinelXError as exc:
-        err.print(f"[bold red]error:[/] {exc}")
+        err.print(f"[bold red]error:[/] {escape(str(exc))}")
         problems = getattr(exc, "problems", None)
         for problem in problems or []:
-            err.print(f"  - {problem}")
+            err.print(f"  - {escape(str(problem))}")
         raise typer.Exit(1) from None
+    except OSError as exc:
+        # An unwritable directory or a full disk is an environment problem, not a bug:
+        # say what failed instead of printing a traceback.
+        err.print(f"[bold red]error:[/] {escape(describe_os_error(exc))}")
+        raise typer.Exit(1) from None
+
+
+def describe_os_error(exc: OSError) -> str:
+    """``Permission denied: /path`` rather than ``[Errno 13] Permission denied: '/path'``."""
+    if exc.strerror and exc.filename is not None:
+        return f"{exc.strerror}: {exc.filename}"
+    return exc.strerror or str(exc) or type(exc).__name__
 
 
 @asynccontextmanager

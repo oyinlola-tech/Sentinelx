@@ -27,6 +27,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from sentinelx.common.enums import DetectionMode
+from sentinelx.common.errors import ConfigurationError
 from sentinelx.common.models import Detection
 from sentinelx.common.netutils import IPNetworkT, parse_ip, parse_networks
 from sentinelx.config.settings import DetectionSettings
@@ -72,8 +73,27 @@ BUILTIN_DETECTORS: tuple[type[Detector], ...] = (
 _SIGNATURE_DETECTORS = frozenset({"denylist", "tcp_flag_anomaly"})
 
 
+#: Names that may appear in ``enabled_detectors`` besides the built-in detectors.
+ANOMALY_DETECTOR_NAMES = frozenset({"statistical_anomaly", "ml_anomaly"})
+
+
+def known_detector_names() -> frozenset[str]:
+    return frozenset(cls.name for cls in BUILTIN_DETECTORS) | ANOMALY_DETECTOR_NAMES
+
+
 def default_detectors(settings: DetectionSettings) -> list[Detector]:
-    """Instantiate the built-in detectors appropriate for ``settings.mode``."""
+    """Instantiate the built-in detectors appropriate for ``settings.mode``.
+
+    Raises:
+        ConfigurationError: when ``enabled_detectors`` names a detector that does not
+            exist. An allow-list with a typo would otherwise silently enable nothing.
+    """
+    unknown = sorted(set(settings.enabled_detectors) - known_detector_names())
+    if unknown:
+        raise ConfigurationError(
+            f"unknown detector(s) in DETECTION__ENABLED_DETECTORS: {', '.join(unknown)}; "
+            f"known: {', '.join(sorted(known_detector_names()))}"
+        )
     if settings.mode is DetectionMode.DISABLED:
         return []
     detectors = [cls(settings) for cls in BUILTIN_DETECTORS]
@@ -174,7 +194,10 @@ class DetectionEngine:
         key = (detection.detector, detection.source_ip)
         now = context.now
         last = self._last_reported.get(key)
-        if last is not None and now - last[0] < self.settings.detection_cooldown_seconds:
+        # abs(): if packet time stepped back by more than the cooldown, the earlier
+        # report is not "recent" - comparing signed times would suppress this source
+        # until packet time caught up with the old report, possibly hours later.
+        if last is not None and abs(now - last[0]) < self.settings.detection_cooldown_seconds:
             if not self._escalates(detection, last):
                 self.suppressed_cooldown += 1
                 metrics.detections_suppressed.labels(reason="cooldown").inc()

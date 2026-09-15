@@ -108,6 +108,9 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, default=_now)
     updated_at: Mapped[datetime] = mapped_column(TZ, nullable=False, default=_now, onupdate=_now)
     last_login_at: Mapped[datetime | None] = mapped_column(TZ)
+    sessions_ended_at: Mapped[datetime | None] = mapped_column(TZ)
+    """Access tokens issued before this second are refused (logout, password change or
+    reset). Kept in the database, not only in Redis, so it survives a Redis outage."""
 
 
 class RefreshToken(Base):

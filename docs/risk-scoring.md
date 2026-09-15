@@ -52,6 +52,7 @@ Details that affect the numbers:
 - **Sensitive destinations**: `RiskContext.sensitive_destinations` exists in the engine, but the pipeline does not fill it in and no setting controls it. In the current release, only the port list triggers this factor in a running platform.
 - **History** is kept per source address in memory. Entries older than `history_window_seconds` (default 3600) are dropped before each assessment. Each source keeps at most 500 entries, and the engine tracks at most 50,000 sources. When that limit is reached, the oldest-inserted tenth of the sources is discarded.
 - **A detection never counts toward its own history.** It is recorded after it has been scored.
+- **External inputs are sanitised before scoring.** The intel score is clamped to 0-1 (a non-finite value becomes 1 if positive, otherwise 0), and a negative correlated-detector count is treated as 0, so an out-of-range value from an intel provider or caller cannot exceed a factor's weight, subtract points, or put `inf` or `nan` into the stored contributions. A detection with a NaN confidence cannot be constructed (confidence must be within 0.0-1.0), and NaN scoring weights fail settings validation.
 - **Previous responses** are counted only when the response engine actually applies a block, temporary block, quarantine or rate limit. Simulated (dry-run), skipped and refused decisions do not count, and this counter never expires.
 - **Repeats are already rate-limited upstream.** The detection engine suppresses a repeat of the same detector and source for `detection_cooldown_seconds` (default 60) unless the repeat raises the severity or increases confidence by at least 0.2. The `frequency` factor therefore counts reported escalations and re-reports, not packets.
 
@@ -242,8 +243,8 @@ All `CorrelationSettings` fields can be edited at runtime.
 For each detection:
 
 1. Incidents whose `last_seen` is more than `window_seconds` before this detection's timestamp are closed for correlation. Their status is not changed, because "no longer receiving detections" is not the same as "resolved".
-2. If the group has an open incident, the detection extends it (see [How incidents are updated](#how-incidents-are-updated)).
-3. Otherwise, the detection is added to the group's pending list, and pending entries older than `window_seconds` are dropped.
+2. If the group has an open incident, the detection extends it (see [How incidents are updated](#how-incidents-are-updated)). A detection whose id the incident already holds (for example an event delivered twice) is not counted again; the check uses the incident's `detection_ids`, which keeps the most recent 1,000 ids.
+3. Otherwise, the detection is added to the group's pending list, and pending entries older than `window_seconds` are dropped. A detection whose id is already pending is ignored.
 4. An incident is created from the whole pending list if either of these holds:
    - the pending list contains at least `min_detections` distinct detectors; or
    - this detection has severity `critical` **and** risk at or above `standalone_risk_threshold`.
@@ -266,7 +267,11 @@ When a detection joins an open incident:
 - Risk is recalculated from all members.
 - The result reports `severity_changed` and the previous severity when severity increased.
 
-The pipeline publishes `incident.opened` or `incident.updated`, plus a severity-change event when severity rose. The response engine's incident handler runs **only** when the incident was just created or its severity changed. An incident whose risk rises past `auto_block_threshold` without a change in severity does not trigger an incident-level response at that point.
+The pipeline publishes `incident.opened` or `incident.updated`, plus a severity-change event when severity rose. The response engine's incident handler runs **only** when the incident was just created, its severity changed, or this detection pushed the incident's risk from below `auto_block_threshold` to at or above it (`Pipeline._incident_needs_response`). Other updates do not trigger an incident-level response.
+
+### Incidents closed by an analyst
+
+Setting an incident's status to `resolved` or `false_positive` with `PATCH /api/v1/incidents/{incident_id}` also closes it in the live correlation engine (`CorrelationEngine.close_incident`). Later detections from the same group then open a new incident instead of extending the closed one, and the closed incident's risk no longer drives automatic responses. Other status changes (`investigating`, `contained`) leave the incident open for correlation.
 
 ### Kill-chain patterns
 

@@ -201,7 +201,7 @@ A SentinelX server is one Python process with one asyncio event loop. The pipeli
 `events/bus.py` implements an in-process fan-out bus. `Platform` creates it with a queue size of 5,000.
 
 - **Pull subscribers** (`subscribe()`, used by the WebSocket hub and the CLI monitor) each get their own bounded queue. When a subscriber's queue is full, the event is dropped for that subscriber only and counted. Publishing never waits for a subscriber.
-- **Push handlers** (`add_handler()`, used by the persister) share one bounded handler queue that a single worker task drains, running handlers one after another. If that queue is full, the event is dropped for all handlers and a `event_handler_queue_full` warning is logged.
+- **Push handlers** (`add_handler()`, used by the persister) share one bounded handler queue that a single worker task drains, running handlers one after another. When that queue is full, security records (`DURABLE_EVENT_TYPES` in `events/bus.py`: `detection.created`, `incident.opened`, `incident.updated`, `incident.closed`, `response.decided`, `ip.blocked` and `ip.unblocked`) are not dropped straight away: publishing waits up to 10 seconds for room, which slows the publisher (and so the pipeline) instead of losing detections. If there is still no room, or the worker is not running, the event is dropped for all handlers and `security_event_dropped` is logged at error level. Other events (statistics, progress, health) are dropped immediately under pressure, with an `event_handler_queue_full` warning.
 - Handler exceptions are logged, counted in `sentinelx_event_handler_failures_total{handler}`, and do not stop the worker.
 - Drops are counted in `sentinelx_events_dropped_total{target="subscriber"|"handlers"}`.
 - `EventBus.drain()` waits until every queued handler event has been processed. `Platform.stop()` calls it (5-second limit, `event_bus_drain_timeout` logged when exceeded) before stopping the persister. When the bus stops, subscriber iterators end instead of waiting forever.
@@ -209,16 +209,18 @@ A SentinelX server is one Python process with one asyncio event loop. The pipeli
 
 WebSocket connections use a per-connection queue of `api.websocket_max_queue` (default 500). The server sends a ping every 25 seconds, and a client whose send stalls for 10 seconds is disconnected.
 
-This design gives priority to packet processing over event delivery. A slow dashboard loses events. It does not slow detection.
+This design gives priority to packet processing over event delivery. A slow dashboard loses events. It does not slow detection. The one exception is a full handler queue, where security records apply bounded back-pressure as described above.
 
 ### Persister
 
 `storage/persister.py` registers as a bus handler for detections, incidents, response decisions, block and unblock events, and packet statistics.
 
-- Events are buffered and written in one transaction when the buffer reaches `storage.batch_size` (default 200) or every `storage.flush_interval_seconds` (default 2.0), and once more when the persister stops.
-- A failed batch is logged, counted in `failed_batches` and in the `storage_errors` metric, and discarded. Later batches are still written. The platform health status reports the persister as not OK once any batch has failed.
-- A flush triggered by a full buffer runs inside the handler worker. While the database write is in progress, other events wait in the handler queue. A database that stays slow for long enough fills that queue, and events are then dropped as described above.
-- Detections are de-duplicated by `detection_id` before insert. Replay detections, incidents and response decisions are stored with their `replay_id`.
+- The bus handler only appends the event to an in-memory buffer; it never waits on the database, so a slow or unreachable database cannot back up the bus's handler queue. A background task writes the buffer in batches of `storage.batch_size` (default 200), when a full batch is waiting or every `storage.flush_interval_seconds` (default 2.0), and once more when the persister stops (for at most 30 seconds; events still unwritten then are logged as `persister_stopped_with_unwritten_events`).
+- A batch that fails because the database is unavailable (a connection error, a timeout, or any error while a health probe also fails) is put back at the front of the buffer, in order, and retried with exponential backoff from 0.5 seconds up to 30 seconds. Each failed attempt is counted in `failed_batches` and logged as `persist_batch_failed_will_retry`.
+- A batch that fails while the database is healthy contains bad data. It is split until the offending events are isolated; only those are rejected (counted in `rejected`, logged as `persist_event_rejected`) and the rest are written.
+- The buffer holds at most 50,000 events. When it overflows during a long outage, traffic statistics are dropped first, then the oldest events. Every drop is counted in `dropped` and in `sentinelx_events_dropped_total{target="persister"}`, and logged at error level (`persist_buffer_full_event_dropped`, on the first drop and every 1,000th).
+- The platform health status (`components.persister`) reports `ok: false` only while writes are failing and being retried, with `written`, `pending` (buffered or being written), `retrying`, `failed_batches`, `rejected` and `dropped`.
+- Detections are de-duplicated by `detection_id`, and response decisions by `decision_id`, before insert, so a retry after a commit whose acknowledgement was lost does not fail on rows already stored. Replay detections, incidents and response decisions are stored with their `replay_id`.
 - Packet statistics from live capture are rolled into one traffic summary and one system-metric row per wall-clock minute. Replay statistics are not stored as traffic history.
 
 Audit records do not travel through the bus. `storage/audit.py` writes them straight to the database, because dropping events is acceptable for dashboard updates and not for an audit trail.
@@ -239,10 +241,11 @@ All traffic state is held in memory inside the sensor process. Every structure t
 | Flow idle timeout | 120 seconds without a packet |
 | Profile expiry in the sweep | Not seen for 2 times the feature window |
 | Feature window | The longest detector window; 60 seconds with default settings (`brute_force_window_seconds`) |
+| Memory | Roughly 16 KB per tracked source: 50,000 sources with 200,000 connections were measured at 823 MB. Size the sensor's memory for `max_tracked_sources` |
 
 When a new source arrives and the source limit is reached, profiles not seen for one feature window are removed first. If the table is still full, the least recently seen 10% are removed. Flows are evicted the same way, using the 120-second idle timeout. Every eviction is counted in `evicted_sources` and `evicted_flows`, which appear in the pipeline status (`GET /api/v1/system/status`, under `pipeline.features`), so you can distinguish a quiet network from a sensor that is shedding state.
 
-Timestamps used for windows and expiry are packet timestamps, not the wall clock. Replaying a capture therefore produces the same windows as the original traffic. Before detectors read a profile, its windows are expired to the current packet time, so a profile that has been quiet does not report activity that has left its window.
+Timestamps used for windows and expiry are packet timestamps, not the wall clock. Replaying a capture therefore produces the same windows as the original traffic. If packet time jumps backwards by more than the feature window (a clock correction on the sensor, or captures concatenated out of order), all profiles and flows are discarded and counted in `clock_resets`, because windows that only move forward could not expire anything until packet time caught up. Before detectors read a profile, its windows are expired to the current packet time, so a profile that has been quiet does not report activity that has left its window.
 
 Changing any detector window setting at runtime replaces the feature extractor, which discards all traffic state. A warning (`feature_windows_rebuilt`) is logged when this happens.
 
@@ -296,7 +299,7 @@ The same reasoning applies elsewhere in the decoder: the DNS name reader follows
 |---|---|---|
 | Intended use | Development and evaluation with no infrastructure | Production |
 | Driver | `aiosqlite` | `asyncpg` |
-| Schema at startup | A database file is migrated to the latest Alembic revision automatically. A file created before migrations were tracked (it has tables but no `alembic_version`) is stamped at the first revision and then upgraded. An in-memory database gets tables created from the models | Never changed automatically. Startup refuses a schema that is not at the latest revision: `database schema is at revision <applied> but this version of SentinelX needs <head>; run: sentinelx db upgrade` |
+| Schema at startup | A database file is migrated to the latest Alembic revision automatically. A database that has tables but no `alembic_version` (created from the models without migrations) is adopted first: its schema is compared with the models and it is stamped at the latest revision when they match, otherwise at the initial revision, and then upgraded. An in-memory database gets tables created from the models | Never changed automatically. Startup refuses a schema that is not at the latest revision: `database schema is at revision <applied> but this version of SentinelX needs <head>; run: sentinelx db upgrade` |
 | Connection settings | 30-second busy timeout, `PRAGMA foreign_keys=ON`, `PRAGMA journal_mode=WAL` | Pool of `storage.pool_size` (default 10) plus `storage.max_overflow` (default 20) |
 | Production | Refused when `ENVIRONMENT=production` | Required |
 
@@ -310,7 +313,7 @@ Migrations live in `packages/sentinelx/storage/migrations`. `storage/migrate.py`
 
 | Command | Purpose |
 |---|---|
-| `sentinelx db upgrade` | Apply migrations (required for PostgreSQL before first start; the Docker Compose stack runs it in the `migrate` service). |
+| `sentinelx db upgrade` | Apply migrations (required for PostgreSQL before first start; the Docker Compose stack runs it in the `migrate` service). An unversioned database is adopted first, as at SQLite startup. An unreachable database prints an error and exits 1. |
 | `sentinelx db current` | Show the applied and latest migration revisions. |
 | `sentinelx db purge` | Apply retention policies now. |
 | `sentinelx doctor` | Among other checks, reports whether the database schema is at the latest revision. |
@@ -332,7 +335,7 @@ Per-packet detection state is never stored in Redis. A network round trip per pa
 - A warning `redis_unavailable_degraded_mode` is logged once.
 - Rate limits, tickets and caches fall back to in-process structures, so limits apply per process instead of globally.
 - A failed operation on a connected client also switches to degraded mode.
-- Reconnection is attempted on use, at most every 30 seconds. Recovery is logged as `redis_recovered`.
+- Reconnection is attempted on use, including by the health check, at most every 30 seconds. On recovery, cache entries written in memory during the outage (access-token revocations among them) are written back to Redis, so a token revoked during the outage stays revoked; a value already in Redis is kept unless the local one is a larger number. Recovery is logged as `redis_recovered`.
 - Platform health reports `redis.degraded: true`, and the overall status becomes `degraded` (not `error`). `sentinelx doctor` reports it as a warning.
 
 With `STORAGE__REDIS_REQUIRED=true`, startup fails if Redis is unreachable, and later Redis errors raise instead of degrading.
@@ -351,7 +354,7 @@ With `STORAGE__REDIS_REQUIRED=true`, startup fails if Redis is unreachable, and 
 
 **Detection windows in process, shared state in Redis.** Keeping windows in memory avoids a round trip per packet. The cost is that detection state is per sensor process and is lost on restart.
 
-**Drop events instead of applying back-pressure.** Slow subscribers lose events so that packet processing continues. The cost is that, under sustained load or a slow database, stored history and the dashboard can miss events. Drops are counted, and the handler queue is drained on a clean shutdown.
+**Drop events instead of applying back-pressure, except for security records.** Slow subscribers lose events so that packet processing continues. Security records bound for storage wait up to 10 seconds for room in a full handler queue, and the persister buffers up to 50,000 events through a database outage. The cost is that a sustained burst can slow the pipeline for those seconds, and that under sustained load or a very long outage the dashboard, statistics and eventually stored history can still miss events. Drops are counted, and the handler queue is drained on a clean shutdown.
 
 **Audit writes bypass the bus.** Audit records are written directly to the database so they cannot be dropped the way dashboard events can. A failed audit write by an administrative action returns an error. A failed audit write by the engine is logged at error level but does not reverse a firewall change that has already been made.
 
@@ -372,9 +375,9 @@ With `STORAGE__REDIS_REQUIRED=true`, startup fails if Redis is unreachable, and 
 - **Per-sensor, in-memory state.** Sliding windows, baselines, cooldowns, risk history, open incidents and pending approvals live in the sensor process. They are lost on restart, and they are not shared between sensors. Several sensors can write to one database (rows carry a `sensor` column), but correlation and scoring do not span sensors.
 - **CLI commands do not see live server state.** They build their own platform instance. Use the API for the running sensor's status.
 - **Inline I/O on the detection path.** Threat-intel lookups and firewall commands are awaited before the next packet is processed.
-- **Event loss under load.** A slow WebSocket client, a full handler queue or a failed database batch loses events for that consumer. Detection itself is not affected.
+- **Event loss under load.** A slow WebSocket client loses events for that client. A handler queue that stays full for more than 10 seconds loses security records, and one that is full at all loses statistics. A database outage long enough to overflow the persister's 50,000-event buffer, or a row the database rejects, loses those events. Every loss is counted and logged. Detection itself is not affected, but it can be slowed by back-pressure.
 - **No stream reassembly or IP defragmentation.** HTTP and TLS metadata is read only from the segment that starts a message or handshake. Encrypted traffic yields only handshake metadata. Known decoder gaps are listed in [packet-capture.md](packet-capture.md#known-decoder-limitations).
 - **Threshold evasion.** Activity spread out so that it never exceeds a threshold within a window (slow scans, low-rate brute force) is not detected by the threshold detectors. The benchmark includes these misses on purpose.
 - **Eviction under source floods.** See [State and memory bounds](#state-and-memory-bounds).
-- **Redis degraded mode** makes rate limits, WebSocket tickets, access-token revocations and the per-user session cut-off set by sign-out and password changes per-process until Redis returns.
+- **Redis degraded mode** makes rate limits, WebSocket tickets and access-token revocations per-process until Redis returns. The per-user session cut-off set by sign-out, password changes and resets is stored in the database (`users.sessions_ended_at`) and is not affected.
 - **Platform coverage.** Live capture works on Linux (AF_PACKET or libpcap) and on macOS and Windows through libpcap (BPF devices, Npcap); it has been verified on Linux only. Enforcement with nftables and iptables has been verified on Linux with real traffic. The pf and Windows Firewall adapters are tested only against recorded command output. Under WSL, capture and firewall changes apply to the WSL virtual machine, and inside a container to the container's network namespace unless it uses host networking. PCAP replay works wherever the Python package installs.

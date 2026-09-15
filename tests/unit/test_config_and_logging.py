@@ -125,6 +125,35 @@ class TestRedaction:
         assert "hunter2" not in json.dumps(event)
         assert "abc.def" not in json.dumps(event)
 
+    def test_audit_gaps_in_redaction_are_closed(self) -> None:
+        # Compose builds REDIS_URL with an empty user; API keys arrive as X-Api-Key.
+        event = redact_secrets(
+            None,
+            "info",
+            {
+                "event": "connect failed: redis://:redispass@redis:6379/0",
+                "error": "ConnectionError for redis://:redispass@redis:6379/0",
+                "X-Api-Key": "k-123",
+                "x_api_key": "k-456",
+                "header": "Authorization: Basic dXNlcjpodW50ZXIy",
+                "redis_url": "redis://cache:6379/0",
+                "ticket": "one-time-ticket",
+                "passphrase": "hunter2",
+                "session_count": 3,
+            },
+        )
+        text = json.dumps(event)
+        for secret in (
+            "redispass",
+            "k-123",
+            "k-456",
+            "dXNlcjpodW50ZXIy",
+            "SECRETPATH",
+            "one-time-ticket",
+            "hunter2",
+        ):
+            assert secret not in text, secret
+
     def test_configured_json_logger_never_emits_password(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

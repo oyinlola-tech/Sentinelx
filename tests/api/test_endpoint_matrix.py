@@ -41,6 +41,7 @@ from sentinelx.common.enums import UserRole
 from sentinelx.firewall import MemoryFirewall
 from sentinelx.services.platform import Platform
 from tests.api.conftest import ADMIN_PASSWORD, REPO_RULES, make_settings
+from tests.conftest import _SETTINGS_ENV
 
 API = "/api/v1"
 ROLES = ("viewer", "analyst", "admin")
@@ -67,6 +68,7 @@ PATH_DISCLOSURE_ALLOWED = {
     ("GET", "/rules"): "rule source_path, shown by the dashboard's rules page",
     ("GET", "/rules/{rule_id}"): "rule source_path",
     ("GET", "/config"): "effective settings (analyst): pcap_directory, rules_directory",
+    ("PATCH", "/config/{section}"): "echoes the effective settings after an admin change",
     ("GET", "/system/status"): "database URL with the password hidden (SQLite file path)",
 }
 
@@ -139,7 +141,11 @@ OPS: list[Op] = [
         "POST",
         "/users",
         "admin",
-        json={"username": "matrix-created", "password": "Created-Passphrase-2026", "role": "viewer"},
+        json={
+            "username": "matrix-created",
+            "password": "Created-Passphrase-2026",
+            "role": "viewer",
+        },
         allowed=201,
         wrong_type={"username": "valid-name", "password": "Created-Pass-2026", "role": "root"},
         oversized={"username": "u" * 65, "password": "Created-Pass-2026"},
@@ -462,7 +468,7 @@ def assert_clean(
 
 
 def derived_access(route: APIRoute) -> str:
-    names = {dependency.call.__name__ for dependency in route.dependant.dependencies}
+    names = {getattr(d.call, "__name__", "") for d in route.dependant.dependencies}
     for role in ("admin", "analyst", "viewer"):
         if f"require_{role}" in names:
             return role
@@ -483,10 +489,14 @@ async def build_env(tmp: Path, **api: Any) -> AsyncIterator[Env]:
         app=app, client=("127.0.0.1", 50000), raise_app_exceptions=False
     )
     try:
-        async with httpx.AsyncClient(transport=transport, base_url=f"http://testserver{API}") as http:
+        async with httpx.AsyncClient(
+            transport=transport, base_url=f"http://testserver{API}"
+        ) as http:
             env = Env(platform, app, http, {}, tmp)
-            for role in (UserRole.ANALYST, UserRole.VIEWER):
-                await platform.auth.create_user(f"{role.value}1", PASSWORDS[role.value], role)
+            for user_role in (UserRole.ANALYST, UserRole.VIEWER):
+                await platform.auth.create_user(
+                    f"{user_role.value}1", PASSWORDS[user_role.value], user_role
+                )
             for role in ROLES:
                 env.headers[role] = await env.login(role)
             yield env
@@ -496,8 +506,15 @@ async def build_env(tmp: Path, **api: Any) -> AsyncIterator[Env]:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def env(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Env]:
-    async with build_env(tmp_path_factory.mktemp("matrix")) as instance:
-        yield instance
+    tmp = tmp_path_factory.mktemp("matrix")
+    # A module fixture is set up before the function-scoped isolation fixture, so it
+    # isolates itself: no environment settings and no .env from the working directory.
+    with pytest.MonkeyPatch.context() as patch:
+        for name in _SETTINGS_ENV:
+            patch.delenv(name, raising=False)
+        patch.chdir(tmp)
+        async with build_env(tmp) as instance:
+            yield instance
 
 
 @pytest_asyncio.fixture
@@ -582,6 +599,10 @@ class TestMatrix:
             else:
                 assert response.status_code == 403, outcome
                 assert response.json() == {"detail": f"requires the {op.access} role"}, outcome
+        if op.fresh_session:
+            # Logging out ends every session of the user, including the shared ones.
+            for role in ROLES:
+                env.headers[role] = await env.login(role)
 
     # ------------------------------------------------ (c) request validation
 
@@ -589,9 +610,10 @@ class TestMatrix:
     async def test_invalid_bodies_are_rejected_cleanly(self, env: Env, op: Op) -> None:
         headers = env.headers["admin"]
         json_type = {"content-type": "application/json"}
-        cases: list[tuple[str, dict[str, Any], int]] = [
+        cases: list[tuple[str, dict[str, Any], int | tuple[int, ...]]] = [
             ("malformed", {"content": b'{"unterminated": ', "extra_headers": json_type}, 422),
-            ("not utf-8", {"content": b"\xff\xfe\xfd", "extra_headers": json_type}, 422),
+            # FastAPI answers an undecodable body with 400 "error parsing the body".
+            ("not utf-8", {"content": b"\xff\xfe\xfd", "extra_headers": json_type}, (400, 422)),
             ("array", {"body": []}, op.invalid_body_status),
             ("scalar", {"body": "just a string"}, op.invalid_body_status),
         ]
@@ -606,7 +628,8 @@ class TestMatrix:
         for label, kwargs, expected in cases:
             response = await env.call(op, headers, **kwargs)
             assert_clean(response, env.platform, env.tmp, op)
-            assert response.status_code == expected, f"{label}: {response.text[:300]}"
+            allowed = expected if isinstance(expected, tuple) else (expected,)
+            assert response.status_code in allowed, f"{label}: {response.text[:300]}"
 
     async def test_upload_body_checks(self, env: Env) -> None:
         headers = env.headers["analyst"]
@@ -620,7 +643,11 @@ class TestMatrix:
         assert multipart.status_code == 415
         bad_length = await env.client.post(
             "/replay/upload",
-            headers={**headers, "content-type": "application/octet-stream", "content-length": "1e9"},
+            headers={
+                **headers,
+                "content-type": "application/octet-stream",
+                "content-length": "1e9",
+            },
             content=b"",
         )
         assert bad_length.status_code == 400
@@ -649,17 +676,18 @@ class TestMatrix:
     @pytest.mark.parametrize("op", TEMPLATED_OPS, ids=lambda op: op.id)
     async def test_hostile_and_unknown_path_parameters(self, env: Env, op: Op) -> None:
         headers = env.headers["admin"]
+        values: dict[str, int | None]
         if "{user_id}" in op.template:
             values = {"0": 422, "-1": 422, "abc": 422, "1.5": 422, "2147483648": 422}
             values |= {"999999": 404, "9" * 40: 422}
         else:
-            values = {"does-not-exist-anywhere": op.allowed if op.allowed != 200 else 404}
+            unknown = {"/replay/{replay_id}/cancel": 409, "/config/{section}": 422}
+            values = {"does-not-exist-anywhere": unknown.get(op.template, 404)}
             values |= {"z" * 2048: None, "%00": None, "..%2F..%2Fetc%2Fpasswd": None}
             values |= {"%F0%9F%92%A5": None, "' OR 1=1 --": None}
         body = op.json if op.json is not NO_BODY else NO_BODY
         if op.template == "/config/{section}":
-            body = {"changes": {"anything": 1}}
-            values["does-not-exist-anywhere"] = 422  # documented: section not editable
+            body = {"changes": {"anything": 1}}  # unknown section: documented 422
         for value, expected in values.items():
             path = re.sub(r"\{[^}]+\}", value, op.template)
             response = await env.call(op, headers, path=path, body=body)
@@ -728,9 +756,7 @@ class TestMatrix:
             ("/replay/files/inspect", {"path": "p" * 513}),
         ],
     )
-    async def test_filter_parameters_are_validated(
-        self, env: Env, path: str, params: Any
-    ) -> None:
+    async def test_filter_parameters_are_validated(self, env: Env, path: str, params: Any) -> None:
         response = await env.client.get(path, headers=env.headers["admin"], params=params)
         assert response.status_code == 422, response.text
         assert_clean(response, env.platform, env.tmp)
@@ -749,7 +775,9 @@ class TestMatrix:
             "/replay/scenarios/mixed_intrusion", headers=headers, json={}
         )
         replay = (
-            await env.client.post("/replay", headers=headers, json={"path": generated.json()["path"]})
+            await env.client.post(
+                "/replay", headers=headers, json={"path": generated.json()["path"]}
+            )
         ).json()
         assert platform.replay is not None
         await platform.replay.wait(replay["replay_id"])
@@ -761,7 +789,8 @@ class TestMatrix:
                 if first["total"] >= 3 or time.monotonic() > deadline:
                     break
                 await asyncio.sleep(0.05)
-            total, seen, offset = first["total"], [], 0
+            total, offset = first["total"], 0
+            seen: list[Any] = []
             assert total >= 3, (path, first)
             while offset < total:
                 page = (
@@ -777,10 +806,12 @@ class TestMatrix:
 
         scoped = {"replay_id": replay["replay_id"]}
         await walk("/audit", {}, "id")
-        await walk("/firewall/actions", {}, "id")
+        await walk("/firewall/actions", {}, "decision_id")
         await walk("/detections", scoped, "detection_id")
         # A filter narrows the total, and every returned item satisfies it.
-        logins = (await env.client.get("/audit", headers=headers, params={"action": "LOGIN"})).json()
+        logins = (
+            await env.client.get("/audit", headers=headers, params={"action": "LOGIN"})
+        ).json()
         assert logins["total"] >= 3 and all(i["action"] == "LOGIN" for i in logins["items"])
         everything = (await env.client.get("/detections", headers=headers, params=scoped)).json()
         for severity in {d["severity"] for d in everything["items"]}:
@@ -922,7 +953,8 @@ async def test_unexpected_error_is_a_generic_500(
     monkeypatch.setattr(solo.platform.queries, "incidents", fail)
     response = await solo.client.get("/incidents", headers=solo.headers["viewer"])
     assert_incident_body(response, 500, "internal error")
-    assert_clean(response, solo.platform, solo.tmp)
+    assert str(solo.tmp) not in response.text and JWT_SECRET not in response.text
+    assert "boom" not in response.text
 
 
 # ----------------------------------------------------------------- WebSocket
@@ -930,6 +962,13 @@ async def test_unexpected_error_is_a_generic_500(
 
 def _ws_app(tmp_path: Path) -> FastAPI:
     return create_app(make_settings(tmp_path, jwt_secret=JWT_SECRET))
+
+
+def _run(http: Any, function: Any, *args: Any) -> Any:
+    """Call a coroutine function on the TestClient's event loop."""
+    portal = http.portal
+    assert portal is not None
+    return portal.call(function, *args)
 
 
 def _next_event(ws: Any) -> dict[str, Any]:
@@ -942,11 +981,15 @@ class _WsUsers:
     def __init__(self, http: Any) -> None:
         self.http = http
         self.platform: Platform = http.app.state.platform
-        for role in (UserRole.ANALYST, UserRole.VIEWER):
-            http.portal.call(
-                self.platform.auth.create_user, f"{role.value}1", PASSWORDS[role.value], role
+        for user_role in (UserRole.ANALYST, UserRole.VIEWER):
+            _run(
+                http,
+                self.platform.auth.create_user,
+                f"{user_role.value}1",
+                PASSWORDS[user_role.value],
+                user_role,
             )
-        self.headers = {}
+        self.headers: dict[str, dict[str, str]] = {}
         for role in ROLES:
             username = "admin" if role == "admin" else f"{role}1"
             token = http.post(
@@ -1023,14 +1066,14 @@ def test_websocket_fan_out_role_filtering_and_reconnect(tmp_path: Path) -> None:
             assert "config.changed" not in hellos["viewer"]["payload"]["subscribed"]
             assert "audit.event" in hellos["analyst"]["payload"]["subscribed"]
 
-            http.portal.call(bus.publish, EventType.DETECTION_CREATED, {"detection_id": "d-1"})
+            _run(http, bus.publish, EventType.DETECTION_CREATED, {"detection_id": "d-1"})
             first = {name: _next_event(ws) for name, ws in sockets.items()}
             assert {m["type"] for m in first.values()} == {"detection.created"}
             assert len({m["id"] for m in first.values()}) == 1  # the same event everywhere
 
-            http.portal.call(bus.publish, EventType.AUDIT_EVENT, {"action": "LOGIN"})
-            http.portal.call(bus.publish, EventType.CONFIG_CHANGED, {"section": "response"})
-            http.portal.call(bus.publish, EventType.DETECTION_CREATED, {"detection_id": "d-2"})
+            _run(http, bus.publish, EventType.AUDIT_EVENT, {"action": "LOGIN"})
+            _run(http, bus.publish, EventType.CONFIG_CHANGED, {"section": "response"})
+            _run(http, bus.publish, EventType.DETECTION_CREATED, {"detection_id": "d-2"})
             for name in ("admin", "admin2", "analyst"):
                 received = [_next_event(sockets[name])["type"] for _ in range(3)]
                 assert received == ["audit.event", "config.changed", "detection.created"]
@@ -1043,7 +1086,7 @@ def test_websocket_fan_out_role_filtering_and_reconnect(tmp_path: Path) -> None:
         assert _close_code(http, reused) == 4401
         with http.websocket_connect(users.url("viewer")) as ws:
             assert ws.receive_json()["type"] == "hello"
-            http.portal.call(bus.publish, EventType.INCIDENT_OPENED, {"incident_id": "i-1"})
+            _run(http, bus.publish, EventType.INCIDENT_OPENED, {"incident_id": "i-1"})
             assert _next_event(ws)["payload"] == {"incident_id": "i-1"}
 
 
@@ -1061,12 +1104,12 @@ def test_websocket_viewer_cannot_subscribe_to_analyst_only_events(tmp_path: Path
         mixed = users.url("viewer", types="audit.event,detection.created")
         with http.websocket_connect(mixed) as ws:
             assert ws.receive_json()["payload"]["subscribed"] == ["detection.created"]
-            http.portal.call(bus.publish, EventType.AUDIT_EVENT, {"action": "secret"})
-            http.portal.call(bus.publish, EventType.DETECTION_CREATED, {"detection_id": "d"})
+            _run(http, bus.publish, EventType.AUDIT_EVENT, {"action": "secret"})
+            _run(http, bus.publish, EventType.DETECTION_CREATED, {"detection_id": "d"})
             assert _next_event(ws)["type"] == "detection.created"
         with http.websocket_connect(users.url("analyst", types="audit.event")) as ws:
             assert ws.receive_json()["payload"]["subscribed"] == ["audit.event"]
-            http.portal.call(bus.publish, EventType.AUDIT_EVENT, {"action": "visible"})
+            _run(http, bus.publish, EventType.AUDIT_EVENT, {"action": "visible"})
             assert _next_event(ws)["payload"] == {"action": "visible"}
 
 

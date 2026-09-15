@@ -11,6 +11,8 @@ import secrets
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from sentinelx.common.errors import (
     CaptureError,
@@ -85,13 +87,30 @@ def install_error_handlers(app: FastAPI) -> None:
         log.error("firewall_error", error=str(exc), command=exc.command)
         return JSONResponse({"detail": f"firewall operation failed: {exc}"}, status_code=502)
 
-    @app.exception_handler(StorageError)
-    async def _storage(request: Request, exc: StorageError) -> JSONResponse:
+    async def _storage(request: Request, exc: Exception) -> JSONResponse:
         incident = secrets.token_hex(6)
-        log.error("storage_error", error=str(exc), error_id=incident, path=request.url.path)
+        log.error(
+            "storage_error",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            error_id=incident,
+            path=request.url.path,
+        )
         return JSONResponse(
             {"detail": "storage unavailable", "error_id": incident}, status_code=503
         )
+
+    # The database being unreachable surfaces from SQLAlchemy mid-request (a lost
+    # connection, a refused connect, an exhausted pool), not as StorageError, which is
+    # only raised at start-up. All of them are outages, not programming errors.
+    for storage_error in (
+        StorageError,
+        OperationalError,
+        InterfaceError,
+        DisconnectionError,
+        PoolTimeoutError,
+    ):
+        app.add_exception_handler(storage_error, _storage)
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception) -> JSONResponse:

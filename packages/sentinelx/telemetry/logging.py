@@ -25,7 +25,8 @@ from sentinelx.config.settings import TelemetrySettings
 __all__ = ["SENSITIVE_KEYS", "configure_logging", "get_logger", "redact_secrets"]
 
 #: Keys whose values are replaced with a placeholder before a record is emitted.
-#: Matched case-insensitively against the whole key and against ``_``-separated parts.
+#: Matched case-insensitively against the whole key, against ``_``/``-``-separated parts,
+#: and (for API keys) against the joined name, so ``X-Api-Key`` is caught too.
 SENSITIVE_KEYS: frozenset[str] = frozenset(
     {
         "password",
@@ -47,6 +48,11 @@ SENSITIVE_KEYS: frozenset[str] = frozenset(
         "cookie",
         "hashed_password",
         "password_hash",
+        "passphrase",
+        "ticket",
+        "dsn",
+        "database_url",
+        "redis_url",
     }
 )
 
@@ -56,8 +62,9 @@ _REDACTED = "[redacted]"
 #: redaction alone would miss (e.g. a DSN logged as part of an error string).
 _INLINE_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)\b(password|token|secret|api[-_]?key)\s*[=:]\s*\S+"),
-    re.compile(r"(?i)(?<=://)[^:/@\s]+:[^@/\s]+(?=@)"),  # user:pass@host in a URL
-    re.compile(r"\bBearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE),
+    # user:pass@host in a URL, including an empty user (redis://:pass@host)
+    re.compile(r"(?i)(?<=://)[^:/@\s]*:[^@/\s]+(?=@)"),
+    re.compile(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/\-]+=*", re.IGNORECASE),
 )
 
 
@@ -65,7 +72,10 @@ def _is_sensitive(key: str) -> bool:
     lowered = key.lower()
     if lowered in SENSITIVE_KEYS:
         return True
-    return any(part in SENSITIVE_KEYS for part in lowered.split("_"))
+    parts = re.split(r"[_\-]", lowered)
+    if "".join(parts).endswith("apikey"):
+        return True
+    return any(part in SENSITIVE_KEYS for part in parts)
 
 
 def _scrub_text(text: str) -> str:
@@ -185,7 +195,15 @@ def configure_logging(
     root.setLevel(level)
 
     # These are chatty at INFO and say nothing useful about security posture.
-    for noisy in ("uvicorn.access", "sqlalchemy.engine", "asyncio", "scapy.runtime"):
+    # alembic.runtime.plugins announces every autogenerate plugin at start-up; the
+    # migration lines themselves (alembic.runtime.migration) stay visible.
+    for noisy in (
+        "uvicorn.access",
+        "sqlalchemy.engine",
+        "asyncio",
+        "scapy.runtime",
+        "alembic.runtime.plugins",
+    ):
         logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
 
 

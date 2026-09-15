@@ -93,6 +93,13 @@ class Database:
         else:
             kwargs["pool_size"] = self.settings.pool_size
             kwargs["max_overflow"] = self.settings.max_overflow
+            kwargs["pool_timeout"] = self.settings.pool_timeout_seconds
+            # asyncpg: bound connecting and every statement (the pool's pre-ping included),
+            # so an unresponsive server surfaces as an error the API maps to 503.
+            kwargs["connect_args"] = {
+                "timeout": self.settings.connect_timeout_seconds,
+                "command_timeout": self.settings.statement_timeout_seconds,
+            }
 
         engine = create_async_engine(self.url, **kwargs)
         if self.dialect == "sqlite":
@@ -177,8 +184,18 @@ class Database:
             try:
                 yield session
                 await session.commit()
-            except BaseException:
-                await session.rollback()
+            except BaseException as exc:
+                try:
+                    await session.rollback()
+                except Exception:  # a broken connection cannot roll back; keep the cause
+                    log.debug("rollback_failed", error=type(exc).__name__)
+                if isinstance(exc, OSError | TimeoutError) and _raised_by_database_driver(exc):
+                    # The driver's own network errors (refused, unresolvable host, timed
+                    # out) reach here unwrapped by SQLAlchemy. Report them as the storage
+                    # outage they are, so the API answers 503 rather than a generic 500.
+                    raise StorageError(
+                        f"database unavailable at {self.safe_url}: {type(exc).__name__}"
+                    ) from exc
                 raise
 
     async def health(self) -> dict[str, Any]:
@@ -193,3 +210,17 @@ class Database:
                 "url": self.safe_url,
                 "error": type(exc).__name__,
             }
+
+
+_DRIVER_PACKAGES = ("sqlalchemy", "asyncpg", "aiosqlite")
+
+
+def _raised_by_database_driver(exc: BaseException) -> bool:
+    """Whether ``exc`` was raised from inside the database driver stack."""
+    traceback = exc.__traceback__
+    while traceback is not None:
+        module = traceback.tb_frame.f_globals.get("__name__", "")
+        if module.split(".", 1)[0] in _DRIVER_PACKAGES:
+            return True
+        traceback = traceback.tb_next
+    return False

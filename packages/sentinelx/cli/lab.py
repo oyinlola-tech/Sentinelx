@@ -13,6 +13,7 @@ from typing import Annotated, Any
 import typer
 from rich.console import Group
 from rich.live import Live
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -81,7 +82,7 @@ def register(app: typer.Typer) -> None:
         if persist:
             stored = run(lambda: _replay_persisted(settings, pcap, speed, limit))
             if report:
-                report.write_text(json.dumps(stored, indent=2, default=str), encoding="utf-8")
+                _write_report(report, stored)
             if as_json:
                 emit_json(stored)
             else:
@@ -125,8 +126,7 @@ def register(app: typer.Typer) -> None:
         result, metadata, rule_count = run(main)
         data = _report_dict(result, metadata)
         if report:
-            report.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-            err.print(f"[dim]report written to {report}[/]")
+            _write_report(report, data)
         if as_json:
             emit_json(data)
         else:
@@ -140,7 +140,12 @@ def register(app: typer.Typer) -> None:
         ] = None,
         pcap: Annotated[
             Path | None,
-            typer.Option("--pcap", help="Monitor a capture at its original speed instead."),
+            typer.Option(
+                "--pcap",
+                exists=True,
+                dir_okay=False,
+                help="Monitor a capture at its original speed instead.",
+            ),
         ] = None,
         scenario: Annotated[
             str | None,
@@ -152,7 +157,7 @@ def register(app: typer.Typer) -> None:
                 "--bpf", help="Kernel BPF filter, e.g. 'tcp or udp' (default: BPF_FILTER)."
             ),
         ] = "",
-        duration: Annotated[float | None, typer.Option(help="Stop after N seconds.")] = None,
+        duration: Annotated[float | None, typer.Option(help="Stop after N seconds.", min=0)] = None,
         enforce: Annotated[
             bool,
             typer.Option(
@@ -182,6 +187,16 @@ def register(app: typer.Typer) -> None:
                     buffer_size_mb=settings.capture.buffer_size_mb,
                     queue_size=settings.capture.queue_size,
                 )
+            # Open the source before drawing anything: a missing privilege or interface
+            # is reported on its own, not underneath an empty live view. The pipeline's
+            # own open() is then a no-op, and close() is safe to repeat.
+            await capture.open()
+            try:
+                await watch(capture)
+            finally:
+                await capture.close()
+
+        async def watch(capture: PacketCapture) -> None:
             firewall = create_firewall(settings.response) if enforce else MemoryFirewall()
             if not enforce:
                 settings.response.dry_run = True
@@ -193,6 +208,10 @@ def register(app: typer.Typer) -> None:
             pipeline.add_packet_hook(view.packet)
             await pipeline.start()
             started = time.monotonic()
+
+            def expired() -> bool:
+                return duration is not None and time.monotonic() - started >= duration
+
             try:
                 with Live(
                     view.render(), console=console, refresh_per_second=4, transient=False
@@ -200,7 +219,7 @@ def register(app: typer.Typer) -> None:
 
                     async def progress(stats: dict[str, Any]) -> None:
                         view.stats = stats
-                        if duration and time.monotonic() - started >= duration:
+                        if expired():
                             capture.stop()
 
                     task = asyncio.create_task(
@@ -211,6 +230,10 @@ def register(app: typer.Typer) -> None:
                     seen = 0
                     while not task.done():
                         await asyncio.sleep(0.25)
+                        if expired():
+                            # Progress only fires as frames arrive; an idle interface
+                            # must still stop on time.
+                            capture.stop()
                         report = pipeline.last_report
                         records = report.detections if report else []
                         view.detections.extend(records[seen:])
@@ -280,12 +303,18 @@ def register(app: typer.Typer) -> None:
         if unknown:
             err.print(f"unknown scenario(s): {', '.join(unknown)}")
             raise typer.Exit(2)
-        output.mkdir(parents=True, exist_ok=True)
-        for name in selected:
-            scenario = get_scenario(name)
-            path = output / f"{name}.pcap"
-            write_pcap(path, scenario.frames)
-            console.print(f"[green]wrote[/] {path}  ({scenario.packet_count} packets)")
+        from sentinelx.cli.runtime import describe_os_error
+
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+            for name in selected:
+                scenario = get_scenario(name)
+                path = output / f"{name}.pcap"
+                write_pcap(path, scenario.frames)
+                console.print(f"[green]wrote[/] {path}  ({scenario.packet_count} packets)")
+        except OSError as exc:
+            err.print(f"[bold red]error:[/] {escape(describe_os_error(exc))}")
+            raise typer.Exit(1) from None
 
     anomaly = typer.Typer(help="Optional machine-learning anomaly model.", no_args_is_help=True)
     app.add_typer(anomaly, name="anomaly", rich_help_panel="Lab")
@@ -301,7 +330,22 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Train the Isolation Forest on known-normal traffic. The capture must be clean."""
         settings = load_settings()
-        from sentinelx.anomaly.ml import collect_training_vectors, save_model, train_model
+        from sentinelx.anomaly.ml import (
+            collect_training_vectors,
+            load_model,
+            require_ml_dependencies,
+            save_model,
+            train_model,
+        )
+        from sentinelx.cli.runtime import describe_os_error
+        from sentinelx.common.errors import SentinelXError
+
+        try:
+            # Before reading any capture: the [ml] extra is optional.
+            require_ml_dependencies()
+        except SentinelXError as exc:
+            err.print(f"[bold red]error:[/] {escape(str(exc))}")
+            raise typer.Exit(1) from None
 
         async def gather() -> list[Any]:
             frames: list[Any] = []
@@ -315,12 +359,18 @@ def register(app: typer.Typer) -> None:
         vectors = collect_training_vectors(frames, settings.detection)
         try:
             bundle = train_model(vectors, contamination=contamination)
-        except ValueError as exc:
-            err.print(f"[red]{exc}[/]")
+        except (ValueError, SentinelXError) as exc:
+            err.print(f"[bold red]error:[/] {escape(str(exc))}")
             raise typer.Exit(1) from None
         target = output or Path(settings.anomaly.ml_model_path)
-        save_model(bundle, target)
-        console.print(f"[green]model saved[/] to {target} (mode 600)")
+        try:
+            save_model(bundle, target)
+        except OSError as exc:
+            err.print(
+                f"[bold red]error:[/] cannot save the model: {escape(describe_os_error(exc))}"
+            )
+            raise typer.Exit(1) from None
+        console.print(f"[green]model saved[/] to {escape(str(target))} (mode 600)")
         console.print(
             table(
                 "Model",
@@ -328,9 +378,30 @@ def register(app: typer.Typer) -> None:
                 [(k, v) for k, v in bundle.info().items() if k != "features"],
             )
         )
+        try:
+            # The server applies ownership and permission checks when it loads the model
+            # and silently runs without ML if they fail. Say so now, not at start-up.
+            load_model(target)
+        except SentinelXError as exc:
+            err.print(
+                f"[bold red]error:[/] the model was written, but SentinelX will refuse to "
+                f"load it: {escape(str(exc))}"
+            )
+            raise typer.Exit(1) from None
         console.print(
             "[dim]Enable with ANOMALY__ML_ENABLED=true. Treat its output as leads, not verdicts.[/]"
         )
+
+
+def _write_report(path: Path, data: dict[str, Any]) -> None:
+    from sentinelx.cli.runtime import describe_os_error
+
+    try:
+        path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    except OSError as exc:
+        err.print(f"[bold red]error:[/] cannot write the report: {escape(describe_os_error(exc))}")
+        raise typer.Exit(1) from None
+    err.print(f"[dim]report written to {escape(str(path))}[/]")
 
 
 async def _replay_persisted(

@@ -46,7 +46,7 @@ make fixtures                                             # same as the first ge
 | `fixtures generate` | `NAMES...` | Scenario names. Default: all |
 | | `--output`, `-o PATH` | Output directory (default `pcaps/fixtures`). Created if missing. Files are named `<scenario>.pcap` and overwrite existing files of the same name |
 
-An unknown scenario name prints `unknown scenario(s): <names>` and exits with code 2; `sentinelx fixtures list` shows the valid names.
+An unknown scenario name prints `unknown scenario(s): <names>` and exits with code 2; `sentinelx fixtures list` shows the valid names. An output directory that cannot be created or written prints the operating-system error (for example `Permission denied: <path>`) and exits with code 1.
 
 Every scenario is fully determined by its parameters, including its `seed`. Packet counts, addresses, ports, timing, IP identification fields, TCP sequence numbers and DNS transaction IDs all come from a seeded generator, and every scenario starts at the same base timestamp (UNIX time 1,700,000,000). Generating the same scenario twice writes byte-identical files (`tests/capture/test_pcapfile.py` checks this); a different `seed` gives different traffic. The header fields (IP identification, TCP sequence numbers, DNS transaction IDs) come from a generator that `get_scenario` reseeds from the scenario name and parameters, so `sentinelx fixtures generate` writes the same bytes on every run and on every architecture (all 14 default fixtures were compared between x86_64 and ARM64).
 
@@ -105,7 +105,7 @@ With no `PCAP` argument, `make replay` uses `pcaps/fixtures/mixed_intrusion.pcap
 | `--speed FLOAT` | `0.0` | `0` replays as fast as possible. `1` reproduces the original inter-packet timing; larger values run faster. Must be `>= 0`. A single pacing sleep is capped at 1 second, so long idle gaps are shortened |
 | `--limit INTEGER` | none | Stop after N packets (`>= 1`) |
 | `--persist` | off | Run through the platform's replay service and store the run, its detections and its incidents in the database under a replay ID |
-| `--report PATH` | none | Write the full JSON report to this file |
+| `--report PATH` | none | Write the full JSON report to this file. A file that cannot be written prints `cannot write the report: <reason>` and exits with code 1 |
 | `--json` | off | Print the JSON report on stdout instead of the summary panel and tables |
 
 Detectors window on packet timestamps, not on wall-clock time. Replay speed changes how long a replay takes, not which detections it produces.
@@ -169,13 +169,13 @@ sentinelx monitor --pcap capture.pcap --duration 60
 | Option | Meaning |
 |---|---|
 | `--scenario TEXT` | Feed a synthetic scenario from memory. Unknown names exit with code 2 |
-| `--pcap PATH` | Replay a capture at speed 1 (original timing) |
+| `--pcap PATH` | Replay a capture at speed 1 (original timing). The file must exist; otherwise the command exits with code 2 |
 | `--interface`, `-i TEXT` | Capture from an interface. Default: `CAPTURE_INTERFACE` |
 | `--bpf TEXT` | Kernel BPF filter for live capture. Default: `BPF_FILTER`. Live capture also uses the configured capture backend, promiscuous mode, buffer size and queue size |
-| `--duration FLOAT` | Stop after N seconds |
+| `--duration FLOAT` | Stop after N seconds (`>= 0`). Checked on a timer, so the monitor also stops on time on a quiet interface |
 | `--enforce` | Use the configured firewall backend and response settings. Still subject to `DRY_RUN` |
 
-The source is chosen in the order `--scenario`, `--pcap`, then live capture. Without `--enforce`, the monitor uses an in-memory firewall and forces dry run. The pipeline is assembled like `sentinelx replay` (rule files, anomaly detectors, threat intelligence). The view shows the safety posture, packet, flow, detection and incident counters, the 12 most recent detections with their first evidence line, and a sample of one packet in 50. A scenario or capture source ends when its last packet has been processed.
+The source is chosen in the order `--scenario`, `--pcap`, then live capture. The capture source is opened before the live view is drawn, so a missing privilege or interface is reported as an error on its own (exit code 1) rather than underneath an empty view. Without `--enforce`, the monitor uses an in-memory firewall and forces dry run. The pipeline is assembled like `sentinelx replay` (rule files, anomaly detectors, threat intelligence). The view shows the safety posture, packet, flow, detection and incident counters, the 12 most recent detections with their first evidence line, and a sample of one packet in 50. A scenario or capture source ends when its last packet has been processed.
 
 Live capture privileges and interface selection are covered in [packet-capture.md](packet-capture.md).
 

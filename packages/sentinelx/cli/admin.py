@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from rich.markup import escape
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -65,7 +67,7 @@ def register(app: typer.Typer) -> None:
     def rules_validate(
         paths: Annotated[
             list[Path] | None,
-            typer.Argument(help="Rule files or directories; default RULES_DIRECTORY."),
+            typer.Argument(exists=True, help="Rule files or directories; default RULES_DIRECTORY."),
         ] = None,
         as_json: JsonOption = False,
     ) -> None:
@@ -77,6 +79,11 @@ def register(app: typer.Typer) -> None:
         targets = paths or [Path(settings.rules_directory)]
         report: dict[str, Any] = {"valid": [], "problems": []}
         for target in targets:
+            if not target.exists():
+                # Only the RULES_DIRECTORY default can get here (arguments are checked by
+                # Typer). Zero rules from a missing directory must not pass CI.
+                report["problems"].append(f"{target}: rules directory does not exist")
+                continue
             result = load_rules(target, max_window_seconds=max_rule_window(settings))
             report["valid"].extend(rule.id for rule in result.rules)
             report["problems"].extend(result.problems)
@@ -220,7 +227,13 @@ def register(app: typer.Typer) -> None:
 
         data = redacted_settings(settings)
         if section:
-            data = {section: data.get(section)}
+            if section not in data:
+                err.print(
+                    f"[bold red]error:[/] no settings section {escape(section)!r}; "
+                    f"available: {', '.join(sorted(data))}"
+                )
+                raise typer.Exit(2)
+            data = {section: data[section]}
         if as_json:
             emit_json(data)
             return
@@ -289,10 +302,10 @@ def register(app: typer.Typer) -> None:
         settings = load_settings()
         from sentinelx.storage.migrate import current_revision, upgrade
 
-        run(lambda: upgrade(settings.storage.database_url, revision))
-        console.print(
-            f"[green]database at revision[/] {run(lambda: current_revision(settings.storage.database_url))}"
-        )
+        url = settings.storage.database_url
+        _database_step(url, lambda: upgrade(url, revision))
+        applied = _database_step(url, lambda: current_revision(url))
+        console.print(f"[green]database at revision[/] {applied}")
 
     @db.command("current")
     def db_current() -> None:
@@ -300,7 +313,8 @@ def register(app: typer.Typer) -> None:
         settings = load_settings()
         from sentinelx.storage.migrate import current_revision, head_revision
 
-        applied = run(lambda: current_revision(settings.storage.database_url))
+        url = settings.storage.database_url
+        applied = _database_step(url, lambda: current_revision(url))
         head = head_revision()
         console.print(
             f"applied: {applied or 'none'}   latest: {head}   {'[green]up to date[/]' if applied == head else '[yellow]upgrade needed[/]'}"
@@ -482,8 +496,8 @@ def register(app: typer.Typer) -> None:
                     Check(
                         "configuration",
                         "FAIL",
-                        "settings failed validation",
-                        "run: sentinelx config",
+                        "settings failed validation (the errors are printed on stderr)",
+                        "fix the listed settings in the environment or .env",
                     )
                 ],
                 as_json,
@@ -542,6 +556,40 @@ def register(app: typer.Typer) -> None:
     def version() -> None:
         """Print the version."""
         console.print(f"sentinelx {__version__}")
+
+
+def _database_step[T](url: str, step: Callable[[], Awaitable[T]]) -> T:
+    """Run a migration step; an unreachable or broken database exits 1 with a message.
+
+    Migrations run outside the platform, so driver errors arrive raw (not as
+    SentinelXError) and would otherwise print a traceback.
+    """
+    import asyncio
+
+    from sqlalchemy.engine import make_url
+
+    async def runner() -> T:
+        return await step()
+
+    try:
+        return asyncio.run(runner())
+    except KeyboardInterrupt:
+        err.print("[dim]interrupted[/]")
+        raise typer.Exit(130) from None
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+    try:
+        parsed = make_url(url)
+        safe_url = parsed.render_as_string(hide_password=True)
+        password = parsed.password
+    except Exception:
+        safe_url, password = "DATABASE_URL (unparseable)", None
+    if password:
+        message = message.replace(str(password), "***")
+    first_line = message.strip().splitlines()[0] if message.strip() else message
+    err.print(f"[bold red]error:[/] database {escape(safe_url)}: {escape(first_line)[:300]}")
+    err.print("[dim]Check DATABASE_URL and that the database server is running.[/]")
+    raise typer.Exit(1)
 
 
 def _toggle_rule(rule_id: str, enabled: bool) -> None:

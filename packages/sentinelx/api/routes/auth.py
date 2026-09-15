@@ -6,6 +6,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi import Path as FastApiPath
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinelx.api.schemas import (
     ChangePasswordRequest,
@@ -103,7 +105,12 @@ async def refresh(request: Request, response: Response, platform: PlatformDep) -
     if not token:
         body: dict[str, Any] = {}
         if request.headers.get("content-type", "").startswith("application/json"):
-            body = await request.json()
+            try:
+                body = await request.json()
+            except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
+                raise HTTPException(
+                    status_code=422, detail="request body is not valid JSON"
+                ) from exc
         token = body.get("refresh_token") if isinstance(body, dict) else None
     if not token or not isinstance(token, str):
         raise HTTPException(status_code=401, detail="refresh token required")
@@ -211,6 +218,7 @@ async def update_user(
         )
     async with platform.database.session() as session:
         users = UserRepository(session)
+        await _active_admin_ids(session)  # serialises concurrent administrator changes
         user = await users.get(user_id)
         if user is None:
             raise HTTPException(status_code=404, detail="user not found")
@@ -225,6 +233,8 @@ async def update_user(
             user.is_active = body.is_active
             if not body.is_active:
                 await users.revoke_tokens(user.id)
+        if changes:
+            await _require_an_active_admin(session)
         result = _user(user)
     await platform.audit.record(
         actor=principal.username,
@@ -239,6 +249,30 @@ async def update_user(
 
 async def _admin_count(users: UserRepository) -> int:
     return sum(1 for u in await users.all() if u.role == UserRole.ADMIN.value and u.is_active)
+
+
+async def _active_admin_ids(session: AsyncSession) -> list[int]:
+    """Ids of the active administrators, row-locked until the transaction ends.
+
+    On PostgreSQL ``FOR UPDATE`` makes a second administrator change wait for the
+    first to commit, so both cannot pass a count taken before either change. SQLite
+    ignores the clause; there the write lock serialises the changes and
+    :func:`_require_an_active_admin` re-counts after this transaction's own write.
+    """
+    rows = await session.execute(
+        select(User.id)
+        .where(User.role == UserRole.ADMIN.value, User.is_active.is_(True))
+        .order_by(User.id)
+        .with_for_update()
+    )
+    return list(rows.scalars())
+
+
+async def _require_an_active_admin(session: AsyncSession) -> None:
+    """Refuse (and so roll back) a change that leaves no active administrator."""
+    await session.flush()
+    if not await _active_admin_ids(session):
+        raise HTTPException(status_code=422, detail="at least one active administrator must remain")
 
 
 @router.post("/users/{user_id}/reset-password", status_code=204, tags=["users"])
@@ -268,6 +302,7 @@ async def delete_user(
         raise HTTPException(status_code=422, detail="you cannot delete your own account")
     async with platform.database.session() as session:
         users = UserRepository(session)
+        await _active_admin_ids(session)  # serialises concurrent administrator changes
         user = await users.get(user_id)
         if user is None:
             raise HTTPException(status_code=404, detail="user not found")
@@ -275,6 +310,7 @@ async def delete_user(
             raise HTTPException(status_code=422, detail="cannot delete the last administrator")
         username = user.username
         await users.delete(user)
+        await _require_an_active_admin(session)
     await platform.audit.record(
         actor=principal.username,
         action="DELETE_USER",

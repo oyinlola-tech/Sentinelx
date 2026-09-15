@@ -131,7 +131,10 @@ class StatisticalAnomalyDetector(Detector):
     def inspect(self, context: FeatureContext) -> Detection | None:
         packet = context.packet
         now = packet.timestamp
-        if self._current is None:
+        if self._current is None or now < self._current.start - self.interval:
+            # First packet, or packet time stepped backwards by more than an
+            # interval. Without resynchronising, every packet until time caught up
+            # would pile into one "interval" and be scored as a huge rate spike.
             self._current = IntervalSample(start=now)
 
         # Close every interval that has fully elapsed. Empty intervals in a gap are

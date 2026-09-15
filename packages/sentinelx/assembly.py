@@ -82,17 +82,19 @@ def attach_anomaly_detectors(pipeline: Pipeline, settings: Settings) -> list[str
         return []
     anomaly = settings.anomaly
     disabled = set(settings.detection.disabled_detectors)
+    # DETECTION__ENABLED_DETECTORS is an allow-list for every detector, anomaly included.
+    allowed = set(settings.detection.enabled_detectors)
     attached: list[str] = []
     # Detectors switched off in the dashboard are attached but disabled, like the
     # built-in detectors, so they can be switched back on without a restart.
-    if anomaly.enabled:
+    if anomaly.enabled and (not allowed or "statistical_anomaly" in allowed):
         from sentinelx.anomaly import StatisticalAnomalyDetector
 
         statistical = StatisticalAnomalyDetector(anomaly, settings.detection)
         statistical.enabled = "statistical_anomaly" not in disabled
         pipeline.detection.add_detector(statistical)
         attached.append("statistical_anomaly")
-    if anomaly.ml_enabled:
+    if anomaly.ml_enabled and (not allowed or "ml_anomaly" in allowed):
         from sentinelx.anomaly.ml import MlAnomalyDetector, load_model
 
         try:

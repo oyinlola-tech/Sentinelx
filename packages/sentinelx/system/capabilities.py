@@ -204,7 +204,10 @@ def detect_capabilities(settings: Settings) -> PlatformCapabilities:
             "no firewall backend is configured (FIREWALL_BACKEND=null)"
             if settings.response.firewall_backend == "null"
             else why,
-            "set FIREWALL_BACKEND to 'auto' or to a backend listed as available",
+            "set FIREWALL_BACKEND to 'auto' or to a backend listed as available"
+            if settings.response.firewall_backend == "null"
+            else "install a supported firewall (see the backend list) and run with the "
+            "privileges it needs, or set FIREWALL_BACKEND to a specific backend",
             "null",
         )
     else:

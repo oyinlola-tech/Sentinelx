@@ -307,3 +307,88 @@ class TestOperatorProtection:
             )
             assert other.status_code == 200, other.text
             assert other.json()["outcome"] == "simulated"  # dry run default
+
+
+class TestRequestBodyLimit:
+    async def test_oversized_json_bodies_are_refused_before_buffering(
+        self, client: httpx.AsyncClient, admin: dict[str, str]
+    ) -> None:
+        big = b'{"username": "admin", "password": "' + b"x" * (2 * 1024 * 1024) + b'"}'
+        declared = await client.post(
+            "/auth/login", content=big, headers={"Content-Type": "application/json"}
+        )
+        assert declared.status_code == 413 and declared.json() == {
+            "detail": "request body too large"
+        }
+
+        async def chunks() -> AsyncIterator[bytes]:
+            for _ in range(40):
+                yield b" " * 65536
+
+        chunked = await client.post(
+            "/rules/validate",
+            content=chunks(),
+            headers={**admin, "Content-Type": "application/json"},
+        )
+        assert chunked.status_code == 413
+        # Ordinary requests and the streamed capture upload are unaffected.
+        assert (await client.get("/auth/me", headers=admin)).status_code == 200
+        upload = await client.post(
+            "/replay/upload",
+            content=b"\xd4\xc3\xb2\xa1" + b"\0" * (1536 * 1024),
+            headers={**admin, "Content-Type": "application/octet-stream"},
+        )
+        assert upload.status_code != 413, upload.text
+
+
+class TestPersisterHealth:
+    async def test_persister_health_follows_retry_state_not_past_failures(
+        self, platform: Platform, client: httpx.AsyncClient, admin: dict[str, str]
+    ) -> None:
+        assert platform.persister is not None
+        platform.persister.failed_batches = 3  # a past failure that was retried successfully
+        status = (await client.get("/system/status", headers=admin)).json()
+        assert status["components"]["persister"]["ok"] is True
+        platform.persister._backoff = 2.0  # writes currently failing and being retried
+        platform._health_cache = None
+        status = (await client.get("/system/status", headers=admin)).json()
+        persister = status["components"]["persister"]
+        assert persister["ok"] is False and persister["retrying"] is True
+        platform.persister._backoff = 0.0
+
+
+class TestSessionCutOffSurvivesCacheLoss:
+    async def test_signed_out_sessions_stay_refused_when_shared_state_is_lost(
+        self, platform: Platform, client: httpx.AsyncClient
+    ) -> None:
+        other = await login(client)
+        await asyncio.sleep(1.1)  # cut-off has one-second resolution
+        signing_out = await login(client)
+        assert (await client.post("/auth/logout", headers=signing_out)).status_code == 204
+        assert (await client.get("/auth/me", headers=other)).status_code == 401
+        # Redis restarted or failed over: every cached revocation is gone. The cut-off
+        # lives in the database, so the signed-out session must still be refused.
+        platform.state._memory_cache.clear()
+        assert (await client.get("/auth/me", headers=other)).status_code == 401
+        # A new sign-in after the cut-off works.
+        assert (await client.get("/auth/me", headers=await login(client))).status_code == 200
+
+
+class TestPreventionNeedsAWorkingFirewall:
+    async def test_enabling_prevention_is_refused_when_the_firewall_cannot_be_used(
+        self, platform: Platform, client: httpx.AsyncClient, admin: dict[str, str]
+    ) -> None:
+        async def unusable() -> dict[str, object]:
+            return {"backend": "nftables", "ok": False, "error": "Operation not permitted"}
+
+        platform.config.firewall_probe = unusable
+        refused = await client.patch(
+            "/config/response",
+            headers=admin,
+            json={
+                "changes": {"dry_run": False, "mode": "automatic"},
+                "confirmation": "ENABLE PREVENTION",
+            },
+        )
+        assert refused.status_code == 422 and "cannot be used" in refused.json()["detail"]
+        assert platform.settings.safety_banner().startswith("DETECTION ONLY")

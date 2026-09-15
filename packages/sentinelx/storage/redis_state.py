@@ -18,6 +18,7 @@ process rather than globally - documented, visible, and better than refusing to 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import time
@@ -62,6 +63,7 @@ class SharedState:
             StorageError: only when Redis is unreachable and ``redis_required`` is set.
         """
         self._last_attempt = self._clock()
+        client: Any = None
         try:
             import importlib
 
@@ -74,6 +76,9 @@ class SharedState:
             )
             await client.ping()
         except Exception as exc:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.aclose()
             if self.settings.redis_required:
                 raise StorageError(
                     f"Redis is required but unreachable: {type(exc).__name__}"
@@ -88,11 +93,48 @@ class SharedState:
             return
         self._client = client
         if self._degraded_since is not None:
+            written_back = await self._write_back(client)
             log.info(
-                "redis_recovered", degraded_seconds=round(self._clock() - self._degraded_since, 1)
+                "redis_recovered",
+                degraded_seconds=round(self._clock() - self._degraded_since, 1),
+                cache_entries_written_back=written_back,
             )
         self._degraded_since = None
         log.info("redis_connected")
+
+    async def _write_back(self, client: Any) -> int:
+        """Copy cache entries written while degraded into Redis.
+
+        Those entries include access-token revocations. Leaving them in process memory
+        would make a token revoked during the outage valid again (on every worker) once
+        Redis is back. A value already in Redis is kept, except that a larger number
+        wins. (Session cut-offs for sign-out and password changes are stored in the
+        database, not here.)
+        """
+        now = self._clock()
+        written = 0
+        for key, (expires, encoded) in list(self._memory_cache.items()):
+            ttl = int(expires - now)
+            if ttl < 1:
+                self._memory_cache.pop(key, None)
+                continue
+            try:
+                if not await client.set(key, encoded, ex=ttl, nx=True):
+                    current = await client.get(key)
+                    local, remote = json.loads(encoded), json.loads(current) if current else None
+                    if (
+                        isinstance(local, int | float)
+                        and not isinstance(local, bool)
+                        and isinstance(remote, int | float)
+                        and local > remote
+                    ):
+                        await client.set(key, encoded, ex=ttl)
+            except Exception as exc:
+                log.warning("redis_write_back_failed", error=type(exc).__name__)
+                return written
+            self._memory_cache.pop(key, None)
+            written += 1
+        return written
 
     async def close(self) -> None:
         client, self._client = self._client, None
@@ -200,6 +242,8 @@ class SharedState:
                     pipe.zcard(key)
                     pipe.zrange(key, 0, 0, withscores=True)
                     _, count, oldest = await pipe.execute()
+                if not count:
+                    return 0, 0.0
                 oldest_ts = float(oldest[0][1]) if oldest else now
                 return int(count), round(max(oldest_ts + window_seconds - now, 0.0), 1)
             except Exception as exc:
@@ -311,7 +355,8 @@ class SharedState:
             self._memory_channels[key].remove(queue)
 
     async def health(self) -> dict[str, Any]:
-        client = self._client
+        # Retry a lost connection here too, so health recovers without other traffic.
+        client = await self._redis()
         if client is None:
             since = self._degraded_since
             return {

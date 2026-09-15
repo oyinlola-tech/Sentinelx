@@ -139,13 +139,18 @@ async def update_incident(
     request: Request,
     platform: PlatformDep,
 ) -> dict[str, Any]:
-    _, _, _, queries = platform.require()
+    pipeline, _, _, queries = platform.require()
     changes = body.model_dump(exclude_none=True, mode="json")
     if not changes:
         raise HTTPException(status_code=422, detail="no changes supplied")
     incident = await queries.update_incident(incident_id, **changes)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
+    status = changes.get("status")
+    if status in (IncidentStatus.RESOLVED, IncidentStatus.FALSE_POSITIVE):
+        # Closed by an analyst: the live engine must stop extending it (and stop
+        # responding to its risk). New activity from the source opens a new incident.
+        pipeline.correlation.close_incident(incident_id, IncidentStatus(status))
     await platform.audit.record(
         actor=principal.username,
         action="UPDATE_INCIDENT",

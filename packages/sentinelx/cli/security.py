@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import typer
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -68,13 +69,14 @@ def register(app: typer.Typer) -> None:
                 return await queries.detections(filters, limit=limit, offset=0, order="newest")
 
         result = run(main)
+        if detection_id and result is None:
+            # Checked before --json: a script must see the failure in the exit code.
+            err.print(f"detection {escape(detection_id)} not found")
+            raise typer.Exit(1)
         if as_json:
             emit_json(result)
             return
         if detection_id:
-            if result is None:
-                err.print(f"detection {detection_id} not found")
-                raise typer.Exit(1)
             _explain(result)
             return
         rows = [
@@ -130,13 +132,13 @@ def register(app: typer.Typer) -> None:
                 return await queries.incidents(statuses=status, limit=limit)
 
         result = run(main)
+        if incident_id and result is None:
+            err.print(f"incident {escape(incident_id)} not found")
+            raise typer.Exit(1)
         if as_json:
             emit_json(result)
             return
         if incident_id:
-            if result is None:
-                err.print(f"incident {incident_id} not found")
-                raise typer.Exit(1)
             _incident(result)
             return
         rows = [
@@ -267,8 +269,8 @@ def register(app: typer.Typer) -> None:
         as_json: JsonOption = False,
     ) -> None:
         """Block (or rate limit) an address. Honours DRY_RUN and the safety guard."""
-        target = target or typer.prompt("Address or CIDR to block")
-        reason = reason or typer.prompt("Reason (recorded in the audit log)")
+        target = target or _ask("Address or CIDR to block", "TARGET")
+        reason = reason or _ask("Reason (recorded in the audit log)", "--reason")
         settings = load_settings()
         _respond(
             settings,
@@ -292,10 +294,28 @@ def register(app: typer.Typer) -> None:
         as_json: JsonOption = False,
     ) -> None:
         """Remove a block."""
-        target = target or typer.prompt("Address or CIDR to unblock")
-        reason = reason or typer.prompt("Reason (recorded in the audit log)")
+        target = target or _ask("Address or CIDR to unblock", "TARGET")
+        reason = reason or _ask("Reason (recorded in the audit log)", "--reason")
         settings = load_settings()
         _respond(settings, ActionType.UNBLOCK_IP, target, reason, None, yes, as_json)
+
+
+def _ask(question: str, parameter: str) -> str:
+    """Prompt in a terminal; without one, a missing value is a usage error (exit 2).
+
+    Prompting a pipe reads EOF and aborts with exit 1, which scripts would read as a
+    runtime failure rather than a mistake in the command line.
+    """
+    import sys
+
+    import click
+
+    if not sys.stdin.isatty():
+        raise click.UsageError(
+            f"Missing {parameter} (required when not run in a terminal).",
+            ctx=click.get_current_context(silent=True),
+        )
+    return str(typer.prompt(question))
 
 
 def _respond(

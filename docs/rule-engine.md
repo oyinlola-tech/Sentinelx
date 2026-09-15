@@ -227,13 +227,22 @@ Every field has a kind. After parsing, each comparison is type-checked against t
 | `contains`, `startswith`, `endswith` | no | no | yes | no | no | STRING or WORD |
 | `in_network` | no | no | no | no | yes | one network, or a list of networks, each a valid IPv4 or IPv6 network |
 
-The type checker does not inspect list item types, and does not reject a number compared with a string field (`protocol == 5` validates but can never match).
+Literal values are also checked, so a comparison that could never match is reported instead of silently accepted:
+
+- ports (`source_port`, `destination_port`) must be whole numbers from 0 to 65535;
+- counts cannot be compared with negative numbers;
+- every item of an `in` or `not in` list on a count or number field must be a number, and on a boolean field `true` or `false`;
+- `==`, `!=`, `in` and `not in` on an address field need valid IP addresses (a prefix needs `in_network`);
+- a boolean literal cannot be compared with a numeric field.
+
+The checker does not reject a number compared with a string field (`protocol == 5` validates but can never match).
 
 ### Evaluation semantics
 
 - **Short-circuit.** `and` stops at the first false operand and `or` at the first true one, left to right. Fields are resolved lazily and cached per packet, so put cheap packet fields (`protocol`, `destination_port`) before windowed counts.
 - **Missing values never match.** A field with no value for the current packet, such as `dns_query_name` on a TCP packet or `ttl` on ARP, makes every comparison on it false, including `!=` and `not in`. "Unknown" is not evidence. Note that `not` inverts that false: `not dns_query_name == "x.example"` is true for every non-DNS packet.
 - **Text comparisons are case-insensitive.** `==`, `!=`, `in`, `not in`, `contains`, `startswith` and `endswith` lowercase both sides when they are strings, so `protocol == TCP` and `protocol == tcp` are equivalent.
+- **Addresses are compared by value.** `==`, `!=`, `in` and `not in` on an address field parse both sides as IP addresses, so `source_ip == "2001:DB8:0::1"` matches a packet from `2001:db8::1`.
 - **Numeric comparisons** convert both sides to float. A value that cannot be converted makes the comparison false.
 - **Evidence.** Every comparison that held on the path that made the rule match becomes an evidence item with the observed value and the rule's requirement. Comparisons under `not` are not recorded, since they describe something that was not true. Count-field evidence is weighted 1.0 and sorted first; other evidence is weighted 0.5. A final `rule` evidence item quotes the rule name and condition.
 
@@ -318,7 +327,7 @@ Encrypted payloads are not decoded: HTTP fields are empty for HTTPS, and DNS fie
 - a number of seconds: `60`, `2.5`;
 - a string matching `<number><unit>`, with optional spaces, where unit is `ms`, `s`, `m` or `h` (case-insensitive) or absent (seconds): `500ms`, `30s`, `5m`, `1h`.
 
-The value must be positive. Anything else, such as `10 minutes`, fails with `invalid duration '10 minutes'; use e.g. 30s, 5m or 1h`.
+The value must be positive and finite: YAML's `.nan` and `.inf` are rejected with `duration must be a finite number, got nan`. Anything else, such as `10 minutes`, fails with `invalid duration '10 minutes'; use e.g. 30s, 5m or 1h`.
 
 **The upper bound.** Counted features are only retained for the feature window, which is the longest of the six detection window settings (`DETECTION__PORT_SCAN_WINDOW_SECONDS`, `DETECTION__BRUTE_FORCE_WINDOW_SECONDS`, `DETECTION__CONNECTION_RATE_WINDOW_SECONDS`, `DETECTION__ICMP_FLOOD_WINDOW_SECONDS`, `DETECTION__DNS_WINDOW_SECONDS`, `DETECTION__HTTP_FLOOD_WINDOW_SECONDS`). With defaults that is 60 seconds. A rule whose `within` is longer could never see that much history and would silently under-count, so it is rejected:
 
@@ -492,7 +501,7 @@ All commands below exist as shown in `sentinelx rules --help`.
 | Command | What it does |
 |---|---|
 | `sentinelx rules list [--json]` | Rules known to the platform, with state and origin (ID, name, enabled, severity, action, within, origin, condition). Opens the database and syncs file rules first. Invalid rules are printed as `invalid rule skipped:` |
-| `sentinelx rules validate [PATHS]... [--json]` | Validate rule files or directories without loading them into the platform. Defaults to `RULES_DIRECTORY`. Prints `valid <id>` or `invalid <problem>` and exits 1 if there is any problem, for CI |
+| `sentinelx rules validate [PATHS]... [--json]` | Validate rule files or directories without loading them into the platform. Defaults to `RULES_DIRECTORY`. Prints `valid <id>` or `invalid <problem>` and exits 1 if there is any problem, for CI. A path given on the command line that does not exist is a usage error (exit 2); a missing default `RULES_DIRECTORY` is reported as a problem (exit 1), so zero rules never pass |
 | `sentinelx rules test PATH [--pcap FILE] [--scenario TEXT] [--json]` | For each rule in one file: run its embedded tests (default), or run it against a capture (`--pcap`) or one scenario with default parameters (`--scenario`). Exits 1 if the file has validation problems or an embedded test fails, and 2 for an unknown `--scenario` name |
 | `sentinelx rules enable RULE_ID` | Enable a rule in the database. A running server picks this up on restart |
 | `sentinelx rules disable RULE_ID` | Disable a rule in the database. A running server picks this up on restart |
@@ -562,6 +571,11 @@ The messages below are the exact problem texts, shown without the `<file> rule '
 | `condition: 'syn_count contains a': 'contains' needs a text field, but syn_count is count` | Text operator on a non-string field | Use a numeric operator |
 | `condition: 'destination_port == 22': destination_port is numeric; compare with a number` | Number field compared with a quoted string (`"22"`) | Remove the quotes |
 | `condition: 'source_ip in_network 10.0.0.300/8': '10.0.0.300/8' is not a valid network` | Malformed network | Correct the address or prefix |
+| `condition: 'source_ip == 10.0.0.0/8': '10.0.0.0/8' is not a valid IP address; use in_network for prefixes` | A prefix, or a malformed address, compared with `==`, `!=`, `in` or `not in` | Use `in_network` for a prefix, or correct the address |
+| `condition: 'destination_port == 65536': 65536 is not a valid port (0-65535)` | Port literal out of range or not a whole number | Use a port from 0 to 65535 |
+| `condition: 'destination_port in [ssh]': destination_port is numeric; 'ssh' is not a number` | Non-numeric item in a list on a count or number field | Use port numbers |
+| `condition: 'syn_count >= -1': syn_count is a count and cannot be negative` | Negative literal compared with a count | Use 0 or more |
+| `condition: 'handshake_complete in [yes]': handshake_complete is boolean; list only true or false` | Non-boolean item in a list on a boolean field | List `true` or `false` |
 | `condition: missing ')' (at character 34)` | Unbalanced parentheses | Close every `(` |
 | `condition: empty list (at character 20)` | `[]` | Give at least one item |
 | `condition: expected a field name, found 'end of condition' (at character 12)` | Condition ends with `and`, `or` or `not` | Complete or remove the trailing operator |
@@ -572,6 +586,7 @@ The messages below are the exact problem texts, shown without the `<file> rule '
 | `tests[1]: scenario 'tcp_port_scan' has no parameter(s) bogus; accepted: attacker, target, ports, seed` | Unknown scenario parameter | Use one of the accepted names |
 | `tests[1]: ports: must be between 1 and 50000` | Scenario parameter out of range (likewise `expected an integer`, `must be an IP address`, `booleans are not accepted`) | See [Scenario parameters](#scenario-parameters) |
 | `within: Value error, invalid duration '10 minutes'; use e.g. 30s, 5m or 1h` | Unsupported duration format | Use `600s` or `10m` |
+| `within: Value error, duration must be a finite number, got nan` | `within: .nan` or `.inf` | Give a finite duration |
 | `action 'block_ip' requires the condition to include a count threshold ... on every branch; ...` | Preventive action without a selective condition | Add a `count >= N` (N at least 2) to every `or` branch, remove the negation, or use `action: alert` |
 | `action 'temporary_block' requires 'duration' (seconds)` | `temporary_block` without `duration` | Add `duration: 900` (30-86,400) |
 | `action: Value error, rules may not unblock addresses` | `action: unblock_ip` | Unblock through the response workflow instead ([response-engine.md](response-engine.md)) |
@@ -582,6 +597,10 @@ The messages below are the exact problem texts, shown without the `<file> rule '
 | `not valid YAML (YAML nested deeper than 32 levels)` | More than 32 levels of nesting | Flatten the document |
 | `expected a top-level 'rules:' list or 'rule:' mapping` | File has neither key | Put rules under `rules:` or a single rule under `rule:` |
 | `rule id '<id>' duplicates one in <file>` | Two rules with the same id, usually the same name | Rename one, or set a distinct `id` |
+| `<file>: not a regular file` | A `.yml` or `.yaml` path that is a directory, a FIFO or a dangling symbolic link | Remove or fix the path |
+| `<file>: cannot be read (<reason>)` | A rule file that cannot be opened, for example because of its permissions | Fix the file's permissions |
+
+A file that cannot be read is reported as a problem like any other, and the remaining files still load.
 
 ## Limits
 

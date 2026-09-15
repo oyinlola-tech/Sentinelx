@@ -138,11 +138,20 @@ class UserRepository:
         theft and ends every session, including the one a password change just
         started. Tokens already rotated keep their record, so reuse of a stolen token
         is still detected.
+
+        Also records the cut-off after which access tokens issued earlier are refused.
+        Whole seconds, like the tokens' ``iat``: the caller's fresh session, issued in
+        the same second, stays valid.
         """
         await self.session.execute(
             delete(RefreshToken).where(
                 RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None)
             )
+        )
+        await self.session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(sessions_ended_at=datetime.now(UTC).replace(microsecond=0))
         )
 
     async def revoke_tokens(self, user_id: int) -> None:
@@ -254,7 +263,11 @@ class DetectionRepository:
             "oldest": DetectionRecord.timestamp.asc(),
             "risk": DetectionRecord.risk_score.desc(),
         }.get(order, DetectionRecord.timestamp.desc())
-        rows = await self.session.execute(base.order_by(ordering).limit(limit).offset(offset))
+        # detection_id breaks ties, so offset pages never repeat or skip rows that share
+        # a timestamp or score (common in bursts and replays).
+        rows = await self.session.execute(
+            base.order_by(ordering, DetectionRecord.detection_id).limit(limit).offset(offset)
+        )
         return Page(list(rows.scalars()), total, limit, offset)
 
     async def set_status(
@@ -344,7 +357,9 @@ class IncidentRepository:
             query = query.where(where)
         total = int(await self.session.scalar(count_query) or 0)
         rows = await self.session.execute(
-            query.order_by(IncidentRecord.last_seen.desc()).limit(limit).offset(offset)
+            query.order_by(IncidentRecord.last_seen.desc(), IncidentRecord.incident_id)
+            .limit(limit)
+            .offset(offset)
         )
         return Page(list(rows.scalars()), total, limit, offset)
 
@@ -352,7 +367,7 @@ class IncidentRepository:
         rows = await self.session.execute(
             select(DetectionRecord)
             .where(DetectionRecord.incident_id == incident_id)
-            .order_by(DetectionRecord.timestamp)
+            .order_by(DetectionRecord.timestamp, DetectionRecord.detection_id)
         )
         return list(rows.scalars())
 
@@ -366,6 +381,19 @@ class ResponseActionRepository:
 
     async def add(self, record: ResponseActionRecord) -> None:
         self.session.add(record)
+
+    async def existing_decision_ids(self, decision_ids: list[str]) -> set[str]:
+        """Which of ``decision_ids`` are already stored (one query per 1,000 ids)."""
+        found: set[str] = set()
+        unique = list(dict.fromkeys(decision_ids))
+        for start in range(0, len(unique), 1000):
+            rows = await self.session.scalars(
+                select(ResponseActionRecord.decision_id).where(
+                    ResponseActionRecord.decision_id.in_(unique[start : start + 1000])
+                )
+            )
+            found.update(rows)
+        return found
 
     async def page(
         self,
@@ -415,7 +443,9 @@ class ResponseActionRepository:
             count_query = count_query.where(and_(*conditions))
         total = int(await self.session.scalar(count_query) or 0)
         rows = await self.session.execute(
-            query.order_by(ResponseActionRecord.decided_at.desc()).limit(limit).offset(offset)
+            query.order_by(ResponseActionRecord.decided_at.desc(), ResponseActionRecord.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
         return Page(list(rows.scalars()), total, limit, offset)
 
@@ -465,7 +495,10 @@ class BlockRepository:
         limit, offset = _clamp(limit, offset)
         total = int(await self.session.scalar(select(func.count()).select_from(BlockRecord)) or 0)
         rows = await self.session.execute(
-            select(BlockRecord).order_by(BlockRecord.created_at.desc()).limit(limit).offset(offset)
+            select(BlockRecord)
+            .order_by(BlockRecord.created_at.desc(), BlockRecord.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
         return Page(list(rows.scalars()), total, limit, offset)
 

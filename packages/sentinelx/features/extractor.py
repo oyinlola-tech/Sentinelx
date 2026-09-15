@@ -182,6 +182,7 @@ class FeatureExtractor:
 
         self.evicted_sources = 0
         self.evicted_flows = 0
+        self.clock_resets = 0
         self._packets_since_sweep = 0
 
     # ------------------------------------------------------------- processing
@@ -189,6 +190,9 @@ class FeatureExtractor:
     def process(self, packet: PacketEvent) -> FeatureContext:
         """Update all state for one packet and return the detector's view of it."""
         now = packet.timestamp
+        last = self.stats.last_packet_at
+        if last and now < last - self.window_seconds:
+            self._clock_stepped_back(now)
         self.stats.observe(packet)
 
         profile = self._profile_for(packet.src_ip, now)
@@ -231,6 +235,23 @@ class FeatureExtractor:
             now=now,
             profiles=self.profiles,
         )
+
+    def _clock_stepped_back(self, now: float) -> None:
+        """Drop windowed state after packet time jumps back by more than a window.
+
+        Windows only ever move forward: sliding windows expire from the oldest end
+        and ``TimeSeriesCounter`` clamps late timestamps to the newest seen. After a
+        step back (a clock correction on the sensor, or captures concatenated out of
+        order) nothing would expire until packet time caught up again, so every
+        source would accumulate events indefinitely - a slow, ordinary client ends
+        up reported for a connection rate it never had. A jump larger than the
+        longest window cannot be reconciled with the existing windows, so start
+        them afresh. Small reorderings (within a window) are unaffected.
+        """
+        self.profiles.clear()
+        self.flows.clear()
+        self.stats.started_at = now
+        self.clock_resets += 1
 
     def _profile_for(self, source_ip: str, now: float) -> SourceProfile:
         profile = self.profiles.get(source_ip)
@@ -288,14 +309,16 @@ class FeatureExtractor:
                 flow.responder_ip = packet.dst_ip
                 flow.responder_port = packet.dst_port or 0
                 flow.direction_confirmed = True
-        elif flags.is_syn_ack and not flow.direction_confirmed:
-            # We joined mid-handshake: the SYN-ACK sender is the responder.
-            flow.initiator_ip = packet.dst_ip
-            flow.initiator_port = packet.dst_port or 0
-            flow.responder_ip = packet.src_ip
-            flow.responder_port = packet.src_port or 0
-            flow.direction_confirmed = True
         elif flags.is_syn_ack:
+            if not flow.direction_confirmed:
+                # We joined mid-handshake: the SYN-ACK sender is the responder.
+                flow.initiator_ip = packet.dst_ip
+                flow.initiator_port = packet.dst_port or 0
+                flow.responder_ip = packet.src_ip
+                flow.responder_port = packet.src_port or 0
+                flow.direction_confirmed = True
+            # Recorded either way: when captures from two taps are merged the
+            # SYN-ACK can be stamped before its SYN, and the handshake still completed.
             flow.syn_ack_seen = True
         elif flags.ack and not (flags.fin or flags.rst):
             flow.ack_seen = True
@@ -397,6 +420,7 @@ class FeatureExtractor:
             "active_flows": len(self.flows),
             "evicted_sources": self.evicted_sources,
             "evicted_flows": self.evicted_flows,
+            "clock_resets": self.clock_resets,
             "window_seconds": self.window_seconds,
             **self.stats.as_dict(),
         }
@@ -409,4 +433,5 @@ class FeatureExtractor:
         self.stats = GlobalStats()
         self.evicted_sources = 0
         self.evicted_flows = 0
+        self.clock_resets = 0
         self._packets_since_sweep = 0

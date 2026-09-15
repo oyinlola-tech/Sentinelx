@@ -16,7 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sentinelx import __version__
 from sentinelx.api.errors import install_error_handlers
 from sentinelx.api.routes import auth, detections, firewall, replay, rules, stats, system
-from sentinelx.api.security import RateLimitMiddleware, SecurityHeadersMiddleware
+from sentinelx.api.security import (
+    BodySizeLimitMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from sentinelx.api.websocket import router as websocket_router
 from sentinelx.config.settings import Settings, get_settings
 from sentinelx.services.platform import Platform
@@ -86,6 +90,7 @@ def create_app(settings: Settings | None = None, *, platform: Platform | None = 
 
     # Middleware order: the last added runs first. CORS must wrap everything so
     # rejected and rate-limited responses still carry CORS headers the browser can read.
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(

@@ -18,7 +18,8 @@ has events dropped (the bus's bounded per-subscriber queue) and, if a single sen
 stalls for 10 seconds, is disconnected - a slow dashboard never slows detection.
 
 Refusals are sent as close codes after the handshake: 4401 invalid or expired ticket,
-1008 disallowed origin or unknown event type, 4429 too many streams.
+1008 disallowed origin, unknown event type, or a ``types`` list containing only types
+the role may not receive, 4429 too many streams.
 """
 
 from __future__ import annotations
@@ -109,6 +110,11 @@ async def events(websocket: WebSocket) -> None:
         set(EventType) if role.can_act_as(UserRole.ANALYST) else set(EventType) - _ANALYST_ONLY
     )
     types = (requested & allowed) if requested else allowed
+    if not types:
+        # Every requested type is one this role may not see. An empty filter must not
+        # reach the bus, which reads "no filter" as "every event".
+        await _reject(websocket, status.WS_1008_POLICY_VIOLATION, "no permitted event types")
+        return
 
     if _connections.get(username, 0) >= _MAX_CONNECTIONS_PER_USER:
         await _reject(websocket, 4429, "too many open event streams for this user")
@@ -159,8 +165,11 @@ async def events(websocket: WebSocket) -> None:
                             close_code, close_reason = verdict
                             break
                     if next_event in done:
-                        message: dict[str, Any] = next_event.result().to_dict()
+                        event = next_event.result()
                         next_event = asyncio.ensure_future(anext(iterator))
+                        if event.type not in types:
+                            continue  # defence in depth: never forward an unsubscribed type
+                        message: dict[str, Any] = event.to_dict()
                     else:
                         message = {"type": "ping"}
                     await asyncio.wait_for(websocket.send_json(message), timeout=_SEND_TIMEOUT)
