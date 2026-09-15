@@ -36,8 +36,8 @@ export default function AuditPage() {
       <Panel bodyClassName="p-0">
         <div className="grid gap-2 border-b border-line p-3 sm:grid-cols-3">
           <Input aria-label="Filter by actor" placeholder="Actor (exact match), e.g. admin" value={actor} onChange={(event) => { setActor(event.target.value); setOffset(0); }} />
-          <Input aria-label="Filter by action" placeholder="Action (exact match), e.g. BLOCK_IP" value={action} onChange={(event) => { setAction(event.target.value); setOffset(0); }} className="font-mono uppercase" />
-          <Input aria-label="Filter by target" placeholder="Target (exact match), e.g. 203.0.113.45" value={target} onChange={(event) => { setTarget(event.target.value); setOffset(0); }} className="font-mono" />
+          <Input aria-label="Filter by action" placeholder="Action (exact match), e.g. BLOCK_IP" value={action} onChange={(event) => { setAction(event.target.value); setOffset(0); }} className="font-mono uppercase placeholder:font-sans placeholder:normal-case" />
+          <Input aria-label="Filter by target" placeholder="Target (exact match), e.g. 203.0.113.45" value={target} onChange={(event) => { setTarget(event.target.value); setOffset(0); }} className="font-mono placeholder:font-sans" />
         </div>
         {error ? <ErrorState error={error} onRetry={() => void mutate()} /> : !data ? <TableSkeleton /> : !data.items.length ? <EmptyState title="No audit events match" /> : (
           <>

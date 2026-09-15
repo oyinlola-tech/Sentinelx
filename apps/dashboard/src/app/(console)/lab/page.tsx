@@ -290,7 +290,7 @@ function ReplayReportView({ id, live, onClose }: { id: string; live?: Progress; 
 
       {report?.detections && (
         <Panel title="Detections" eyebrow={`${report.detections.length} shown`} bodyClassName="p-0">
-          <DetectionTable detections={report.detections} showStatus={false} emptyTitle="No detections" emptyBody="The engine found nothing suspicious in this capture." />
+          <DetectionTable detections={report.detections} showStatus={false} captureTime emptyTitle="No detections" emptyBody="The engine found nothing suspicious in this capture." />
         </Panel>
       )}
 
