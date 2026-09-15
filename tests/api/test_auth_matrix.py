@@ -412,7 +412,6 @@ class TestCookieSessions:
             assert (
                 await browser.post("/auth/ws-ticket", headers={"X-CSRF-Token": csrf})
             ).status_code == 200
-            access_cookie = browser.cookies["sx_access"]
 
             rotated = await browser.post("/auth/refresh", headers=dashboard)
             assert rotated.status_code == 200 and rotated.json()["refresh_token"] is None
@@ -420,15 +419,18 @@ class TestCookieSessions:
             assert (await browser.get("/auth/me")).status_code == 200
 
             old_access = browser.cookies["sx_access"]
+            # Access cookie without the csrf cookie: a matching header alone is not enough.
+            # Checked while that cookie is still valid, so the refusal comes from the CSRF
+            # check and not from the session cut-off (which has one-second resolution).
+            async with client_from(platform) as other:
+                raw = {"Cookie": f"sx_access={old_access}", "X-CSRF-Token": csrf}
+                assert (await other.post("/auth/ws-ticket", headers=raw)).status_code == 403
             out = await browser.post("/auth/logout", headers={"X-CSRF-Token": csrf})
             assert out.status_code == 204
             cleared = [c for c in out.headers.get_list("set-cookie") if c.startswith("sx_")]
             assert {c.split("=", 1)[0] for c in cleared} == {"sx_access", "sx_refresh", "sx_csrf"}
             assert all("Max-Age=0" in c or "expires=" in c.lower() for c in cleared)
         async with client_from(platform) as other:
-            # Access cookie without the csrf cookie: a matching header alone is not enough.
-            raw = {"Cookie": f"sx_access={access_cookie}", "X-CSRF-Token": csrf}
-            assert (await other.post("/auth/ws-ticket", headers=raw)).status_code == 403
             # After logout the old cookie no longer authenticates.
             stale = {"Cookie": f"sx_access={old_access}"}
             assert (await other.get("/auth/me", headers=stale)).status_code == 401
