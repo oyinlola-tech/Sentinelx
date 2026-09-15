@@ -1,13 +1,60 @@
-# SentinelX
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="SentinelX. Every alert shows its work." width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/oyinlola-tech/Sentinelx/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/oyinlola-tech/Sentinelx/ci.yml?branch=main&label=CI&style=flat-square&labelColor=141a19"></a>
+  <img alt="Version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-e4ebe6?style=flat-square&labelColor=141a19">
+  <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-e4ebe6?style=flat-square&labelColor=141a19"></a>
+  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white&style=flat-square&labelColor=141a19">
+  <img alt="Default: detection only" src="https://img.shields.io/badge/default-detection%20only%2C%20dry%20run-86c5a4?style=flat-square&labelColor=141a19">
+  <img alt="Self-hosted and air-gap friendly" src="https://img.shields.io/badge/runs-self--hosted%20%C2%B7%20offline-ffb23f?style=flat-square&labelColor=141a19">
+</p>
+
+<p align="center">
+  <a href="#quick-start"><b>Quick start</b></a> &nbsp;·&nbsp;
+  <a href="#proof-a-live-attack-run"><b>See it catch real attacks</b></a> &nbsp;·&nbsp;
+  <a href="docs/use-cases.md"><b>Use cases</b></a> &nbsp;·&nbsp;
+  <a href="#documentation"><b>Documentation</b></a> &nbsp;·&nbsp;
+  <a href="docs/audit-report.md"><b>Verification report</b></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/stack/python.svg" width="44" alt="Python" title="Python">
+  <img src="docs/assets/stack/fastapi.svg" width="44" alt="FastAPI" title="FastAPI">
+  <img src="docs/assets/stack/pydantic.svg" width="44" alt="Pydantic" title="Pydantic">
+  <img src="docs/assets/stack/sqlalchemy.svg" width="44" alt="SQLAlchemy" title="SQLAlchemy">
+  <img src="docs/assets/stack/postgresql.svg" width="44" alt="PostgreSQL" title="PostgreSQL">
+  <img src="docs/assets/stack/sqlite.svg" width="44" alt="SQLite" title="SQLite">
+  <img src="docs/assets/stack/redis.svg" width="44" alt="Redis" title="Redis">
+  <img src="docs/assets/stack/nextdotjs.svg" width="44" alt="Next.js" title="Next.js">
+  <img src="docs/assets/stack/react.svg" width="44" alt="React" title="React">
+  <img src="docs/assets/stack/typescript.svg" width="44" alt="TypeScript" title="TypeScript">
+  <img src="docs/assets/stack/tailwindcss.svg" width="44" alt="Tailwind CSS" title="Tailwind CSS">
+  <img src="docs/assets/stack/docker.svg" width="44" alt="Docker" title="Docker">
+  <img src="docs/assets/stack/nginx.svg" width="44" alt="NGINX" title="NGINX">
+  <img src="docs/assets/stack/prometheus.svg" width="44" alt="Prometheus" title="Prometheus">
+  <img src="docs/assets/stack/pytest.svg" width="44" alt="pytest" title="pytest">
+  <img src="docs/assets/stack/githubactions.svg" width="44" alt="GitHub Actions" title="GitHub Actions">
+  <img src="docs/assets/stack/linux.svg" width="44" alt="Linux" title="Linux">
+  <br>
+  <sub>Python · FastAPI · Pydantic · SQLAlchemy · PostgreSQL · SQLite · Redis · Next.js · React · TypeScript · Tailwind CSS · Docker · NGINX · Prometheus · pytest · GitHub Actions · Linux (nftables, iptables, AF_PACKET)</sub>
+</p>
 
 SentinelX is an open-source network intrusion detection and prevention platform. It captures traffic (live or from PCAP files), decodes it, detects scans, brute force, floods, DNS abuse and custom rule matches, and scores each finding from 0 to 100 with the reasons shown. It correlates related findings into incidents and, only when you enable it, blocks or rate-limits attackers through the host firewall behind a safety guard.
 
 Every alert shows its work: the evidence that triggered it, the thresholds it crossed, how its risk score was built, and what the response engine decided and why.
 
+<p align="center">
+  <img src="docs/images/overview.png" alt="The SentinelX overview during a live attack run: current risk 100, 23 detections, 3 open incidents and live capture statistics" width="100%">
+  <br><sub>The overview during the live attack run described below. Every number on it came from real captured traffic.</sub>
+</p>
+
 > **Status: alpha (0.1.0).** SentinelX is tested (unit, integration, API, end-to-end replay tests, and kernel tests of live capture and firewall changes in a network namespace; PostgreSQL and Redis in CI) and benchmarked on synthetic traffic, but it has not been proven in production networks. It has been run natively on Linux x86_64 only (Linux ARM64 partly, under emulation); see [Platform support](#platform-support). It runs in **detection-only, dry-run mode by default** and never changes a firewall until an administrator enables prevention. Read [Limitations](#limitations) before deploying it.
 
 ## Contents
 
+- [Proof: a live attack run](#proof-a-live-attack-run)
 - [Who is SentinelX for?](#who-is-sentinelx-for)
 - [Features](#features)
 - [Architecture](#architecture)
@@ -33,6 +80,49 @@ Every alert shows its work: the evidence that triggered it, the thresholds it cr
 - [Author](#author)
 - [License](#license)
 
+## Proof: a live attack run
+
+Claims are cheap, so here is a recorded run. [`scripts/live_demo.sh`](scripts/live_demo.sh) starts the Docker Compose stack with live capture and nftables control granted to the API container, then attacks it with real tools from four other containers on the stack's private network: `nmap` SYN, Xmas and UDP scans, `hping3` SYN and ICMP floods, tunnelling-shaped DNS queries and an HTTP flood. Every packet stays on that private network, and firewall rules change only inside the API container's own network namespace. Your host firewall is never touched.
+
+<p align="center">
+  <img src="docs/assets/proof-live-run.svg" alt="Terminal output of the live demo: detections per attacking host, then an automatic block that drops a SYN flood in the kernel, the unblock, and the return to detection only" width="100%">
+</p>
+
+What the run shows:
+
+- **Detection on the right host.** 33 live detections across the four attacking addresses, each explained with evidence. None names the target, including the SYN-ACKs, echo replies and database traffic the target itself sent during the attacks.
+- **Correlation.** Scans followed by floods became incidents such as *Reconnaissance with service disruption*, scored 100 with the contribution of each factor.
+- **Real prevention.** With automatic mode enabled (it requires typing `ENABLE PREVENTION`), the fourth attacker's port scan was enough: its block was already in place when the scan finished. Its SYN flood then lost 100% of its packets, and the kernel's nftables counter recorded 3,084 dropped packets. After an unblock, the same host got HTTP 200 again, and SentinelX was returned to detection only with dry run.
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/images/incident.png"><img src="docs/images/incident.png" alt="Incident page: Reconnaissance with service disruption, risk 100, timeline, correlated detections and response decisions"></a><br><sub><b>Incident.</b> A scan, then floods, from one host: the timeline, the risk breakdown and the blocks the engine would have applied in detection-only mode.</sub></td>
+    <td width="50%"><a href="docs/images/detection.png"><img src="docs/images/detection.png" alt="Detection page for a SYN flood with four pieces of evidence and a risk score of 91"></a><br><sub><b>Detection.</b> A SYN flood with its evidence: 2,000 SYNs to one port, none completing a handshake, and why its risk is 91.</sub></td>
+  </tr>
+  <tr>
+    <td><a href="docs/images/firewall.png"><img src="docs/images/firewall.png" alt="Firewall page with prevention active and one temporary block"></a><br><sub><b>Firewall.</b> Prevention active on nftables, and the temporary block on the attacker with the incident that caused it.</sub></td>
+    <td><a href="docs/images/threats.png"><img src="docs/images/threats.png" alt="Threats page ranking attacking hosts by risk"></a><br><sub><b>Threats.</b> Attacking hosts ranked by the worst thing each one did.</sub></td>
+  </tr>
+  <tr>
+    <td><a href="docs/images/lab.png"><img src="docs/images/lab.png" alt="PCAP Lab replay report with throughput, latency, an incident, simulated decisions and detections"></a><br><sub><b>PCAP Lab.</b> A generated capture replayed through the same pipeline, with measured throughput and latency. Responses in a replay are always simulated.</sub></td>
+    <td><a href="docs/images/audit.png"><img src="docs/images/audit.png" alt="Audit log listing logins, prevention being enabled, the automatic block and the unblock"></a><br><sub><b>Audit log.</b> Prevention being enabled, the automatic block, the unblock and every sign-in, with who and from where.</sub></td>
+  </tr>
+</table>
+
+To reproduce it on a Linux machine with Docker:
+
+```bash
+scripts/live_demo.sh all     # about ten minutes; prints each step and what SentinelX recorded
+# Dashboard: http://127.0.0.1:3300, user admin, password in .demo/admin-password
+scripts/live_demo.sh down    # remove the stack, its volumes and .demo/
+```
+
+Earlier runs of this script found real defects: the target of a ping flood was reported as a flood source for its echo replies, the target of an HTTP flood was blamed for the packet-rate spike its own answers caused, a SYN flood against an open port went undetected, and SentinelX's own database connections looked like a brute force. Each is fixed, with regression tests in [`tests/detection/test_live_run_regressions.py`](tests/detection/test_live_run_regressions.py).
+
+<p align="center">
+  <img src="docs/assets/proof-tests.svg" alt="Test results from the final run" width="100%">
+</p>
+
 ## Who is SentinelX for?
 
 SentinelX is built for people who look after **one host or a small network** and want to understand hostile traffic without running a security operations stack:
@@ -48,6 +138,37 @@ It is the wrong tool for high-speed links (it handles about 5,000 packets per se
 [docs/use-cases.md](docs/use-cases.md) has detailed scenarios with setups, a comparison with alternatives, deployment recommendations and a decision checklist.
 
 ## Features
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><img src="docs/assets/icons/radar.svg" width="28" alt=""><br><b>Live capture and replay</b><br><sub>AF_PACKET on Linux, libpcap elsewhere, PCAP and PCAPNG replay, and synthetic attack scenarios.</sub></td>
+    <td width="33%" valign="top"><img src="docs/assets/icons/scan-search.svg" width="28" alt=""><br><b>Behavioural detectors</b><br><sub>Port scans and sweeps, brute force, SYN, ICMP, HTTP and DNS floods, DNS tunnelling, denylists and TCP flag anomalies.</sub></td>
+    <td width="33%" valign="top"><img src="docs/assets/icons/list-checks.svg" width="28" alt=""><br><b>Evidence on every alert</b><br><sub>The observations, thresholds and plain-language explanation behind each detection.</sub></td>
+  </tr>
+  <tr>
+    <td valign="top"><img src="docs/assets/icons/gauge.svg" width="28" alt=""><br><b>Explained risk scores</b><br><sub>An additive 0–100 score with each contribution stored and shown.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/git-merge.svg" width="28" alt=""><br><b>Incident correlation</b><br><sub>Related detections grouped by kill-chain patterns, such as reconnaissance followed by a credential attack.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/shield-ban.svg" width="28" alt=""><br><b>Guarded prevention</b><br><sub>Detect-only, approval or automatic modes, dry run, temporary blocks and rate limits behind a safety guard.</sub></td>
+  </tr>
+  <tr>
+    <td valign="top"><img src="docs/assets/icons/file-code.svg" width="28" alt=""><br><b>YAML rules</b><br><sub>A bounded condition language with no <code>eval</code>, embedded rule tests and an editor in the dashboard.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/activity.svg" width="28" alt=""><br><b>Anomaly baselines</b><br><sub>Statistical baselines resistant to slow poisoning, and an optional Isolation Forest model trained on your traffic.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/flask-conical.svg" width="28" alt=""><br><b>PCAP Lab</b><br><sub>Replay captures through the live pipeline with measured throughput, latency and simulated responses.</sub></td>
+  </tr>
+  <tr>
+    <td valign="top"><img src="docs/assets/icons/users.svg" width="28" alt=""><br><b>Roles and sessions</b><br><sub>Admin, analyst and viewer roles, Argon2id passwords, rotating tokens and CSRF-protected cookies.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/scroll-text.svg" width="28" alt=""><br><b>Audit log</b><br><sub>Every administrative and response action, with who did it, from where and the outcome.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/plug.svg" width="28" alt=""><br><b>API and integrations</b><br><sub>REST API with OpenAPI, a WebSocket event stream, HTTPS webhooks and Prometheus metrics.</sub></td>
+  </tr>
+  <tr>
+    <td valign="top"><img src="docs/assets/icons/container.svg" width="28" alt=""><br><b>Docker Compose stack</b><br><sub>PostgreSQL, Redis, API, dashboard and proxy, unprivileged by default, with an optional host-capture profile.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/cloud-off.svg" width="28" alt=""><br><b>Offline by design</b><br><sub>No external requests: fonts, threat lists and models are local, so it runs air-gapped.</sub></td>
+    <td valign="top"><img src="docs/assets/icons/terminal.svg" width="28" alt=""><br><b>Scriptable CLI</b><br><sub>Start, replay, investigate, block and diagnose from the terminal, with JSON output.</sub></td>
+  </tr>
+</table>
+
+<details>
+<summary><b>Full feature list</b></summary>
 
 **Capture and decoding**
 - Live capture through `AF_PACKET` on Linux, or libpcap through Scapy (BPF devices on macOS, Npcap on Windows, and as a fallback on Linux). PCAP and PCAPNG replay, and synthetic scenarios.
@@ -75,6 +196,8 @@ It is the wrong tool for high-speed links (it handles about 5,000 packets per se
 - PostgreSQL storage (SQLite for evaluation) with Alembic migrations and retention; Redis for shared rate limits and state, with a degraded mode when it is unavailable.
 - Prometheus metrics, a Typer CLI with interactive menus and scriptable JSON output, and a Next.js dashboard.
 - A reproducible benchmark harness that reports detection rate, false positives, time to detect, latency and throughput, including known evasions.
+
+</details>
 
 ## Architecture
 
