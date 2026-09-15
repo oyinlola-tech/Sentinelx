@@ -274,12 +274,12 @@ export function ShareBar({ shares }: { shares: Record<string, number> }) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex h-2.5 w-full gap-[2px] overflow-hidden rounded-sm" role="img" aria-label={entries.map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`).join(", ")}>
-        {entries.map(([key, value], index) => (
+        {entries.map(([key, value]) => (
           <span key={key} style={{ width: `${value * 100}%`, background: protocolColor(key) }} />
         ))}
       </div>
       <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        {entries.map(([key, value], index) => (
+        {entries.map(([key, value]) => (
           <li key={key} className="flex items-center gap-1.5 text-mist">
             <span className="size-2 rounded-sm" style={{ background: protocolColor(key) }} aria-hidden />
             <span className="uppercase">{key}</span>
