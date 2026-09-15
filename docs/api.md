@@ -259,10 +259,16 @@ Usernames are 3 to 64 characters of letters, digits, `.`, `_` or `-`.
 When the user table is empty at startup, SentinelX creates an administrator named
 `api.bootstrap_admin_username` (default `admin`). If
 `API__BOOTSTRAP_ADMIN_PASSWORD` is set it is used (and must meet the policy);
-otherwise a password is generated, printed once to the server's standard error, and
-the account must change it at first login. `GET /api/v1/system/status` reports
-`bootstrap_admin_pending: true` when the running process generated such a password at
-startup.
+otherwise a password is generated and written to `api.bootstrap_password_file`
+(default `<temp directory>/sentinelx-<uid>/initial-admin-password`): a `0600` file in a
+`0700` directory owned by the service account. A directory that is a symlink, belongs to
+another account or is open to others is refused, and a symlink planted at the file's path
+is replaced, not followed. The password is never printed or logged; the console shows
+only the path. The account must change it at first login, which deletes the file (so does
+an administrative reset, through the API or `sentinelx users reset-password`). If the file
+cannot be written, the console says to run `sentinelx users reset-password admin`.
+`GET /api/v1/system/status` reports `bootstrap_admin_pending: true` while a generated
+password from this process has not been replaced.
 
 ### Authentication disabled
 

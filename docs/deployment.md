@@ -316,8 +316,9 @@ What the targets do (from the `Makefile`, which needs bash):
 | `make check` | Lint, type checks, tests, rule validation and a dashboard build. |
 
 On first start with an empty user table the API creates the administrator `admin`
-and prints a one-time password to the terminal (unless
-`API__BOOTSTRAP_ADMIN_PASSWORD` is set). You must change it at first login. Open
+and, unless `API__BOOTSTRAP_ADMIN_PASSWORD` is set, writes a one-time password to a
+file only its account can read. The terminal shows the file's path, not the password.
+You must change it at first login, which deletes the file. Open
 `http://localhost:3000`. Interactive API docs are at `http://127.0.0.1:8000/api/docs`
 outside production.
 
@@ -391,7 +392,7 @@ Other Compose variables:
 |---|---|---|
 | `ENVIRONMENT` | `production` | `ENVIRONMENT` in `migrate`, `api` and `sensor` |
 | `POSTGRES_USER`, `POSTGRES_DB` | `sentinelx`, `sentinelx` | part of `DATABASE_URL` |
-| `API__BOOTSTRAP_ADMIN_PASSWORD` | empty | the same variable in the API containers |
+| `API__BOOTSTRAP_ADMIN_PASSWORD` | empty | the same variable in the API containers; if empty, read the generated password with `docker compose exec api cat /tmp/sentinelx/initial-admin-password` |
 | `API__METRICS_TOKEN` | empty | the same variable in the API containers |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | `CORS_ORIGINS` |
 | `FRONTEND_SUBNET` | `172.31.250.0/24` | the `frontend` network's subnet, and `API__TRUSTED_PROXIES` |
@@ -634,10 +635,14 @@ Notes:
   not at the latest revision.
 - Settings are also read from a `.env` file in the working directory if one exists.
   Keep `/var/lib/sentinelx` free of a stray `.env`.
-- Anything the API prints to standard error, including a generated administrator
-  password, is stored in the journal. Setting `API__BOOTSTRAP_ADMIN_PASSWORD` avoids
-  that. It is only used while the user table is empty; remove it from the file once
-  the first administrator exists and has logged in.
+- Anything the API prints is stored in the journal, so a generated administrator
+  password is never printed. Because the unit has `PrivateTmp=true`, add
+  `API__BOOTSTRAP_PASSWORD_FILE=/var/lib/sentinelx/initial-admin-password` to
+  `/etc/sentinelx/sentinelx.env` and read it after the first start with
+  `sudo cat /var/lib/sentinelx/initial-admin-password`. The file is `0600`, owned by
+  `sentinelx`, and deleted when the password is changed. Alternatively set
+  `API__BOOTSTRAP_ADMIN_PASSWORD`; it is only used while the user table is empty, so
+  remove it from the file once the first administrator exists and has logged in.
 - With `AmbientCapabilities`, `CAP_NET_ADMIN` is already in the ambient set, so
   `sentinelx doctor` and `sentinelx capabilities`, run with the service's credentials,
   report firewall privileges as granted and `nft`/`iptables` inherit the capability.
@@ -880,7 +885,8 @@ None of the API settings are runtime-editable.
 | `API__LOCKOUT_SECONDS` | | `900` | Lock duration (at least 30). |
 | `API__AUTH_ENABLED` | | `true` | Development only; rejected as `false` in production. |
 | `API__BOOTSTRAP_ADMIN_USERNAME` | | `admin` | Name of the first administrator (3 to 64 characters). |
-| `API__BOOTSTRAP_ADMIN_PASSWORD` | | empty | Password for the first administrator, used only when the user table is empty. If empty, one is generated and printed once. |
+| `API__BOOTSTRAP_ADMIN_PASSWORD` | | empty | Password for the first administrator, used only when the user table is empty. If empty, one is generated and written to `API__BOOTSTRAP_PASSWORD_FILE`; it is never printed or logged. |
+| `API__BOOTSTRAP_PASSWORD_FILE` | | `<temp>/sentinelx-<uid>/initial-admin-password` | Where a generated first-administrator password is written: a `0600` file in a `0700` directory owned by the service account, deleted once the password is changed. Docker Compose sets `/tmp/sentinelx/initial-admin-password` (the container's tmpfs). |
 | `API__RATE_LIMIT_REQUESTS` | | `300` | Requests per client IP per window (at least 1). |
 | `API__RATE_LIMIT_WINDOW_SECONDS` | | `60` | Rate limit window (at least 1). |
 | `API__LOGIN_RATE_LIMIT_ATTEMPTS` | | `8` | Login attempts per client IP per window (at least 1). |
@@ -1219,6 +1225,11 @@ git pull
 docker compose up -d --build     # rebuilds images; `migrate` runs before `api` starts
 docker compose logs -f api
 ```
+
+On a first start, read the generated administrator password with
+`docker compose exec api cat /tmp/sentinelx/initial-admin-password`. The file is on
+the container's memory-backed `/tmp`, is never printed to the logs, and is deleted when
+the password is changed.
 
 With the `capture` profile, repeat the command you started it with
 (`SENTINELX_API_UPSTREAM=... docker compose --profile capture up -d --build --scale api=0`).
