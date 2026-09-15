@@ -9,7 +9,8 @@ export const dynamic = "force-dynamic";
 
 export function GET() {
   return NextResponse.json(
-    { wsUrl: process.env.SENTINELX_PUBLIC_WS_URL ?? null },
+    // "app" identifies this as the SentinelX dashboard to health probes (sentinelx doctor).
+    { app: "sentinelx-dashboard", wsUrl: process.env.SENTINELX_PUBLIC_WS_URL ?? null },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

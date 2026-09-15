@@ -13,6 +13,7 @@ import { Wordmark } from "@/components/shell/wordmark";
 import { query } from "@/lib/api";
 import { EventsProvider, useEvents, type StreamState } from "@/lib/events";
 import { useSession } from "@/lib/session";
+import { useMediaQuery } from "@/lib/use-media-query";
 import { useNow } from "@/lib/use-now";
 import type { Detection, Overview, Page, Severity } from "@/lib/types";
 
@@ -63,11 +64,14 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const groups = [...new Set(visible.map((item) => item.group))];
   const { data: overview } = useSWR<Overview>("/stats/overview", { refreshInterval: 30_000 });
   const counts = { incidents: overview?.open_incidents ?? 0, approvals: overview?.pending_approvals ?? 0 };
+  // Below lg the closed sidebar sits off-screen; inert keeps its links out of the tab order.
+  const desktop = useMediaQuery("(min-width: 64rem)");
   return (
     <>
       {open && <button className="fixed inset-0 z-30 bg-black/50 lg:hidden" aria-label="Close navigation" onClick={onClose} />}
       <nav
         aria-label="Primary"
+        inert={!open && !desktop}
         className={`fixed inset-y-0 left-0 z-40 flex w-56 flex-col border-r border-line bg-panel transition-transform lg:sticky lg:top-0 lg:h-dvh lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}
       >
         <div className="flex h-14 items-center justify-between border-b border-line px-4">

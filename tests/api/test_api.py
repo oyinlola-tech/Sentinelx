@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -325,6 +326,19 @@ class TestValidationAndSafety:
         assert view["settings"]["api"]["jwt_secret"] == "[redacted]"
         assert view["settings"]["response"]["webhook_url"] == "https://hooks.example.com/…"
 
+    async def test_webhook_secret_never_reaches_the_audit_log(
+        self, client: httpx.AsyncClient, admin: dict[str, str]
+    ) -> None:
+        url = "https://hooks.example.com/services/T000/B000/SECRETPATH?sig=abc"
+        response = await client.patch(
+            "/config/response", headers=admin, json={"changes": {"webhook_url": url}}
+        )
+        assert response.status_code == 200, response.text
+        audit = await client.get("/audit", headers=admin, params={"action": "UPDATE_SETTINGS"})
+        text = audit.text
+        assert "hooks.example.com" in text
+        assert "SECRETPATH" not in text and "sig=abc" not in text
+
     async def test_path_traversal_refused(
         self, client: httpx.AsyncClient, admin: dict[str, str]
     ) -> None:
@@ -398,7 +412,23 @@ class TestValidationAndSafety:
             headers={**admin, "Content-Type": "application/octet-stream"},
             content=b"\xd4\xc3\xb2\xa1" + b"\0" * 20,
         )
-        assert full.status_code == 422 and "full" in full.json()["detail"]
+        assert full.status_code == 507 and "full" in full.json()["detail"]
+
+        # Streamed without Content-Length, larger than the space left: 413 while reading.
+        platform.settings.capture.upload_quota_mb = 2
+
+        async def stream() -> Any:
+            yield b"\xd4\xc3\xb2\xa1" + b"\0" * 20
+            for _ in range(24):
+                yield b"\0" * 65536
+
+        over = await client.post(
+            "/replay/upload",
+            headers={**admin, "Content-Type": "application/octet-stream"},
+            content=stream(),
+        )
+        assert over.status_code == 413, over.text
+        assert [p.name for p in uploads.iterdir()] == ["old.pcap"]  # partial file removed
 
     async def test_security_headers(self, client: httpx.AsyncClient, admin: dict[str, str]) -> None:
         headers = (await client.get("/detections", headers=admin)).headers
@@ -449,7 +479,7 @@ class TestWorkflows:
         record = (await client.get(f"/replay/{replay['replay_id']}", headers=admin)).json()
         assert record["status"] == "completed" and record["report"]["incident_count"] == 1
         assert all(d["outcome"] in ("skipped", "simulated") for d in record["report"]["decisions"])
-        await asyncio.sleep(0.3)
+        # A completed replay's results are already stored: no waiting for the persister.
         incidents = (
             await client.get("/incidents", headers=admin, params={"replay_id": replay["replay_id"]})
         ).json()
@@ -504,9 +534,9 @@ class TestWorkflows:
             raise RuntimeError("pipeline missing")
         frames = shift_to(get_scenario("mixed_intrusion").frames, time.time())
         await platform.pipeline.run(MockCapture(frames))
-        await asyncio.sleep(0.3)
-        detections = (await client.get("/detections", headers=admin)).json()
-        assert detections["total"] >= 3
+        detections = await eventually(
+            lambda: client.get("/detections", headers=admin), lambda body: body["total"] >= 3
+        )
         detection_id = detections["items"][0]["detection_id"]
         triaged = await client.patch(
             f"/detections/{detection_id}", headers=admin, json={"status": "false_positive"}
@@ -523,6 +553,21 @@ class TestWorkflows:
         assert threats[0]["source_ip"] == "203.0.113.200" and threats[0]["detections"] >= 3
         analytics = (await client.get("/stats/analytics", headers=admin)).json()
         assert analytics["false_positives"] == 1 and analytics["timeline"]
+
+
+async def eventually(
+    request: Callable[[], Awaitable[httpx.Response]],
+    ready: Callable[[Any], bool],
+    *,
+    wait_seconds: float = 15.0,
+) -> Any:
+    """Poll until the persister has flushed; slow machines (emulated ARM64) need longer."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        body = (await request()).json()
+        if ready(body) or time.monotonic() > deadline:
+            return body
+        await asyncio.sleep(0.05)
 
 
 def test_websocket_ticket_flow(tmp_path: Path) -> None:
@@ -624,3 +669,53 @@ def test_websocket_survives_idle_pings_and_drops_deactivated_users(
                 while True:
                     ws.receive_json()
             assert closed.value.code == 4401
+
+
+def test_websocket_busy_stream_still_rechecks_the_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stream that never goes idle must not escape the deactivation check."""
+    import asyncio
+
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import sentinelx.api.websocket as ws_module
+    from sentinelx.api.app import create_app
+    from sentinelx.events.bus import EventType
+    from sentinelx.storage.repositories import UserRepository
+
+    monkeypatch.setattr(ws_module, "_PING_INTERVAL", 0.3)
+    app = create_app(make_settings(tmp_path))
+    with TestClient(app) as http:
+        token = http.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+        ).json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        issued = http.post("/api/v1/auth/ws-ticket", headers=headers).json()["ticket"]
+        platform = app.state.platform
+
+        async def publish_forever() -> None:
+            while True:
+                await platform.bus.publish(EventType.DETECTION_CREATED, {"n": 1})
+                await asyncio.sleep(0.02)
+
+        async def deactivate() -> None:
+            async with platform.database.session() as session:
+                user = await UserRepository(session).by_username("admin")
+                assert user is not None
+                user.is_active = False
+
+        with http.websocket_connect(f"/api/v1/ws/events?ticket={issued}") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            publisher = http.portal.start_task_soon(publish_forever)
+            try:
+                http.portal.call(deactivate)
+                pings = 0
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    for _ in range(2000):
+                        pings += ws.receive_json()["type"] == "ping"
+                assert closed.value.code == 4401
+                assert pings == 0  # the stream was busy the whole time
+            finally:
+                publisher.cancel()

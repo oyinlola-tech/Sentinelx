@@ -1,0 +1,207 @@
+{
+  "environment": {
+    "sentinelx": "0.1.0",
+    "python": "3.14.6",
+    "platform": "Linux-7.1.5+kali-amd64-x86_64-with-glibc2.43",
+    "cpu": "Intel(R) Core(TM) i5-8350U CPU @ 1.70GHz",
+    "cpu_count": 8,
+    "timestamp": "2026-09-15T00:34:46.781411+00:00"
+  },
+  "seeded_detections": 836,
+  "api": {
+    "GET /system/health (unauthenticated)": {
+      "sequential": {
+        "count": 300,
+        "mean_ms": 2.026,
+        "p50_ms": 1.846,
+        "p95_ms": 2.686,
+        "p99_ms": 3.503,
+        "max_ms": 12.315,
+        "concurrency": 1,
+        "requests_per_second": 493.2,
+        "failures": 0
+      },
+      "concurrency_10": {
+        "count": 600,
+        "mean_ms": 23.963,
+        "p50_ms": 22.444,
+        "p95_ms": 35.396,
+        "p99_ms": 55.86,
+        "max_ms": 89.215,
+        "concurrency": 10,
+        "requests_per_second": 415.7,
+        "failures": 0
+      }
+    },
+    "GET /detections?limit=50": {
+      "sequential": {
+        "count": 300,
+        "mean_ms": 15.35,
+        "p50_ms": 14.791,
+        "p95_ms": 19.404,
+        "p99_ms": 20.786,
+        "max_ms": 21.321,
+        "concurrency": 1,
+        "requests_per_second": 65.1,
+        "failures": 0
+      },
+      "concurrency_10": {
+        "count": 600,
+        "mean_ms": 231.724,
+        "p50_ms": 233.856,
+        "p95_ms": 292.615,
+        "p99_ms": 326.854,
+        "max_ms": 374.212,
+        "concurrency": 10,
+        "requests_per_second": 43.0,
+        "failures": 0
+      }
+    },
+    "GET /stats/overview": {
+      "sequential": {
+        "count": 300,
+        "mean_ms": 36.706,
+        "p50_ms": 35.082,
+        "p95_ms": 49.63,
+        "p99_ms": 54.549,
+        "max_ms": 66.431,
+        "concurrency": 1,
+        "requests_per_second": 27.2,
+        "failures": 0
+      },
+      "concurrency_10": {
+        "count": 600,
+        "mean_ms": 288.712,
+        "p50_ms": 286.979,
+        "p95_ms": 331.97,
+        "p99_ms": 389.276,
+        "max_ms": 418.333,
+        "concurrency": 10,
+        "requests_per_second": 34.5,
+        "failures": 0
+      }
+    },
+    "GET /incidents?limit=50": {
+      "sequential": {
+        "count": 300,
+        "mean_ms": 9.25,
+        "p50_ms": 8.921,
+        "p95_ms": 10.883,
+        "p99_ms": 13.593,
+        "max_ms": 23.18,
+        "concurrency": 1,
+        "requests_per_second": 108.1,
+        "failures": 0
+      },
+      "concurrency_10": {
+        "count": 600,
+        "mean_ms": 92.286,
+        "p50_ms": 92.167,
+        "p95_ms": 110.55,
+        "p99_ms": 122.329,
+        "max_ms": 130.203,
+        "concurrency": 10,
+        "requests_per_second": 108.0,
+        "failures": 0
+      }
+    },
+    "POST /auth/login (Argon2id)": {
+      "sequential": {
+        "count": 40,
+        "mean_ms": 65.701,
+        "p50_ms": 65.093,
+        "p95_ms": 72.731,
+        "p99_ms": 105.045,
+        "max_ms": 105.045,
+        "concurrency": 1,
+        "requests_per_second": 15.2,
+        "failures": 0
+      },
+      "concurrency_10": {
+        "count": 80,
+        "mean_ms": 632.841,
+        "p50_ms": 658.121,
+        "p95_ms": 749.815,
+        "p99_ms": 767.157,
+        "max_ms": 819.75,
+        "concurrency": 10,
+        "requests_per_second": 15.2,
+        "failures": 0
+      }
+    }
+  },
+  "websocket": {
+    "events": 10,
+    "publish_to_client": {
+      "count": 10,
+      "mean_ms": 35.002,
+      "p50_ms": 28.866,
+      "p95_ms": 46.884,
+      "p99_ms": 46.884,
+      "max_ms": 46.884
+    },
+    "note": "time from the server publishing an event to this client receiving it, same host"
+  },
+  "storage": [
+    {
+      "database": "SQLite",
+      "detections_produced": 832,
+      "detections_stored": 832,
+      "pipeline_seconds": 5.701,
+      "produced_and_stored_seconds": 6.727,
+      "stored_per_second": 123.7
+    },
+    {
+      "database": "PostgreSQL",
+      "detections_produced": 832,
+      "detections_stored": 832,
+      "pipeline_seconds": 2.923,
+      "produced_and_stored_seconds": 9.015,
+      "stored_per_second": 92.3
+    }
+  ],
+  "pipeline_load": [
+    {
+      "packets": 1000,
+      "packets_per_second": 4926.9,
+      "per_packet": {
+        "count": 1000,
+        "mean_ms": 0.2,
+        "p50_ms": 0.177,
+        "p95_ms": 0.305,
+        "p99_ms": 0.348,
+        "max_ms": 0.868
+      },
+      "rss_growth_mb": 0.0,
+      "tracked_sources": 24
+    },
+    {
+      "packets": 10000,
+      "packets_per_second": 5311.9,
+      "per_packet": {
+        "count": 10000,
+        "mean_ms": 0.185,
+        "p50_ms": 0.165,
+        "p95_ms": 0.275,
+        "p99_ms": 0.465,
+        "max_ms": 2.925
+      },
+      "rss_growth_mb": 0.5,
+      "tracked_sources": 24
+    },
+    {
+      "packets": 50000,
+      "packets_per_second": 4922.4,
+      "per_packet": {
+        "count": 50000,
+        "mean_ms": 0.2,
+        "p50_ms": 0.173,
+        "p95_ms": 0.318,
+        "p99_ms": 0.609,
+        "max_ms": 3.27
+      },
+      "rss_growth_mb": 0.0,
+      "tracked_sources": 24
+    }
+  ]
+}

@@ -19,13 +19,14 @@ from __future__ import annotations
 import asyncio
 import re
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sentinelx.assembly import attach_anomaly_detectors, build_intel, simulation_settings
 from sentinelx.capture.pcap import PcapFileCapture, pcap_metadata
-from sentinelx.common.enums import ResponseMode
-from sentinelx.common.errors import PcapError
+from sentinelx.common.errors import PcapError, UploadQuotaExhaustedError, UploadTooLargeError
 from sentinelx.common.models import new_id
 from sentinelx.config.settings import Settings
 from sentinelx.events.bus import EventBus, EventType
@@ -39,6 +40,7 @@ from sentinelx.storage.database import Database
 from sentinelx.storage.models import ReplayRecord
 from sentinelx.storage.repositories import ReplayRepository
 from sentinelx.telemetry.logging import get_logger
+from sentinelx.threat_intel import ThreatIntelService
 
 __all__ = ["ReplayService"]
 
@@ -62,12 +64,19 @@ class ReplayService:
         bus: EventBus,
         rules: RuleService,
         audit: AuditService,
+        *,
+        intel: ThreatIntelService | None = None,
+        settle: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.settings = settings
+        #: Waits until published results are stored. A replay is reported complete
+        #: only after this, so its detections and incidents are final when read.
+        self.settle = settle
         self.database = database
         self.bus = bus
         self.rules = rules
         self.audit = audit
+        self.intel = intel
         self.directory = Path(settings.capture.pcap_directory).resolve()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._pipelines: dict[str, Pipeline] = {}
@@ -81,6 +90,8 @@ class ReplayService:
         Raises:
             PcapError: for traversal attempts, absolute paths, or missing files.
         """
+        if not relative or any(ord(ch) < 0x20 for ch in relative):
+            raise PcapError("invalid capture path")
         candidate = (self.directory / relative).resolve()
         if self.directory != candidate and self.directory not in candidate.parents:
             raise PcapError("path is outside the PCAP directory")
@@ -131,7 +142,7 @@ class ReplayService:
         quota = self.settings.capture.upload_quota_mb * 1024 * 1024
         used = await asyncio.to_thread(self.uploads_size_bytes)
         if used >= quota:
-            raise PcapError(
+            raise UploadQuotaExhaustedError(
                 f"the upload area is full ({used // 1_048_576} of "
                 f"{quota // 1_048_576} MB); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB"
             )
@@ -150,7 +161,7 @@ class ReplayService:
                         header += chunk[: 4 - len(header)]
                     written += len(chunk)
                     if written > limit:
-                        raise PcapError(
+                        raise UploadTooLargeError(
                             f"upload exceeds the {max(limit // 1_048_576, 1)} MB that can be accepted"
                         )
                     await asyncio.to_thread(handle.write, chunk)
@@ -213,15 +224,16 @@ class ReplayService:
         }
 
     def _isolated_pipeline(self, replay_id: str) -> Pipeline:
-        replay_settings = self.settings.model_copy(deep=True)
         # Hard safety line: a replay can simulate responses, never apply them.
-        replay_settings.response.dry_run = True
-        replay_settings.response.firewall_backend = "null"
-        if replay_settings.response.mode is ResponseMode.MANUAL_APPROVAL:
-            replay_settings.response.mode = (
-                ResponseMode.AUTOMATIC
-            )  # show decisions instead of queueing approvals
-        pipeline = Pipeline(replay_settings, bus=self.bus, firewall=MemoryFirewall())
+        replay_settings = simulation_settings(self.settings)
+        pipeline = Pipeline(
+            replay_settings,
+            bus=self.bus,
+            firewall=MemoryFirewall(),
+            intel=self.intel or build_intel(replay_settings),
+        )
+        # The same anomaly detectors a live sensor runs (rules are attached in _run).
+        attach_anomaly_detectors(pipeline, replay_settings)
         pipeline.replay_id = replay_id
         return pipeline
 
@@ -259,6 +271,8 @@ class ReplayService:
             summary["safety_note"] = (
                 "Replay responses are always simulated; no firewall changes were made."
             )
+            if self.settle is not None:
+                await self.settle()
             await self._update(
                 replay_id, status="completed", finished_at=datetime.now(UTC), report=summary
             )

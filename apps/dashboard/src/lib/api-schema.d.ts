@@ -47,7 +47,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Change Password */
+        /** Change your password; every other session is signed out */
         post: operations["change_password_api_v1_auth_change_password_post"];
         delete?: never;
         options?: never;
@@ -598,7 +598,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Upload */
+        /**
+         * Upload a capture file as the raw request body
+         * @description Stream a pcap or pcapng file to the capture directory.
+         *
+         *     The body is the file itself, not a multipart form. Authentication and the size
+         *     limit are checked before a single body byte is read, so an unauthenticated or
+         *     oversized upload never reaches the disk.
+         */
         post: operations["upload_api_v1_replay_upload_post"];
         delete?: never;
         options?: never;
@@ -847,6 +854,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What this host can do: live capture, PCAP replay, firewall control, blocking */
+        get: operations["capabilities_api_v1_system_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/health": {
         parameters: {
             query?: never;
@@ -979,11 +1003,6 @@ export interface components {
              * @description IP address or CIDR prefix.
              */
             target: string;
-        };
-        /** Body_upload_api_v1_replay_upload_post */
-        Body_upload_api_v1_replay_upload_post: {
-            /** File */
-            file: string;
         };
         /** ChangePasswordRequest */
         ChangePasswordRequest: {
@@ -1291,11 +1310,13 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -1685,6 +1706,10 @@ export interface operations {
             query?: {
                 target?: string | null;
                 outcome?: string[];
+                /** @description Include one alert per detection */
+                include_alerts?: boolean;
+                /** @description Include decisions from replays */
+                include_replays?: boolean;
                 limit?: number;
                 offset?: number;
             };
@@ -2347,14 +2372,16 @@ export interface operations {
     };
     upload_api_v1_replay_upload_post: {
         parameters: {
-            query?: never;
+            query?: {
+                filename?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "multipart/form-data": components["schemas"]["Body_upload_api_v1_replay_upload_post"];
+                "application/octet-stream": string;
             };
         };
         responses: {
@@ -2866,6 +2893,28 @@ export interface operations {
         };
     };
     overview_api_v1_stats_overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    capabilities_api_v1_system_capabilities_get: {
         parameters: {
             query?: never;
             header?: never;

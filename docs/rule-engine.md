@@ -74,7 +74,7 @@ The shipped rule files in `rules/` (`authentication.yml`, `dns-and-web.yml`, `ne
 
 ## Rule file format
 
-Rule files are YAML, loaded with `yaml.safe_load` only. A file holds either a list under `rules:` or a single mapping under `rule:`:
+Rule files are YAML. A file holds either a list under `rules:` or a single mapping under `rule:`:
 
 ```yaml
 rule:
@@ -87,6 +87,17 @@ rule:
 ```
 
 Files larger than 1 MiB (1,048,576 bytes) are rejected. When a directory is loaded, every `*.yml` and `*.yaml` file beneath it is read, including subdirectories, in sorted order.
+
+### Restricted YAML loader
+
+Rule files and definitions sent to the API are parsed by `load_rule_yaml` in `packages/sentinelx/signatures/rules.py`, a subclass of PyYAML's `SafeLoader` with two further restrictions:
+
+| Restriction | Error | Why |
+|---|---|---|
+| No anchors (`&name`) or aliases (`*name`) anywhere in the document | `not valid YAML: YAML anchors and aliases are not allowed in rules` | Aliases let a few hundred bytes expand into a very large document once it is copied or echoed back (the "billion laughs" pattern). Before this restriction, a definition of about 400 bytes sent to `POST /rules/validate` produced a response of about 30 MB |
+| Nesting at most 32 levels deep | `not valid YAML: YAML nested deeper than 32 levels` | Deep nesting exhausts the parser's recursion. Flow-style brackets (`[` and `{`) are counted before parsing starts, so a line of thousands of `[` is refused without being tokenised, and block nesting is counted while the document is composed |
+
+As with `SafeLoader`, YAML tags that construct Python objects are not supported. Rules need none of these features: repeat a value instead of aliasing it. `sentinelx rules validate` reports the same errors in the form `<file>: not valid YAML (<reason>)`.
 
 ### Rule keys
 
@@ -104,7 +115,7 @@ Defined by the `Rule` model in `packages/sentinelx/signatures/rules.py`. Unknown
 | `category` | no | `policy_violation` | `reconnaissance`, `brute_force`, `denial_of_service`, `exfiltration`, `protocol_anomaly`, `policy_violation`, `malicious_reputation`, `anomaly`, `lateral_movement`, `other` | Detection category |
 | `confidence` | no | `0.8` | 0.05-0.99 | Detection confidence, fixed per rule |
 | `action` | no | `alert` | see [Actions](#actions-and-the-preventive-rule-safety-check) | Recommended action |
-| `duration` | no | none | integer 30-86,400 | Block duration in seconds. Required when `action` is `temporary_block`; see the note under [Actions](#actions-and-the-preventive-rule-safety-check) |
+| `duration` | no | none | integer 30-86,400 | Block or rate-limit duration in seconds for automatic responses to this rule's detections. Required when `action` is `temporary_block`; see [Actions](#actions-and-the-preventive-rule-safety-check) |
 | `tags` | no | `[]` | up to 20 items | Added to detection tags after `rule` |
 | `references` | no | `[]` | up to 20 items | Reference URLs |
 | `tests` | no | `[]` | up to 50 items | [Embedded tests](#embedded-rule-tests) |
@@ -337,7 +348,7 @@ The `duration` key is a plain integer number of seconds, not a duration string.
 
 A rule's action is a recommendation carried on the detection as `recommended_action`. Whether anything changes on the network depends on the risk score, `RESPONSE_MODE`, `DRY_RUN`, the response allowlist and the safety guard, all described in [response-engine.md](response-engine.md). With the default `RESPONSE_MODE=detect_only` and `DRY_RUN=true`, no rule ever modifies traffic.
 
-In the current release, the rule's `duration` is validated and stored but is not passed to the response engine: automatic `temporary_block` and `rate_limit` responses use `RESPONSE__DEFAULT_BLOCK_SECONDS` (default 900) instead.
+The rule's `duration` travels with each detection as `recommended_duration_seconds` (in WebSocket payloads and replay reports; it is not a column of stored detections). When the response engine acts automatically on a rule detection whose action is `temporary_block` or `rate_limit`, it uses that duration, capped at `RESPONSE__MAX_BLOCK_SECONDS` (default 86,400). A rule without `duration` falls back to `RESPONSE__DEFAULT_BLOCK_SECONDS` (default 900). In `manual_approval` mode the pending action carries the same duration. `duration` has no effect on `block_ip` or `quarantine`, which are not time-limited, and it does not apply to the temporary blocks the engine issues for a high-risk incident, which always use `RESPONSE__DEFAULT_BLOCK_SECONDS`.
 
 ### The safety check
 
@@ -403,7 +414,9 @@ tests:
 |---|---|---|
 | `scenario` | yes | Name of a synthetic scenario |
 | `expect` | yes | `match` or `no_match` |
-| `params` | no | Keyword arguments passed to the scenario builder |
+| `params` | no | Keyword arguments passed to the scenario builder. Validated with the rule (see [Scenario parameters](#scenario-parameters)) |
+
+Test scenarios and their parameters are checked when the rule is validated, not only when tests run. An unknown scenario name, an unknown parameter, a wrong type or an out-of-range value makes the rule invalid, so `sentinelx rules validate`, `POST /rules/validate`, rule creation and the loading of rule files all report it, for example `tests[2]: unknown scenario 'nope'; available: ...` or `tests[1]: ports: must be between 1 and 50000` (tests are numbered from 1).
 
 For each test, the runner builds the scenario's frames and runs them through the real decoder, a fresh feature extractor and a detection engine containing only this rule, with the rule forced to enabled and the cooldown set to 0. The actual result is `match` when the rule produced at least one detection. Because the cooldown is disabled, detection counts in test output include every matching packet (the Telnet example produces 150 detections against its positive scenario).
 
@@ -428,13 +441,30 @@ Tests use the detection settings of the process running them, so window settings
 | `slow_port_scan` | `attacker`, `target`, `ports` (60), `interval` (1.2), `seed` |
 | `low_rate_brute_force` | `attacker`, `target`, `attempts` (30), `interval` (8.0), `seed` |
 
-`sentinelx fixtures list` describes each scenario, and `GET /api/v1/rules/fields` returns the scenario names.
+`sentinelx fixtures list` describes each scenario, and `GET /api/v1/rules/fields` returns the scenario names. Every scenario is deterministic for a given set of parameters, including `seed`.
+
+### Scenario parameters
+
+`validate_scenario_params` in `scenarios.py` applies these bounds, both to embedded tests and to fixtures generated through the API:
+
+| Parameter | Accepted values |
+|---|---|
+| any name the scenario does not accept | refused, listing the accepted names |
+| any boolean value | refused |
+| `seed` | integer, 0 to 2^32 |
+| `port` | integer, 1 to 65,535 |
+| `packet_count`, `count`, `hosts`, `attempts`, `ports`, `sources` | integer, 1 to 50,000 |
+| `normal_qps`, `spike_qps` | integer, 0 to 50,000 |
+| `baseline_seconds`, `spike_seconds` | integer, 0 to 3,600 |
+| `interval` | number, 0.001 to 600 |
+| `attacker`, `target`, `client`, `resolver` | an IPv4 or IPv6 address |
+| `dns_rate_spike` | refused as a whole when the parameters would generate more than 2,000,000 packets |
 
 ### Writing good tests
 
 - Include at least one `match` and one `no_match`. `normal_traffic` is the standard negative.
 - Add a near-miss negative that shares the surface of the attack but stays under your threshold, as the shipped rules do: `ssh_brute_force` with `attempts: 10` against a threshold of 20, or `tcp_port_scan` with `ports: 30` against a threshold of 50.
-- Scenario names and parameters are not checked by `sentinelx rules validate`. A misspelled scenario or an unknown parameter only fails when tests run, and `sentinelx rules test` then stops with a Python traceback (`ValueError: unknown scenario ...` or `TypeError: ... unexpected keyword argument ...`) and exit status 1.
+- Scenario names and parameters are checked by validation, so a misspelled scenario or parameter is reported as a validation problem and `sentinelx rules test` exits with status 1 without running the tests. The `--scenario` option of `sentinelx rules test` is the exception: its name is not checked first, and an unknown name ends in an unhandled `ValueError` traceback.
 - A rule with no tests is reported as `<id> has no embedded tests` by `sentinelx rules test` but does not fail the command.
 
 ## Workflow
@@ -538,6 +568,9 @@ The messages below are the exact problem texts, shown without the `<file> rule '
 | `condition: unexpected 'ttl'; expected 'and', 'or' or end (at character 8)` | Two comparisons without `and` or `or` | Join them with `and` or `or` |
 | `condition: condition nests deeper than 16 levels (at character N)`, `condition: list exceeds 128 items (at character N)`, `condition: condition exceeds 400 tokens`, `condition: String should have at most 2000 characters` | A parser or model bound was hit | Simplify the condition, or split it into several rules |
 | `within 300s exceeds the 60s of history the feature engine keeps; ...` | `within` longer than the feature window | Shorten `within`, or raise a detection window setting |
+| `tests[1]: unknown scenario 'nope'; available: ...` | Misspelled scenario in an embedded test | Use a name from `sentinelx fixtures list` |
+| `tests[1]: scenario 'tcp_port_scan' has no parameter(s) bogus; accepted: attacker, target, ports, seed` | Unknown scenario parameter | Use one of the accepted names |
+| `tests[1]: ports: must be between 1 and 50000` | Scenario parameter out of range (likewise `expected an integer`, `must be an IP address`, `booleans are not accepted`) | See [Scenario parameters](#scenario-parameters) |
 | `within: Value error, invalid duration '10 minutes'; use e.g. 30s, 5m or 1h` | Unsupported duration format | Use `600s` or `10m` |
 | `action 'block_ip' requires the condition to include a count threshold ... on every branch; ...` | Preventive action without a selective condition | Add a `count >= N` (N at least 2) to every `or` branch, remove the negation, or use `action: alert` |
 | `action 'temporary_block' requires 'duration' (seconds)` | `temporary_block` without `duration` | Add `duration: 900` (30-86,400) |
@@ -545,6 +578,8 @@ The messages below are the exact problem texts, shown without the `<file> rule '
 | `severity: Input should be 'info', 'low', 'medium', 'high' or 'critical'` | Invalid enum value (likewise for `category` and `action`) | Use a listed value |
 | `threshold: Extra inputs are not permitted` | Unknown key in the rule | Remove it; see [Rule keys](#rule-keys) |
 | `not valid YAML (mapping values are not allowed here ...)` | A `: ` inside an unquoted condition | Quote the whole condition |
+| `not valid YAML (YAML anchors and aliases are not allowed in rules)` | `&anchor` or `*alias` in the file | Repeat the value instead |
+| `not valid YAML (YAML nested deeper than 32 levels)` | More than 32 levels of nesting | Flatten the document |
 | `expected a top-level 'rules:' list or 'rule:' mapping` | File has neither key | Put rules under `rules:` or a single rule under `rule:` |
 | `rule id '<id>' duplicates one in <file>` | Two rules with the same id, usually the same name | Rename one, or set a distinct `id` |
 
@@ -556,6 +591,6 @@ The messages below are the exact problem texts, shown without the `<file> rule '
 - **No cross-rule logic.** A rule cannot reference another rule or a previous detection. Multi-stage activity is grouped by the correlation engine after detection.
 - **Confidence is static.** A rule's confidence does not grow with how far past its threshold the traffic is, unlike the built-in detectors, so repeat reports within the cooldown only escalate if severity or confidence change, which for a rule they do not.
 - **The safety check catches unbounded preventive rules, not imprecise ones.** A rule can pass it and still match legitimate traffic.
-- **`duration` is not yet honoured** by automatic responses, which use `RESPONSE__DEFAULT_BLOCK_SECONDS`.
+- **`duration` applies to rule detections only.** Incident-level automatic blocks use `RESPONSE__DEFAULT_BLOCK_SECONDS`, and every duration is capped at `RESPONSE__MAX_BLOCK_SECONDS`.
 - **Test scenarios are synthetic.** Passing embedded tests shows a rule behaves as intended on generated traffic. Test against captures from your own network with `sentinelx rules test <file> --pcap <capture>` before relying on it; see [pcap-lab.md](pcap-lab.md).
 - **CLI enable and disable** change the database only; a running server applies them on restart. Use the API or dashboard to change a running server.

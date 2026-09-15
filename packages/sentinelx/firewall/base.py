@@ -119,6 +119,11 @@ class CommandRunner:
                 raise TypeError(f"firewall argument must be str, got {type(arg).__name__}")
             if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in arg):
                 raise FirewallError("refusing firewall argument containing control characters")
+        if PLATFORM.startswith("linux") and not self._prefix:
+            # File capabilities do not survive exec; pass CAP_NET_ADMIN on explicitly.
+            from sentinelx.system.privileges import CAP_NET_ADMIN, ensure_ambient_capability
+
+            ensure_ambient_capability(CAP_NET_ADMIN)
         argv = (*self._prefix, self.binary, *args)
         started = time.perf_counter()
         if PLATFORM == "win32":

@@ -56,8 +56,12 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+MAX_OFFSET = 1_000_000
+
+
 def _clamp(limit: int, offset: int) -> tuple[int, int]:
-    return max(1, min(limit, MAX_PAGE_SIZE)), max(0, offset)
+    # Offsets are bounded too: a huge value overflows the database driver (a 500).
+    return max(1, min(limit, MAX_PAGE_SIZE)), max(0, min(offset, MAX_OFFSET))
 
 
 @dataclass(slots=True)
@@ -126,6 +130,20 @@ class UserRepository:
             .returning(User.failed_logins)
         )
         return int(result.scalar_one())
+
+    async def end_sessions(self, user_id: int) -> None:
+        """Delete the user's unused refresh tokens (logout, password change or reset).
+
+        Deleted, not marked revoked: a revoked token presented again is treated as
+        theft and ends every session, including the one a password change just
+        started. Tokens already rotated keep their record, so reuse of a stolen token
+        is still detected.
+        """
+        await self.session.execute(
+            delete(RefreshToken).where(
+                RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None)
+            )
+        )
 
     async def revoke_tokens(self, user_id: int) -> None:
         await self.session.execute(
@@ -238,10 +256,11 @@ class DetectionRepository:
         return record
 
     async def link_incident(self, detection_ids: list[str], incident_id: str) -> None:
-        if detection_ids:
+        # Chunked: PostgreSQL drivers cap bound parameters per statement (32,767).
+        for start in range(0, len(detection_ids), 1000):
             await self.session.execute(
                 update(DetectionRecord)
-                .where(DetectionRecord.detection_id.in_(detection_ids))
+                .where(DetectionRecord.detection_id.in_(detection_ids[start : start + 1000]))
                 .values(incident_id=incident_id)
             )
 
@@ -252,6 +271,15 @@ class DetectionRepository:
 class IncidentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def highest_risk(self, statuses: list[str]) -> float:
+        """The highest risk score among incidents in ``statuses`` (0 when there are none)."""
+        value = await self.session.scalar(
+            select(func.max(IncidentRecord.risk_score)).where(
+                IncidentRecord.status.in_(statuses), IncidentRecord.replay_id.is_(None)
+            )
+        )
+        return float(value or 0.0)
 
     async def get(self, incident_id: str) -> IncidentRecord | None:
         return await self.session.get(IncidentRecord, incident_id)
@@ -333,16 +361,37 @@ class ResponseActionRepository:
         outcomes: list[str] | None = None,
         incident_id: str | None = None,
         detection_id: str | None = None,
+        detection_ids: list[str] | None = None,
+        include_alerts: bool = False,
+        include_replays: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> Page[ResponseActionRecord]:
+        """Response decisions, newest first.
+
+        Alerts (one per detection) and decisions made during capture replays are
+        excluded unless asked for: they would otherwise bury the actions that changed,
+        or could have changed, the firewall.
+        """
         limit, offset = _clamp(limit, offset)
         conditions: list[ColumnElement[bool]] = []
+        if not include_alerts:
+            conditions.append(ResponseActionRecord.action != "alert")
+        if not include_replays:
+            conditions.append(ResponseActionRecord.replay_id.is_(None))
         if target:
             conditions.append(ResponseActionRecord.target == target)
         if outcomes:
             conditions.append(ResponseActionRecord.outcome.in_(outcomes))
-        if incident_id:
+        if incident_id and detection_ids:
+            # An incident's actions: those on the incident plus those on its detections.
+            conditions.append(
+                or_(
+                    ResponseActionRecord.incident_id == incident_id,
+                    ResponseActionRecord.detection_id.in_(detection_ids[:500]),
+                )
+            )
+        elif incident_id:
             conditions.append(ResponseActionRecord.incident_id == incident_id)
         if detection_id:
             conditions.append(ResponseActionRecord.detection_id == detection_id)
@@ -682,18 +731,46 @@ class RetentionRepository:
             result = await self.session.execute(statement)
             results[name] = int(getattr(result, "rowcount", 0) or 0)
 
-        await run("detections", delete(DetectionRecord).where(DetectionRecord.timestamp < cutoff))
-        # Closed incidents only; an open incident is live work regardless of age.
+        # Replay results carry the capture's own timestamps, which can be years old, so
+        # they expire with their replay (by when it ran), never by packet time. Live
+        # data expires by its timestamps.
+        expired_replays = select(ReplayRecord.replay_id).where(ReplayRecord.created_at < cutoff)
+        await run(
+            "detections",
+            delete(DetectionRecord).where(
+                or_(
+                    and_(DetectionRecord.replay_id.is_(None), DetectionRecord.timestamp < cutoff),
+                    DetectionRecord.replay_id.in_(expired_replays),
+                )
+            ),
+        )
+        # Closed live incidents, and every incident of an expired replay (replay
+        # incidents are never triaged). An open live incident is current work
+        # regardless of age.
         await run(
             "incidents",
             delete(IncidentRecord).where(
-                IncidentRecord.last_seen < cutoff,
-                IncidentRecord.status.in_(["resolved", "false_positive"]),
+                or_(
+                    and_(
+                        IncidentRecord.replay_id.is_(None),
+                        IncidentRecord.last_seen < cutoff,
+                        IncidentRecord.status.in_(["resolved", "false_positive"]),
+                    ),
+                    IncidentRecord.replay_id.in_(expired_replays),
+                )
             ),
         )
         await run(
             "response_actions",
-            delete(ResponseActionRecord).where(ResponseActionRecord.decided_at < cutoff),
+            delete(ResponseActionRecord).where(
+                or_(
+                    and_(
+                        ResponseActionRecord.replay_id.is_(None),
+                        ResponseActionRecord.decided_at < cutoff,
+                    ),
+                    ResponseActionRecord.replay_id.in_(expired_replays),
+                )
+            ),
         )
         await run(
             "blocked_sources",

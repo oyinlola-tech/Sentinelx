@@ -42,6 +42,8 @@ __all__ = [
     "UnavailableFirewall",
     "create_firewall",
     "firewall_capabilities",
+    "platform_family",
+    "resolve_backend",
 ]
 
 PLATFORM: str = sys.platform
@@ -72,7 +74,8 @@ class FirewallCapabilities:
         return asdict(self)
 
 
-def _platform_family() -> str:
+def platform_family() -> str:
+    """``linux``, ``darwin``, ``win32``... the key into :data:`BACKENDS_BY_PLATFORM`."""
     for family in BACKENDS_BY_PLATFORM:
         if PLATFORM.startswith(family):
             return family
@@ -81,7 +84,7 @@ def _platform_family() -> str:
 
 def firewall_capabilities(backend: str) -> FirewallCapabilities:
     """Whether ``backend`` can enforce blocks on this host, and why not if it cannot."""
-    family = _platform_family()
+    family = platform_family()
     if backend == "null":
         return FirewallCapabilities("null", True, "no firewall configured; nothing is enforced")
     supported = BACKENDS_BY_PLATFORM.get(family, ())
@@ -123,7 +126,7 @@ def resolve_backend(requested: str) -> tuple[str, str]:
     """Pick the concrete backend for ``requested`` (resolving ``auto``) and explain why."""
     if requested != "auto":
         return requested, "configured"
-    candidates = BACKENDS_BY_PLATFORM.get(_platform_family(), ())
+    candidates = BACKENDS_BY_PLATFORM.get(platform_family(), ())
     reports = [firewall_capabilities(name) for name in candidates]
     for report in reports:
         if report.available:

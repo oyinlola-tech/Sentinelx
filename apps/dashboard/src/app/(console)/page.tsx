@@ -7,10 +7,11 @@ import { SeverityTimeline, ShareBar, type TimelineBucket } from "@/components/ch
 import { PageHeader } from "@/components/shell/page-header";
 import { DetectionTable } from "@/components/views/detection-table";
 import { SensorControl } from "@/components/views/sensor-control";
-import { EmptyState, ErrorState, Panel, TableSkeleton } from "@/components/ui/primitives";
+import { EmptyState, ErrorState, Panel, StaleNotice, TableSkeleton } from "@/components/ui/primitives";
 import { RiskScore, SeverityBadge } from "@/components/ui/security";
 import { useEventRefresh, useEvents } from "@/lib/events";
 import { ago, bandColor, bandFor, bytes, compact } from "@/lib/format";
+import { isTransientRateLimit } from "@/lib/rate-limit";
 import type { Analytics, Overview } from "@/lib/types";
 
 export default function OverviewPage() {
@@ -23,11 +24,13 @@ export default function OverviewPage() {
   });
   const live = useLiveStat(subscribe);
 
-  if (error) return <div className="panel"><ErrorState error={error} onRetry={() => void mutate()} /></div>;
+  const rateLimited = isTransientRateLimit(error, data);
+  if (error && !rateLimited) return <div className="panel"><ErrorState error={error} onRetry={() => void mutate()} /></div>;
 
   return (
     <>
       <PageHeader title="Overview" description="What the sensor is seeing now, and what needs a decision." />
+      {rateLimited && <StaleNotice error={error} className="mb-4" />}
       <InstrumentStrip overview={data} livePps={live} loading={isLoading} />
 
       <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">

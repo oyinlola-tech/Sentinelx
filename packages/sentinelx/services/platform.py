@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from sentinelx import __version__
+from sentinelx.assembly import attach_anomaly_detectors, build_intel
 from sentinelx.common.netutils import parse_networks
 from sentinelx.config.settings import Settings
 from sentinelx.detection.policy import DenylistDetector
@@ -35,7 +37,7 @@ from sentinelx.storage.redis_state import SharedState
 from sentinelx.storage.repositories import BlockRepository, RetentionRepository
 from sentinelx.telemetry.logging import get_logger
 from sentinelx.telemetry.metrics import ProcessSampler, metrics
-from sentinelx.threat_intel import LocalAllowlistProvider, LocalDenylistProvider, ThreatIntelService
+from sentinelx.threat_intel import ThreatIntelService
 
 __all__ = ["Platform"]
 
@@ -62,6 +64,9 @@ class Platform:
         self.bootstrap_password: str | None = None
         self._background: list[asyncio.Task[None]] = []
         self._sampler = ProcessSampler()
+        self._capabilities: tuple[float, dict[str, Any]] | None = None
+        self._health_cache: tuple[float, dict[str, Any]] | None = None
+        self._operators: dict[str, float] = {}
         self.started = False
 
     async def start(
@@ -87,18 +92,13 @@ class Platform:
         # settings at construction (allowlists, windows) see the effective values.
         await self.config.load_overrides()
 
-        intel_dir = Path(self.settings.rules_directory) / "intel"
-        self.intel = ThreatIntelService(
-            [
-                LocalAllowlistProvider(path=intel_dir / "allowlist.txt"),
-                LocalDenylistProvider(path=intel_dir / "denylist.txt"),
-            ]
-        )
+        self.intel = build_intel(self.settings)
         firewall = self._firewall_override or create_firewall(self.settings.response)
         self.pipeline = Pipeline(
             self.settings, bus=self.bus, firewall=firewall, audit=self.audit.sink, intel=self.intel
         )
-        self._attach_anomaly_detectors(self.pipeline)
+        attach_anomaly_detectors(self.pipeline, self.settings)
+        self.pipeline.response.guard._operator_addresses = self.operator_addresses
         self.config.listeners.append(self._on_settings_changed)
 
         await self.rules.sync_files()
@@ -112,7 +112,15 @@ class Platform:
             self.persister = EventPersister(self.database, self.bus, self.settings)
             await self.persister.start()
         self.sensor = SensorService(self.settings, self.pipeline, self.bus)
-        self.replay = ReplayService(self.settings, self.database, self.bus, self.rules, self.audit)
+        self.replay = ReplayService(
+            self.settings,
+            self.database,
+            self.bus,
+            self.rules,
+            self.audit,
+            intel=self.intel,
+            settle=self._settle_storage,
+        )
         self.queries = QueryService(self.database, self.pipeline)
         if bootstrap:
             self.bootstrap_password = await self.auth.ensure_bootstrap_admin()
@@ -129,27 +137,6 @@ class Platform:
             database=self.database.dialect,
             redis_degraded=self.state.degraded,
         )
-
-    def _attach_anomaly_detectors(self, pipeline: Pipeline) -> None:
-        anomaly = self.settings.anomaly
-        if anomaly.enabled:
-            from sentinelx.anomaly import StatisticalAnomalyDetector
-
-            pipeline.detection.add_detector(
-                StatisticalAnomalyDetector(anomaly, self.settings.detection)
-            )
-        if anomaly.ml_enabled:
-            from sentinelx.anomaly.ml import MlAnomalyDetector, load_model
-
-            try:
-                bundle = load_model(Path(anomaly.ml_model_path))
-            except Exception as exc:
-                # ML is optional; a missing or untrusted model must not stop detection.
-                log.error("ml_model_unavailable", error=str(exc), effect="ML detector disabled")
-            else:
-                pipeline.detection.add_detector(
-                    MlAnomalyDetector(bundle, anomaly, self.settings.detection)
-                )
 
     def _on_settings_changed(self, section: str, fields: set[str]) -> None:
         pipeline = self.pipeline
@@ -176,6 +163,12 @@ class Platform:
 
             pipeline.decoder = PacketDecoder(parse_networks(self.settings.capture.home_networks))
 
+    async def _settle_storage(self) -> None:
+        """Wait (bounded) until queued events are handled and written to the database."""
+        await self.bus.drain(wait_seconds=10.0)
+        if self.persister is not None:
+            await self.persister.flush()
+
     async def stop(self) -> None:
         for task in self._background:
             task.cancel()
@@ -187,6 +180,8 @@ class Platform:
             await self.sensor.stop()
         if self.replay is not None:
             await self.replay.shutdown()
+        # Nothing new is being produced now; let queued events reach storage first.
+        await self.bus.drain(wait_seconds=5.0)
         if self.persister is not None:
             await self.persister.stop()
         if self.pipeline is not None:
@@ -223,9 +218,30 @@ class Platform:
                 audit_days=storage.audit_retention_days,
                 metrics_days=storage.metrics_retention_days,
             )
+        purged["uploaded_captures"] = await asyncio.to_thread(self._purge_uploads)
         if any(purged.values()):
             log.info("retention_purged", **purged)
         return purged
+
+    def _purge_uploads(self) -> int:
+        """Delete uploaded capture files older than the retention period.
+
+        Only the uploads directory is touched; generated fixtures and files an operator
+        placed in the capture directory are left alone.
+        """
+        uploads = Path(self.settings.capture.pcap_directory) / "uploads"
+        if not uploads.is_dir():
+            return 0
+        cutoff = time.time() - self.settings.storage.retention_days * 86_400
+        removed = 0
+        for path in uploads.iterdir():
+            try:
+                if path.is_file() and not path.is_symlink() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError as exc:
+                log.warning("upload_purge_failed", file=path.name, error=str(exc))
+        return removed
 
     # ------------------------------------------------------------------ status
 
@@ -259,7 +275,52 @@ class Platform:
                         record.network, removal_reason="no longer present in the firewall"
                     )
 
+    def note_operator_address(self, address: str) -> None:
+        """Remember where an authenticated operator connected from (bounded, one hour)."""
+        now = time.monotonic()
+        self._operators[address] = now
+        if len(self._operators) > 1024:
+            cutoff = now - 3600
+            for stale in [a for a, seen in self._operators.items() if seen < cutoff]:
+                del self._operators[stale]
+            while len(self._operators) > 1024:
+                self._operators.pop(next(iter(self._operators)))
+
+    def operator_addresses(self) -> list[str]:
+        cutoff = time.monotonic() - 3600
+        return [address for address, seen in self._operators.items() if seen >= cutoff]
+
+    async def capabilities(self) -> dict[str, Any]:
+        """The platform capability report, cached for 30 seconds.
+
+        Detection opens a raw socket and inspects firewall tooling; the dashboard polls
+        this, so it is not re-probed on every request.
+        """
+        now = time.monotonic()
+        cached = self._capabilities
+        if cached is None or now - cached[0] > 30:
+            from sentinelx.system.capabilities import detect_capabilities
+
+            report = await asyncio.to_thread(detect_capabilities, self.settings)
+            cached = self._capabilities = (now, report.as_dict())
+        return cached[1]
+
     async def health(self) -> dict[str, Any]:
+        """Component health, cached for 3 seconds.
+
+        The unauthenticated liveness endpoint, the dashboard and the 5 second health
+        loop all read this; each fresh check queries the database, Redis and the
+        firewall, so repeated calls within a few seconds reuse the last result.
+        """
+        now = time.monotonic()
+        cached = self._health_cache
+        if cached is not None and now - cached[0] < 3.0:
+            return cached[1]
+        report = await self._check_health()
+        self._health_cache = (now, report)
+        return report
+
+    async def _check_health(self) -> dict[str, Any]:
         process = self._sampler.sample()
         database = await self.database.health()
         redis = await self.state.health()

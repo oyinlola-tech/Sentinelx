@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from sentinelx.common.enums import DetectionMode
 from sentinelx.common.errors import RuleValidationError
 from sentinelx.config.settings import Settings
 from sentinelx.detection.engine import DetectionEngine
@@ -162,7 +163,9 @@ class RuleService:
 
     async def apply(self) -> int:
         """Rebuild rule detectors in every attached engine."""
-        rules = await self.active_rules()
+        # DETECTION_MODE=disabled means no detection at all, custom rules included.
+        disabled = self.settings.detection.mode is DetectionMode.DISABLED
+        rules = [] if disabled else await self.active_rules()
         for engine in self.engines:
             for detector in [d for d in engine.detectors if d.name.startswith("rule:")]:
                 engine.remove_detector(detector.name)

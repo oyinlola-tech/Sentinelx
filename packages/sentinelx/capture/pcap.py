@@ -4,89 +4,42 @@ Replay feeds frames through the identical code path as live capture, so a
 detection that fires on a capture file would have fired on the wire.  That
 property is what makes the PCAP Lab a real test harness rather than a demo.
 
-The reader uses Scapy's ``RawPcapReader``/``RawPcapNgReader``, which hand back raw
-bytes and the file's link type without constructing a packet object per record.
-That is the one place Scapy is genuinely the right tool: file-format handling
-(pcap, pcapng, both endiannesses, nanosecond timestamps) is fiddly and it is
-already correct, while the per-packet decode - the part that has to be fast - is
-ours.
+Files are read by :mod:`sentinelx.capture.pcapfile`, a streaming reader for pcap
+and pcapng that honours nanosecond timestamps and per-interface link types and
+validates every length field. It needs no privileges and no capture library, so
+replay works on every platform.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
 from sentinelx.capture.base import PacketCapture, RawFrame
+from sentinelx.capture.pcapfile import CaptureRecord, read_capture
 from sentinelx.common.errors import PcapError
-from sentinelx.parser.layers import LinkType
 from sentinelx.telemetry.logging import get_logger
 
 __all__ = ["PcapFileCapture", "pcap_metadata"]
 
 log = get_logger(__name__)
 
-#: Frames read between event-loop yields. Replay is CPU-bound and synchronous;
-#: without periodic yields it would starve the API and WebSocket tasks sharing
-#: the loop. 256 keeps the loop responsive at a negligible throughput cost.
-_YIELD_EVERY = 256
+#: Longest the replay may run the event loop without yielding. Replay is CPU-bound
+#: (decode, detection, scoring) and shares the loop with the API, WebSocket and
+#: database tasks; yielding on a time budget keeps them responsive.
+_YIELD_AFTER_SECONDS = 0.005
 
 
-def _open_reader(path: Path) -> tuple[Any, int]:
-    """Open a capture file, returning ``(reader, link_type)``.
-
-    Raises:
-        PcapError: if the file is missing, unreadable, or not a capture file.
-    """
-    try:
-        from scapy.utils import RawPcapNgReader, RawPcapReader
-    except ImportError as exc:  # pragma: no cover - scapy is a hard dependency
-        raise PcapError("scapy is required to read capture files") from exc
-
+def _check_file(path: Path) -> None:
     if not path.exists():
-        raise PcapError(f"capture file not found: {path}")
+        raise PcapError(f"capture file not found: {path.name}")
     if not path.is_file():
-        raise PcapError(f"not a regular file: {path}")
+        raise PcapError(f"not a regular file: {path.name}")
     if path.stat().st_size == 0:
-        raise PcapError(f"capture file is empty: {path}")
-
-    try:
-        reader: Any = RawPcapReader(str(path))
-        return reader, int(getattr(reader, "linktype", LinkType.ETHERNET))
-    except Exception as pcap_exc:
-        # pcapng has a different magic; try it before giving up.
-        try:
-            reader = RawPcapNgReader(str(path))
-        except Exception as png_exc:
-            raise PcapError(
-                f"{path} is not a readable pcap or pcapng file ({pcap_exc}; {png_exc})"
-            ) from png_exc
-        return reader, int(getattr(reader, "linktype", LinkType.ETHERNET) or LinkType.ETHERNET)
-
-
-def _frame_timestamp(metadata: Any, index: int) -> float:
-    """Extract a UNIX timestamp from a reader's per-packet metadata.
-
-    pcap and pcapng expose this differently (``sec``/``usec`` vs ``tshigh``/
-    ``tslow``/``tsresol``), and older Scapy versions differ again.  Falling back to
-    the record index keeps replay ordered even for a file with unusable
-    timestamps, rather than collapsing every packet onto time zero and destroying
-    the sliding windows every detector depends on.
-    """
-    sec = getattr(metadata, "sec", None)
-    if sec is not None:
-        usec = getattr(metadata, "usec", 0) or 0
-        return float(sec) + float(usec) / 1_000_000.0
-
-    tshigh = getattr(metadata, "tshigh", None)
-    tslow = getattr(metadata, "tslow", None)
-    if tshigh is not None and tslow is not None:
-        resolution = getattr(metadata, "tsresol", 1_000_000) or 1_000_000
-        return float((int(tshigh) << 32) | int(tslow)) / float(resolution)
-
-    return float(index) * 0.001
+        raise PcapError(f"capture file is empty: {path.name}")
 
 
 def pcap_metadata(path: Path | str) -> dict[str, Any]:
@@ -99,22 +52,19 @@ def pcap_metadata(path: Path | str) -> dict[str, Any]:
         PcapError: if the file cannot be read as a capture.
     """
     path = Path(path)
-    reader, link_type = _open_reader(path)
+    _check_file(path)
     count = 0
     total_bytes = 0
     first: float | None = None
     last: float | None = None
-    try:
-        for index, (data, metadata) in enumerate(reader):
-            count += 1
-            total_bytes += len(data)
-            timestamp = _frame_timestamp(metadata, index)
-            if first is None:
-                first = timestamp
-            last = timestamp
-    finally:
-        reader.close()
-
+    link_types: set[int] = set()
+    for record in read_capture(path):
+        count += 1
+        total_bytes += len(record.data)
+        link_types.add(record.link_type)
+        if first is None:
+            first = record.timestamp
+        last = record.timestamp
     span = (last - first) if (first is not None and last is not None) else 0.0
     return {
         "path": str(path),
@@ -122,7 +72,8 @@ def pcap_metadata(path: Path | str) -> dict[str, Any]:
         "size_bytes": path.stat().st_size,
         "packet_count": count,
         "total_bytes": total_bytes,
-        "link_type": link_type,
+        "link_type": min(link_types) if link_types else None,
+        "link_types": sorted(link_types),
         "first_timestamp": first,
         "last_timestamp": last,
         "duration_seconds": round(span, 6),
@@ -169,57 +120,54 @@ class PcapFileCapture(PacketCapture):
         self.rewrite_timestamps = rewrite_timestamps
         self.limit = limit
         self.max_sleep_seconds = max_sleep_seconds
-        self._reader: Any | None = None
-        self._link_type: int = LinkType.ETHERNET
+        self._records: Iterator[CaptureRecord] | None = None
 
     async def _open(self) -> None:
-        # Opening reads the file header; doing it in a thread keeps a slow or
-        # networked filesystem from blocking the event loop.
-        self._reader, self._link_type = await asyncio.to_thread(_open_reader, self.path)
-        log.info(
-            "pcap_opened",
-            path=str(self.path),
-            link_type=self._link_type,
-            speed=self.speed or "max",
-        )
+        # Validates the file header now, so a bad file fails at open, not mid-replay.
+        # Done in a thread so a slow or networked filesystem cannot block the loop.
+        await asyncio.to_thread(_check_file, self.path)
+        records = read_capture(self.path)
+        first = await asyncio.to_thread(next, records, None)
+        self._records = _prepend(first, records)
+        log.info("pcap_opened", path=self.path.name, speed=self.speed or "max")
 
     async def _frames(self) -> AsyncIterator[RawFrame]:
-        reader = self._reader
-        if reader is None:
+        records = self._records
+        if records is None:
             raise PcapError("capture file is not open")
 
         base_capture_time: float | None = None
-        replay_start = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        replay_start = loop.time()
         time_offset = 0.0
-        index = -1
+        last_yield = time.perf_counter()
 
-        for index, (data, metadata) in enumerate(reader):
+        for index, record in enumerate(records):
             if not self.running:
                 break
             if self.limit is not None and index >= self.limit:
                 break
 
-            timestamp = _frame_timestamp(metadata, index)
+            timestamp = record.timestamp
             if base_capture_time is None:
                 base_capture_time = timestamp
                 if self.rewrite_timestamps:
-                    time_offset = asyncio.get_running_loop().time() - timestamp
+                    time_offset = time.time() - timestamp
 
-            if self.speed > 0 and base_capture_time is not None:
+            if self.speed > 0:
                 await self._pace(timestamp - base_capture_time, replay_start)
 
-            # pcapng records carry the wire length; pcap ones may not.
-            wire_length = int(getattr(metadata, "wirelen", 0) or len(data))
-
             yield RawFrame(
-                data=bytes(data),
+                data=record.data,
                 timestamp=timestamp + time_offset,
-                link_type=self._link_type,
+                link_type=record.link_type,
                 interface=self.interface,
-                wire_length=wire_length,
+                wire_length=record.wire_length,
             )
-            if (index + 1) % _YIELD_EVERY == 0:
+            now = time.perf_counter()
+            if now - last_yield > _YIELD_AFTER_SECONDS:
                 await asyncio.sleep(0)
+                last_yield = time.perf_counter()
 
     async def _pace(self, capture_elapsed: float, replay_start: float) -> None:
         """Sleep so replay tracks the original timing at ``self.speed``."""
@@ -230,7 +178,12 @@ class PcapFileCapture(PacketCapture):
             await asyncio.sleep(min(delay, self.max_sleep_seconds))
 
     async def _close(self) -> None:
-        reader = self._reader
-        self._reader = None
-        if reader is not None:
-            await asyncio.to_thread(reader.close)
+        records, self._records = self._records, None
+        if records is not None and hasattr(records, "close"):
+            records.close()  # closes the file handle held by the generator
+
+
+def _prepend(first: CaptureRecord | None, rest: Iterator[CaptureRecord]) -> Iterator[CaptureRecord]:
+    if first is not None:
+        yield first
+        yield from rest

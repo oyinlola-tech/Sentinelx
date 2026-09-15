@@ -22,6 +22,8 @@ from sentinelx.common.errors import (
     RuleValidationError,
     SafetyViolationError,
     StorageError,
+    UploadQuotaExhaustedError,
+    UploadTooLargeError,
 )
 from sentinelx.services.auth import AuthError
 from sentinelx.telemetry.logging import get_logger
@@ -61,6 +63,14 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(PermissionDeniedError)
     async def _perm(request: Request, exc: PermissionDeniedError) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(UploadTooLargeError)
+    async def _too_large(request: Request, exc: UploadTooLargeError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=413)
+
+    @app.exception_handler(UploadQuotaExhaustedError)
+    async def _quota(request: Request, exc: UploadQuotaExhaustedError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=507)
 
     @app.exception_handler(PcapError)
     async def _pcap(request: Request, exc: PcapError) -> JSONResponse:

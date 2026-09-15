@@ -172,6 +172,7 @@ class DetectionRecord(Base):
         Index("ix_detections_source_ip_timestamp", "source_ip", "timestamp"),
         Index("ix_detections_severity_timestamp", "severity", "timestamp"),
         Index("ix_detections_detector_timestamp", "detector", "timestamp"),
+        Index("ix_detections_status_timestamp", "status", "timestamp"),
     )
 
     detection_id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -230,6 +231,8 @@ class ResponseActionRecord(Base):
     incident_id: Mapped[str | None] = mapped_column(Text, index=True)
     error: Mapped[str | None] = mapped_column(Text)
     sensor: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    replay_id: Mapped[str | None] = mapped_column(Text, index=True)
+    """Set for decisions made while replaying a capture; live views exclude them."""
 
 
 class BlockRecord(Base):

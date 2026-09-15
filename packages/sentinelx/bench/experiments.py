@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sentinelx import __version__
+from sentinelx.assembly import attach_anomaly_detectors, attach_file_rules, build_intel
 from sentinelx.capture.base import RawFrame
 from sentinelx.config.settings import Settings
 from sentinelx.firewall import MemoryFirewall
@@ -212,22 +213,12 @@ async def _run_once(
         frames = _interleave(scenario, background)
 
     settings = _settings()
-    pipeline = Pipeline(settings, firewall=MemoryFirewall())
+    # Assembled exactly like a live sensor: built-in detectors, anomaly detection,
+    # local threat intelligence, and (unless excluded) the shipped rules.
+    pipeline = Pipeline(settings, firewall=MemoryFirewall(), intel=build_intel(settings))
     if include_rules:
-        from pathlib import Path
-
-        from sentinelx.services.rules import max_rule_window
-        from sentinelx.signatures import RuleDetector, load_rules
-
-        for rule in load_rules(
-            Path(settings.rules_directory), max_window_seconds=max_rule_window(settings)
-        ).rules:
-            pipeline.detection.add_detector(RuleDetector(rule, settings.detection))
-    from sentinelx.anomaly import StatisticalAnomalyDetector
-
-    pipeline.detection.add_detector(
-        StatisticalAnomalyDetector(settings.anomaly, settings.detection)
-    )
+        attach_file_rules(pipeline, settings)
+    attach_anomaly_detectors(pipeline, settings)
     await pipeline.start()
 
     decoder = PacketDecoder()

@@ -17,6 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from sentinelx.assembly import build_intel, simulation_settings
 from sentinelx.capture import LiveCapture, MockCapture, PcapFileCapture, pcap_metadata
 from sentinelx.capture.base import PacketCapture
 from sentinelx.cli.output import (
@@ -41,23 +42,13 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Machine-readable JSON 
 
 
 async def _rules_into(pipeline: Pipeline, settings: Settings) -> int:
-    """Load file rules straight from disk: replay and monitor need no database."""
-    from sentinelx.services.rules import max_rule_window
-    from sentinelx.signatures import RuleDetector, load_rules
+    """Attach the detectors a live sensor runs: rules from disk plus anomaly detection."""
+    from sentinelx.assembly import attach_anomaly_detectors, attach_file_rules
 
-    result = load_rules(
-        Path(settings.rules_directory), max_window_seconds=max_rule_window(settings)
-    )
+    result = attach_file_rules(pipeline, settings)
     for problem in result.problems:
         err.print(f"[yellow]rule skipped:[/] {problem}")
-    for rule in result.rules:
-        pipeline.detection.add_detector(RuleDetector(rule, settings.detection))
-    if settings.anomaly.enabled:
-        from sentinelx.anomaly import StatisticalAnomalyDetector
-
-        pipeline.detection.add_detector(
-            StatisticalAnomalyDetector(settings.anomaly, settings.detection)
-        )
+    attach_anomaly_detectors(pipeline, settings)
     return len(result.rules)
 
 
@@ -116,8 +107,9 @@ def register(app: typer.Typer) -> None:
 
         async def main() -> tuple[RunReport, dict[str, Any], int]:
             metadata = await asyncio.to_thread(pcap_metadata, pcap)
-            pipeline = Pipeline(settings, firewall=MemoryFirewall())
-            rules = await _rules_into(pipeline, settings)
+            simulated = simulation_settings(settings)  # decisions as an API replay shows them
+            pipeline = Pipeline(simulated, firewall=MemoryFirewall(), intel=build_intel(simulated))
+            rules = await _rules_into(pipeline, simulated)
             await pipeline.start()
             try:
                 with _ReplayProgress(metadata["packet_count"], quiet=as_json) as update:
@@ -155,7 +147,10 @@ def register(app: typer.Typer) -> None:
             typer.Option("--scenario", help="Monitor a synthetic scenario (no privileges needed)."),
         ] = None,
         bpf: Annotated[
-            str, typer.Option("--bpf", help="Kernel BPF filter, e.g. 'tcp or udp'.")
+            str,
+            typer.Option(
+                "--bpf", help="Kernel BPF filter, e.g. 'tcp or udp' (default: BPF_FILTER)."
+            ),
         ] = "",
         duration: Annotated[float | None, typer.Option(help="Stop after N seconds.")] = None,
         enforce: Annotated[
@@ -180,13 +175,19 @@ def register(app: typer.Typer) -> None:
             else:
                 capture = LiveCapture(
                     interface or settings.capture.interface,
-                    bpf_filter=bpf,
+                    backend=settings.capture.backend,
+                    bpf_filter=bpf or settings.capture.bpf_filter,
                     snapshot_length=settings.capture.snapshot_length,
+                    promiscuous=settings.capture.promiscuous,
+                    buffer_size_mb=settings.capture.buffer_size_mb,
+                    queue_size=settings.capture.queue_size,
                 )
             firewall = create_firewall(settings.response) if enforce else MemoryFirewall()
             if not enforce:
                 settings.response.dry_run = True
-            pipeline = Pipeline(settings, bus=EventBus(), firewall=firewall)
+            pipeline = Pipeline(
+                settings, bus=EventBus(), firewall=firewall, intel=build_intel(settings)
+            )
             await _rules_into(pipeline, settings)
             view = _MonitorView(settings, capture)
             pipeline.add_packet_hook(view.packet)

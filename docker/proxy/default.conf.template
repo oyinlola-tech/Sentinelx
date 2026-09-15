@@ -1,0 +1,50 @@
+# SentinelX front door: one origin for the dashboard, the REST API and the event stream.
+#
+# The browser only ever talks to this proxy, so session cookies stay SameSite=Strict,
+# the WebSocket needs no separate public URL, and the API sees the real client address
+# (X-Forwarded-For) for rate limiting and the audit log. The API upstream is set at
+# container start (SENTINELX_API_UPSTREAM), so one dashboard image works in every mode.
+# Terminate TLS in front of this proxy, or add a TLS server block here.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 8080;
+    server_tokens off;
+
+    # Uploads stream straight to the API, which enforces size limits and quotas itself.
+    client_max_body_size ${SENTINELX_MAX_UPLOAD_MB}m;
+
+    proxy_set_header Host              $http_host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Prometheus scrapes the API directly (loopback or METRICS_TOKEN), never via here.
+    location = /api/v1/metrics {
+        return 404;
+    }
+
+    location /api/v1/ws/ {
+        proxy_pass http://${SENTINELX_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    location /api/ {
+        proxy_pass http://${SENTINELX_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_request_buffering off;
+        proxy_read_timeout 120s;
+    }
+
+    location / {
+        proxy_pass http://dashboard:3000;
+        proxy_http_version 1.1;
+    }
+}

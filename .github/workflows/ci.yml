@@ -43,7 +43,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap0.8
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,ml]"
       - name: Ruff
         run: |
           ruff check packages apps tests scripts
@@ -67,6 +67,60 @@ jobs:
         run: |
           sentinelx rules validate
           sentinelx rules test rules
+
+  kernel:
+    name: Kernel (real capture and firewall, network namespace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpcap0.8 nftables iptables iproute2
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
+      - name: Allow unprivileged user namespaces
+        # Ubuntu 24.04 restricts them with AppArmor; unshare -rn needs one.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Kernel tests (must run, not skip)
+        run: |
+          make test-kernel | tee kernel.log
+          ! grep -Eq "[0-9]+ skipped" kernel.log
+
+  portability:
+    name: Portability (${{ matrix.os }})
+    # Replay, detection, API and CLI tests on Windows and macOS. Live capture and
+    # firewall control on these systems are not exercised here (no privileges).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Capabilities and doctor report
+        run: |
+          sentinelx capabilities
+          sentinelx doctor
+        continue-on-error: true
+      - name: Tests
+        run: python -m pytest -p no:cacheprovider
+      - name: Replay a generated fixture
+        run: |
+          sentinelx fixtures generate tcp_port_scan -o fixtures-out
+          sentinelx replay fixtures-out/tcp_port_scan.pcap
 
   dashboard:
     name: Dashboard (lint, types, build, API contract)
@@ -101,7 +155,7 @@ jobs:
   images:
     name: Container images build
     runs-on: ubuntu-latest
-    needs: [backend, dashboard]
+    needs: [backend, kernel, dashboard]
     steps:
       - uses: actions/checkout@v4
       - name: Build API image

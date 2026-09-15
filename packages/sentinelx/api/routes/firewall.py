@@ -43,11 +43,20 @@ async def actions(
     platform: PlatformDep,
     target: str | None = Query(default=None, max_length=64),
     outcome: list[str] = Query(default=[], max_length=10),
+    include_alerts: bool = Query(default=False, description="Include one alert per detection"),
+    include_replays: bool = Query(default=False, description="Include decisions from replays"),
     limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
 ) -> dict[str, Any]:
     _, _, _, queries = platform.require()
-    return await queries.actions(target=target, outcomes=outcome, limit=limit, offset=offset)
+    return await queries.actions(
+        target=target,
+        outcomes=outcome,
+        include_alerts=include_alerts,
+        include_replays=include_replays,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post(
@@ -100,7 +109,7 @@ async def unblock(
 @router.get("/firewall/approvals")
 async def approvals(principal: Viewer, platform: PlatformDep) -> list[dict[str, Any]]:
     pipeline, _, _, _ = platform.require()
-    return [p.as_dict() for p in pipeline.response.pending.values()]
+    return [p.as_dict() for p in pipeline.response.pending_actions()]
 
 
 @router.post("/firewall/approvals/{action_id}/approve")

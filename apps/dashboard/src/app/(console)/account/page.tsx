@@ -29,8 +29,9 @@ function Account() {
     }
     setBusy(true);
     try {
+      // The response starts a fresh session for this browser; every other session ends.
       await api("/auth/change-password", { method: "POST", json: { current_password: current, new_password: next } });
-      toast("success", "Password changed", "Other sessions for this account were signed out.");
+      toast("success", "Password changed", "You stay signed in here. Every other session for this account was signed out.");
       setCurrent("");
       setNext("");
       setConfirm("");

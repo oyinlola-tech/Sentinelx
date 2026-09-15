@@ -7,11 +7,13 @@ import { useState } from "react";
 import useSWR from "swr";
 import { PageHeader } from "@/components/shell/page-header";
 import { BlockDialog } from "@/components/views/block-dialog";
-import { Button, ErrorState, KeyValue, Panel, Skeleton } from "@/components/ui/primitives";
+import { Button, ErrorState, KeyValue, Panel, Skeleton, StaleNotice } from "@/components/ui/primitives";
 import { EvidenceList, Mono, OutcomeBadge, RiskBreakdown, SeverityBadge, StatusBadge } from "@/components/ui/security";
 import { useToast } from "@/components/ui/toast";
 import { ApiError, api } from "@/lib/api";
+import { useEventRefresh } from "@/lib/events";
 import { ago, endpoint, humanise, num, timestamp } from "@/lib/format";
+import { isTransientRateLimit } from "@/lib/rate-limit";
 import { useSession } from "@/lib/session";
 import type { Detection, DetectionStatus } from "@/lib/types";
 
@@ -20,14 +22,18 @@ export default function DetectionPage() {
   const router = useRouter();
   const { can } = useSession();
   const toast = useToast();
-  const { data, error, mutate } = useSWR<Detection>(`/detections/${id}`);
+  // Events keep the page current (correlation into an incident, response decisions);
+  // the interval also picks up triage by other analysts and covers a dropped stream.
+  const { data, error, mutate } = useSWR<Detection>(`/detections/${id}`, { refreshInterval: 30_000 });
+  useEventRefresh(["incident.opened", "incident.updated", "response.decided", "ip.blocked", "ip.unblocked"], () => void mutate());
   const [blockOpen, setBlockOpen] = useState(false);
   const [busy, setBusy] = useState<DetectionStatus | null>(null);
 
   if (error instanceof ApiError && error.status === 404) {
     return <div className="panel"><ErrorState error={new Error("This detection no longer exists. It may have been removed by the retention policy.")} /></div>;
   }
-  if (error) return <div className="panel"><ErrorState error={error} onRetry={() => void mutate()} /></div>;
+  const rateLimited = isTransientRateLimit(error, data);
+  if (error && !rateLimited) return <div className="panel"><ErrorState error={error} onRetry={() => void mutate()} /></div>;
   if (!data) return <div className="flex flex-col gap-4"><Skeleton className="h-10 w-2/3" /><Skeleton className="h-64" /></div>;
 
   async function triage(status: DetectionStatus) {
@@ -47,6 +53,7 @@ export default function DetectionPage() {
       <button onClick={() => router.back()} className="mb-3 inline-flex items-center gap-1 text-xs text-mist hover:text-frost">
         <ArrowLeft className="size-3.5" aria-hidden /> Back
       </button>
+      {rateLimited && <StaleNotice error={error} className="mb-4" />}
       <PageHeader
         eyebrow={`Detection · ${humanise(data.category)}`}
         title={data.title}
@@ -72,19 +79,21 @@ export default function DetectionPage() {
           </Panel>
           <Panel title="Response decisions" eyebrow="What SentinelX did" bodyClassName="p-0">
             {data.actions?.length ? (
-              <table className="data-table">
-                <thead><tr><th scope="col">When</th><th scope="col">Action</th><th scope="col">Outcome</th><th scope="col">Reason</th></tr></thead>
-                <tbody>
-                  {data.actions.map((action) => (
-                    <tr key={action.decision_id}>
-                      <td><Mono className="text-mist">{ago(action.decided_at)}</Mono></td>
-                      <td className="whitespace-nowrap">{humanise(action.action)}</td>
-                      <td><OutcomeBadge outcome={action.outcome} /></td>
-                      <td className="text-mist">{action.error ?? action.reason}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead><tr><th scope="col">When</th><th scope="col">Action</th><th scope="col">Outcome</th><th scope="col">Reason</th></tr></thead>
+                  <tbody>
+                    {data.actions.map((action) => (
+                      <tr key={action.decision_id}>
+                        <td><Mono className="text-mist">{ago(action.decided_at)}</Mono></td>
+                        <td className="whitespace-nowrap">{humanise(action.action)}</td>
+                        <td><OutcomeBadge outcome={action.outcome} action={action.action} /></td>
+                        <td className="text-mist">{action.error ?? action.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <p className="px-4 py-3 text-sm text-mist">
                 No preventive action was recorded. Recommended action: <span className="font-mono text-frost">{humanise(data.recommended_action)}</span>.

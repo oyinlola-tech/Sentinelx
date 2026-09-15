@@ -86,6 +86,12 @@ class RunReport:
     cpu_percent_samples: list[float] = field(default_factory=list)
     memory_peak_bytes: float = 0.0
     stopped_early: bool = False
+    detections_seen: int = 0
+    """All detections in the run; ``detections`` may hold only the most recent."""
+    incidents_seen: int = 0
+    metrics_received: int = 0
+    metrics_dropped: int = 0
+    """Capture counts already published to Prometheus, so updates can be incremental."""
 
     @property
     def packets_per_second(self) -> float:
@@ -113,8 +119,8 @@ class RunReport:
             "wall_seconds": round(self.wall_seconds, 4),
             "capture_span_seconds": round(self.capture_span_seconds, 4),
             "packets_per_second": round(self.packets_per_second, 1),
-            "detection_count": len(self.detections),
-            "incident_count": len(self.incidents),
+            "detection_count": max(self.detections_seen, len(self.detections)),
+            "incident_count": max(self.incidents_seen, len(self.incidents)),
             "detections_by_detector": _count(r.detection.detector for r in self.detections),
             "detections_by_severity": _count(r.detection.severity.value for r in self.detections),
             "response_decisions": _count(f"{d.action.value}:{d.outcome}" for d in decisions),
@@ -200,8 +206,17 @@ class Pipeline:
         self.started_at: float | None = None
         self.last_report: RunReport | None = None
         self._packet_hooks: list[Callable[[PacketEvent], None]] = []
-        self.replay_id: str | None = None
-        """Tags published detections and incidents while a PCAP replay is running."""
+        self._replay_id: str | None = None
+
+    @property
+    def replay_id(self) -> str | None:
+        """Tags published detections, incidents and decisions while a replay runs."""
+        return self._replay_id
+
+    @replay_id.setter
+    def replay_id(self, value: str | None) -> None:
+        self._replay_id = value
+        self.response.replay_id = value
 
     # ------------------------------------------------------------- lifecycle
 
@@ -274,7 +289,15 @@ class Pipeline:
         result = self.correlation.correlate(detection, risk)
         if result is not None:
             incident = result.incident
-            payload = {**incident_to_dict(incident), "replay_id": self.replay_id}
+            payload = {
+                **incident_to_dict(incident),
+                "replay_id": self.replay_id,
+                # Which detections to link to this incident in storage: all of them when
+                # it opens, only the new one on each update.
+                "linked_detection_ids": list(incident.detection_ids)
+                if result.created
+                else [detection.detection_id],
+            }
             if result.created:
                 await self.bus.publish(EventType.INCIDENT_OPENED, payload)
             else:
@@ -327,11 +350,15 @@ class Pipeline:
         progress_interval: float = 1.0,
         max_packets: int | None = None,
         record_latency: bool = True,
+        max_results: int | None = None,
     ) -> RunReport:
         """Drive a capture source to exhaustion (or until stopped).
 
         Publishes ``packet.stats`` roughly every ``progress_interval`` seconds, and
         calls ``progress`` with the same payload.
+
+        ``max_results`` bounds the detections and incidents kept in the report (the
+        counts stay complete); live capture sets it, because a sensor never stops.
         """
         self.capture = capture
         report = RunReport(source=capture.interface, started_at=datetime.now(UTC))
@@ -354,9 +381,19 @@ class Pipeline:
                     if record_latency and len(latencies) < 2_000_000:
                         latencies.append(time.perf_counter() - frame_start)
                     for record in records:
+                        report.detections_seen += 1
                         report.detections.append(record)
-                        if record.incident is not None:
-                            report.incidents[record.incident.incident_id] = record.incident
+                        incident = record.incident
+                        if incident is not None:
+                            if incident.incident_id not in report.incidents:
+                                report.incidents_seen += 1
+                            report.incidents[incident.incident_id] = incident
+                    if max_results is not None:
+                        # A live sensor runs indefinitely: keep only the most recent results.
+                        if len(report.detections) > 2 * max_results:
+                            del report.detections[: len(report.detections) - max_results]
+                        while len(report.incidents) > max_results:
+                            report.incidents.pop(next(iter(report.incidents)))
 
                     now = time.perf_counter()
                     if now - last_progress >= progress_interval:
@@ -365,13 +402,7 @@ class Pipeline:
                     if max_packets is not None and report.frames >= max_packets:
                         report.stopped_early = True
                         break
-                metrics.packets_captured.labels(
-                    source=capture.source_kind, interface=capture.interface
-                ).inc(capture.stats.received)
-                if capture.stats.total_dropped:
-                    metrics.packets_dropped.labels(reason="capture").inc(
-                        capture.stats.total_dropped
-                    )
+                self._publish_capture_metrics(report, capture)
         finally:
             report.wall_seconds = time.perf_counter() - wall_start
             report.finished_at = datetime.now(UTC)
@@ -388,6 +419,20 @@ class Pipeline:
         await self._emit_progress(report, report.wall_seconds, capture, progress, final=True)
         return report
 
+    @staticmethod
+    def _publish_capture_metrics(report: RunReport, capture: PacketCapture) -> None:
+        """Add capture counts to Prometheus as they happen, not only when a run ends."""
+        received = capture.stats.received
+        dropped = capture.stats.total_dropped
+        if received > report.metrics_received:
+            metrics.packets_captured.labels(
+                source=capture.source_kind, interface=capture.interface
+            ).inc(received - report.metrics_received)
+            report.metrics_received = received
+        if dropped > report.metrics_dropped:
+            metrics.packets_dropped.labels(reason="capture").inc(dropped - report.metrics_dropped)
+            report.metrics_dropped = dropped
+
     async def _emit_progress(
         self,
         report: RunReport,
@@ -398,7 +443,10 @@ class Pipeline:
         final: bool = False,
     ) -> None:
         sample = self._sampler.sample()
+        self._publish_capture_metrics(report, capture)
         report.cpu_percent_samples.append(sample["cpu_percent"])
+        if len(report.cpu_percent_samples) > 3600:
+            del report.cpu_percent_samples[:1800]
         report.memory_peak_bytes = max(report.memory_peak_bytes, sample["memory_bytes"])
         payload = {
             "source": capture.interface,
@@ -408,8 +456,8 @@ class Pipeline:
             "bytes": report.bytes_total,
             "elapsed_seconds": round(elapsed, 3),
             "packets_per_second": round(report.frames / elapsed, 1) if elapsed > 0 else 0.0,
-            "detections": len(report.detections),
-            "incidents": len(report.incidents),
+            "detections": max(report.detections_seen, len(report.detections)),
+            "incidents": max(report.incidents_seen, len(report.incidents)),
             "active_flows": len(self.extractor.flows),
             "tracked_sources": len(self.extractor.profiles),
             "dropped": capture.stats.total_dropped,

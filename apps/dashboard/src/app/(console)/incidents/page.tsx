@@ -5,11 +5,12 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import useSWR from "swr";
 import { PageHeader } from "@/components/shell/page-header";
-import { EmptyState, ErrorState, Pagination, Panel, TableSkeleton, Tabs } from "@/components/ui/primitives";
+import { EmptyState, ErrorState, Pagination, Panel, StaleNotice, TableSkeleton, Tabs } from "@/components/ui/primitives";
 import { Mono, RiskScore, SeverityBadge, StatusBadge } from "@/components/ui/security";
 import { query } from "@/lib/api";
 import { useEventRefresh } from "@/lib/events";
 import { ago, humanise } from "@/lib/format";
+import { isTransientRateLimit } from "@/lib/rate-limit";
 import type { Incident, Page } from "@/lib/types";
 
 const VIEWS = { active: ["open", "investigating", "contained"], closed: ["resolved", "false_positive"], all: [] as string[] };
@@ -20,13 +21,15 @@ export default function IncidentsPage() {
   const [offset, setOffset] = useState(0);
   const { data, error, mutate } = useSWR<Page<Incident>>(`/incidents${query({ status: VIEWS[view], limit: 50, offset })}`, { refreshInterval: 30_000 });
   useEventRefresh(["incident.opened", "incident.updated", "severity.changed"], () => void mutate());
+  const rateLimited = isTransientRateLimit(error, data);
 
   return (
     <>
       <PageHeader title="Incidents" description="Related detections grouped into one story per source, named for the attack pattern they match." />
       <Panel bodyClassName="p-0">
         <Tabs label="Incident status" value={view} onChange={(value) => { setView(value); setOffset(0); }} options={[{ value: "active", label: "Active" }, { value: "closed", label: "Closed" }, { value: "all", label: "All" }]} />
-        {error ? <ErrorState error={error} onRetry={() => void mutate()} /> : !data ? <TableSkeleton /> : !data.items.length ? (
+        {rateLimited && <StaleNotice error={error} className="m-3" />}
+        {error && !rateLimited ? <ErrorState error={error} onRetry={() => void mutate()} /> : !data ? <TableSkeleton /> : !data.items.length ? (
           <EmptyState title={view === "active" ? "No active incidents" : "No incidents"}>
             An incident opens when separate detectors agree about one source within the correlation window, or a single detection is critical enough on its own.
           </EmptyState>

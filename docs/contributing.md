@@ -7,6 +7,7 @@ This guide covers the development setup, the repository layout, the checks every
 - [Development setup](#development-setup)
 - [Repository layout](#repository-layout)
 - [Make targets](#make-targets)
+- [Continuous integration](#continuous-integration)
 - [Coding standards](#coding-standards)
 - [Adding a detector](#adding-a-detector)
 - [Adding a protocol parser](#adding-a-protocol-parser)
@@ -26,6 +27,7 @@ This guide covers the development setup, the repository layout, the checks every
 | Python | 3.12 or newer | `requires-python = ">=3.12"` in `pyproject.toml`. CI and the API image (`docker/Dockerfile.api`) use 3.12 |
 | Node.js | 20.9 or newer | `engines.node` in `apps/dashboard/package.json`. CI uses Node 22 and the dashboard image (`docker/Dockerfile.dashboard`) uses `node:24-alpine` |
 | Docker | any recent version | Only for `make test-integration` and the `docker-*` targets |
+| Linux with unprivileged user namespaces, `iproute2`, `nft`, `iptables` and libpcap | | Only for `make test-kernel` |
 
 ```bash
 make install                    # uses python3; override with: make install PYTHON=python3.12
@@ -35,11 +37,11 @@ source .venv/bin/activate
 `make install`:
 
 1. creates `.venv` with `$(PYTHON) -m venv` if it does not exist,
-2. runs `pip install -e ".[dev]"`, which installs SentinelX in editable mode with pytest, pytest-asyncio, pytest-cov, mypy, ruff and types-PyYAML,
+2. runs `pip install -e ".[dev,ml]"`, which installs SentinelX in editable mode with the development tools (pytest, pytest-asyncio, pytest-cov, mypy, ruff, types-PyYAML) and the optional machine-learning dependencies (numpy, scikit-learn),
 3. runs `npm ci` in `apps/dashboard`,
 4. copies `.env.example` to `.env` if `.env` does not exist. Review it before starting the platform.
 
-The `sentinelx` command is installed into `.venv/bin`. Run pytest as `.venv/bin/python -m pytest` (this is what the Makefile does), not through a separate `pytest` executable.
+The `sentinelx` command is installed into `.venv/bin`. Run pytest as `.venv/bin/python -m pytest` (this is what the Makefile does), not through a separate `pytest` executable, so the virtual environment's interpreter and packages are always the ones used.
 
 To try the platform without capture privileges, generate fixtures and replay one:
 
@@ -52,22 +54,58 @@ make seed                       # fill the development database from synthetic s
 
 See [pcap-lab.md](pcap-lab.md) for the offline workflow.
 
+### Without make (Windows)
+
+The Makefile needs `make` and `bash`. On Windows, run the underlying commands directly from the repository root. In PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev,ml]"
+npm ci --prefix apps/dashboard
+Copy-Item .env.example .env              # only if .env does not exist
+
+# make test
+.venv\Scripts\python -m pytest
+# make lint
+.venv\Scripts\ruff check packages apps tests scripts
+.venv\Scripts\ruff format --check packages apps tests scripts
+npm run --prefix apps/dashboard -s lint
+# make typecheck
+.venv\Scripts\mypy
+npm run --prefix apps/dashboard -s typecheck
+# make rules
+.venv\Scripts\sentinelx rules validate
+.venv\Scripts\sentinelx rules test rules
+# make openapi
+.venv\Scripts\python scripts\export_openapi.py
+npm run --prefix apps/dashboard -s generate:api
+# make fixtures and make replay
+.venv\Scripts\sentinelx fixtures generate --output pcaps/fixtures
+.venv\Scripts\sentinelx replay pcaps/fixtures/mixed_intrusion.pcap
+# make api and make dashboard (two terminals)
+.venv\Scripts\sentinelx start --reload
+$env:SENTINELX_API_URL = "http://127.0.0.1:8000"; npm run --prefix apps/dashboard dev
+```
+
+`make test-kernel` is Linux-only; on other systems the kernel tests are collected and skipped. `make test-integration` uses `bash` and `docker`; on Windows, start PostgreSQL and Redis yourself and set the two variables described under [Make targets](#make-targets).
+
 ## Repository layout
 
 | Path | Contents |
 |---|---|
 | `packages/sentinelx/` | The Python package. The package map is in [architecture.md](architecture.md#package-map) |
+| `packages/sentinelx/assembly.py` | The single place that decides which detectors, rules and threat intelligence a pipeline gets. The live platform, replays, the CLI and the benchmarks all use it |
 | `packages/sentinelx/storage/migrations/` | Alembic environment and revisions (`versions/`) |
 | `apps/dashboard/` | Next.js dashboard |
 | `apps/api/main.py`, `apps/cli/main.py` | Thin entry points for uvicorn and for running the CLI from a checkout |
 | `rules/` | YAML detection rules (`authentication.yml`, `dns-and-web.yml`, `network-recon.yml`) and threat intelligence lists (`rules/intel/allowlist.txt`, `rules/intel/denylist.txt`) |
 | `tests/` | Test suite (see [Tests](#tests)) |
-| `scripts/` | `benchmark.py`, `export_openapi.py`, `seed_demo.py` |
-| `benchmarks/results/` | Benchmark output. Ignored by git |
+| `scripts/` | `benchmark.py` (detection experiments), `benchmark_platform.py` (API, WebSocket, storage and pipeline load), `export_openapi.py`, `seed_demo.py` |
+| `benchmarks/results/` | Benchmark reports cited by [benchmarking.md](benchmarking.md). Committed |
 | `pcaps/` | Capture files and generated fixtures. Ignored by git except `.gitkeep` |
-| `docker/` | `Dockerfile.api`, `Dockerfile.dashboard`; `docker-compose.yml` is at the root |
+| `docker/` | `Dockerfile.api`, `Dockerfile.dashboard`, and `proxy/default.conf.template` (the nginx front proxy); `docker-compose.yml` is at the root |
 | `docs/` | Documentation |
-| `.github/workflows/ci.yml` | CI |
+| `.github/workflows/ci.yml` | CI (see [Continuous integration](#continuous-integration)) |
 | `alembic.ini` | Alembic configuration (`script_location = packages/sentinelx/storage/migrations`) |
 
 The traffic-processing core (`capture`, `parser`, `features`, `detection`, `signatures`, `anomaly`, `scoring`, `correlation`, `threat_intel`, `response`, `firewall` and `pipeline.py`) does not import from `api`, `cli`, `services` or `storage`. Keep it that way: the core must stay usable from a test, the benchmark harness or a script with no database, Redis or HTTP server.
@@ -78,9 +116,10 @@ Run `make help` for the full list. The quality targets:
 
 | Target | What it runs |
 |---|---|
-| `make test` | `.venv/bin/python -m pytest`. Uses SQLite and needs no external services |
+| `make test` | `.venv/bin/python -m pytest`. Uses SQLite and needs no external services. PostgreSQL, Redis and kernel tests are skipped |
 | `make test-integration` | Starts `postgres:17-alpine` on `127.0.0.1:55432` and `redis:7-alpine` on `127.0.0.1:56379` in throwaway containers, waits for PostgreSQL, runs the full suite with `SENTINELX_TEST_POSTGRES_URL` and `SENTINELX_TEST_REDIS_URL` set, and removes the containers on exit |
-| `make coverage` | `pytest --cov --cov-report=term-missing` (coverage source `packages/sentinelx`) |
+| `make test-kernel` | Real packet capture and real firewall tests (`tests/kernel`), inside a private network namespace. See [Kernel tests](#kernel-tests) |
+| `make coverage` | `.venv/bin/python -m pytest --cov --cov-report=term-missing` (coverage source `packages/sentinelx`) |
 | `make lint` | `ruff check` and `ruff format --check` on `packages apps tests scripts`, then `npm run -s lint` (ESLint) in the dashboard |
 | `make typecheck` | `mypy` (strict, configured in `pyproject.toml`), then `npm run -s typecheck` (`tsc --noEmit`) |
 | `make format` | `ruff check --fix` and `ruff format` on `packages apps tests scripts` |
@@ -97,13 +136,47 @@ SENTINELX_TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
 .venv/bin/python -m pytest
 ```
 
-The PostgreSQL storage tests drop and recreate the `public` schema of that database, so point the variable at a disposable database.
+Point the PostgreSQL variable at a disposable database. The storage tests drop and recreate its `public` schema, and `tests/integration/test_schema.py` creates and drops a separate database named `sx_schema_test`, so the user needs permission to create databases.
 
-CI (`.github/workflows/ci.yml`) runs more than `make check`. In addition to lint, mypy, tests against PostgreSQL and Redis with coverage, and the rule checks, it:
+### Kernel tests
 
-- applies the migrations to an empty PostgreSQL database with `sentinelx db upgrade` and runs `alembic check` to confirm the models and migrations match,
-- regenerates the OpenAPI contract and fails if `apps/dashboard/src/lib/openapi.json` or `apps/dashboard/src/lib/api-schema.d.ts` differ from the committed files,
-- builds both container images.
+`make test-kernel` runs:
+
+```bash
+unshare -rn sh -c 'ip link set lo up && ip link add sx0 type dummy && \
+  ip addr add 203.0.113.5/32 dev sx0 && ip addr add 203.0.113.6/32 dev sx0 && \
+  ip link set sx0 up && .venv/bin/python -m pytest tests/kernel -p no:cacheprovider'
+```
+
+`unshare -rn` creates a user namespace in which you are root and a new, empty network namespace. The tests there hold `CAP_NET_RAW` and `CAP_NET_ADMIN` for that namespace only, so they can open capture sockets and change netfilter rules without touching the host's network or needing `sudo`. A dummy interface carries the test attacker and victim addresses.
+
+- `tests/kernel/test_live_capture.py` captures from `lo` and `any` with the AF_PACKET and libpcap backends and with `auto`, checks that every frame decodes, that a BPF filter is applied in the kernel, and that an invalid BPF filter is refused rather than ignored.
+- `tests/kernel/test_firewall.py` runs the nftables and iptables adapters through the response engine and verifies with real UDP traffic: block, unblock, expiry, re-block, rate limiting and teardown.
+
+`tests/kernel/conftest.py` marks every kernel test `root` and skips it unless the process has both capabilities and the two test addresses are assigned locally, so `make test`, CI and other operating systems skip them. The target needs unprivileged user namespaces to be enabled (some distributions disable them) and the `ip`, `nft` and `iptables` commands.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request. A newer run for the same ref cancels one in progress. It has three jobs:
+
+**Backend (lint, types, tests)** on `ubuntu-latest` with Python 3.12, and `postgres:17-alpine` and `redis:7-alpine` service containers:
+
+1. Installs `libpcap0.8` and `pip install -e ".[dev]"`. The `ml` extra is not installed, so tests that need scikit-learn or joblib are skipped.
+2. `ruff check` and `ruff format --check` on `packages apps tests scripts`.
+3. `mypy`.
+4. `python -m pytest --cov --cov-report=term-missing` with `SENTINELX_TEST_POSTGRES_URL` and `SENTINELX_TEST_REDIS_URL` set, so the SQLite, PostgreSQL and Redis tests all run. Kernel tests are skipped.
+5. Migrations: creates an empty `sentinelx_ci_migrations` database, runs `sentinelx db upgrade` against it, then `alembic check`, which fails if the models and the migrated schema differ.
+6. `sentinelx rules validate` and `sentinelx rules test rules`.
+
+**Dashboard (lint, types, build, API contract)** with Python 3.12 and Node 22:
+
+1. `pip install -e .` and `npm ci`.
+2. Regenerates the OpenAPI document and the TypeScript schema (`scripts/export_openapi.py`, `npm run generate:api`) and fails if `apps/dashboard/src/lib/openapi.json` or `apps/dashboard/src/lib/api-schema.d.ts` differ from the committed files.
+3. ESLint, `tsc` type check and `next build`.
+
+**Container images build**, after both jobs pass: `docker build` of `docker/Dockerfile.api` and `docker/Dockerfile.dashboard`. The images are not pushed.
+
+CI therefore covers more than `make check` (PostgreSQL and Redis tests, the migration check, the API contract and the images) but does not run the kernel tests, the machine-learning tests or either benchmark. Run `make test-kernel` yourself when you change capture or firewall code.
 
 ## Coding standards
 
@@ -119,7 +192,7 @@ Ruff and mypy settings live in `pyproject.toml`.
 | Ignored | `E501`; `S104` (binding `0.0.0.0` is a documented container default); `B008` (FastAPI `Depends()` defaults) |
 | Per-file ignores | `tests/*`: `S101`, `S105`, `S106`, `S311`. `scripts/*`: `S101`, `S603`, `S607`. `packages/sentinelx/firewall/*`: `S603`. `packages/sentinelx/testing/*`: `S311` (reproducible, non-secret randomness) |
 | Imports | Relative imports are banned (`ban-relative-imports = "all"`); `sentinelx` is first-party for isort |
-| mypy | `strict = true`, `warn_unreachable`, `disallow_any_generics`, pydantic plugin. Checks the `sentinelx` package and excludes generated Alembic revisions. Missing stubs are ignored only for `scapy`, `sklearn`, `pyshark`, `redis`, `psutil` and `joblib` |
+| mypy | `strict = true`, `warn_unreachable`, `disallow_any_generics`, pydantic plugin. Checks the `sentinelx` package and excludes generated Alembic revisions. Missing stubs are ignored only for `scapy`, `sklearn`, `redis`, `psutil` and `joblib` |
 
 Do not add a `# noqa` or `# type: ignore` to get past a check without a specific error code and a reason.
 
@@ -129,18 +202,21 @@ Code that runs once per packet (decoding, feature extraction, detection) is perf
 
 - Per-packet models are `@dataclass(frozen=True, slots=True)`, not Pydantic models: `PacketEvent`, `Detection`, `Evidence` and the other models in `common/models.py`, and the `DnsInfo`, `HttpInfo` and `TlsInfo` results in `parser/application.py`. Use the same for new per-packet types.
 - Long-lived per-packet workers declare `__slots__` (for example `PacketDecoder`).
-- Header decoding uses `struct`, not Scapy. Scapy is used only to read capture files.
+- Header decoding uses `struct`, not Scapy. Capture files are read by SentinelX's own reader (`capture/pcapfile.py`); Scapy is used only by the libpcap live capture backend and the decoder microbenchmark.
 - State must be bounded. See [architecture.md](architecture.md#state-and-memory-bounds) before adding per-source or per-flow state.
 - Do not claim a speed-up without measuring it (see [Benchmark policy](#benchmark-policy)).
 
 ### Security rules
 
-- **No `eval` or `exec`.** Rule conditions are parsed by the hand-written, bounded parser in `signatures/dsl.py`. YAML is loaded with `yaml.safe_load`. Ruff's bandit rules (`S`) flag violations.
-- **Subprocesses take an argument vector, never a shell.** The only subprocess call in the package is the firewall command runner in `firewall/base.py`, which uses `asyncio.create_subprocess_exec`, requires every argument to be a `str`, rejects arguments containing NUL or newline characters, and applies a timeout. `S603` is ignored only for `packages/sentinelx/firewall/*`.
-- **No security logic in route handlers.** Routes validate input, check the role and call a service in `packages/sentinelx/services/` or the core. Path checks, upload validation, safety-guard decisions and audit records belong in services. For example, `api/routes/replay.py` passes client paths to `ReplayService.resolve` and uploads to `ReplayService.store_upload`.
-- **Request bodies are strict.** API request models extend `StrictModel` (`extra="forbid"`) in `api/schemas.py` and bound every field (lengths, ranges, list sizes).
+- **No `eval` or `exec`.** Rule conditions are parsed by the hand-written, bounded parser in `signatures/dsl.py`. Rule YAML is loaded with `load_rule_yaml` in `signatures/rules.py`, a restricted `SafeLoader` that refuses anchors, aliases and deep nesting; never call `yaml.load` with another loader, and use `yaml.safe_load` for other YAML. Ruff's bandit rules (`S`) flag violations.
+- **Subprocesses take an argument vector, never a shell.** The only subprocess call in the package is the firewall command runner in `firewall/base.py`, which uses `asyncio.create_subprocess_exec` (a worker thread with `subprocess.run` on Windows), requires every argument to be a `str`, rejects arguments containing control characters, and applies a timeout. `S603` is ignored only for `packages/sentinelx/firewall/*`.
+- **No security logic in route handlers.** Routes validate input, check the role and call a service in `packages/sentinelx/services/` or the core. Path checks, upload validation, quota and size enforcement, safety-guard decisions and audit records belong in services. For example, `api/routes/replay.py` checks only the content type and declared length, then passes client paths to `ReplayService.resolve` and the body stream to `ReplayService.store_upload`.
+- **Check authentication before reading untrusted bodies.** A route that accepts a large body must take the role dependency and read the body itself (`request.stream()`), so an unauthenticated request is refused before any byte is read, as `POST /replay/upload` does.
+- **Request bodies are strict.** API request models extend `StrictModel` (`extra="forbid"`) in `api/schemas.py` and bound every field (lengths, ranges, list sizes). Bound query and path parameters too, including offsets and ids.
+- **Bound everything a user can make the server generate or parse.** Scenario parameters go through `validate_scenario_params`; add bounds there for any new scenario parameter.
 - **State-changing actions are audited** with `AuditService.record(actor=..., action=..., target=..., source=...)`.
 - **Errors are typed.** Raise a `SentinelXError` subclass from `common/errors.py`. `api/errors.py` maps them to HTTP responses (for example `PcapError` to 422), and the CLI's `run()` turns them into exit code 1 without a traceback.
+- **Never log settings objects or secrets.** The log redaction processor is a safety net, not a licence. Name new secret settings so that they contain `secret`, `token`, `password`, `api_key` or `credential`; the configuration view hides fields by those names.
 
 ### Detections must carry evidence
 
@@ -156,10 +232,10 @@ Read [detection-engine.md](detection-engine.md) first.
 2. **Write the detector.** Subclass `Detector` (`detection/base.py`) in the module that fits (`scanning.py`, `behavioral.py`, `dns.py`, `policy.py`) or a new module in `detection/`. Set:
    - `name`: a stable identifier. It appears in metrics, the API, stored detections and settings, so it must not change once released.
    - `description`, `category` (`ThreatCategory`), `default_severity` (`Severity`) and `references`.
-3. **Implement `inspect(context)`.** Return `None` in the common case. When the criteria are met, return `self.build(context=..., title=..., description=..., evidence=[...], confidence=...)`, with optional `severity`, `recommended_action`, `observation_window`, `packet_count` and `tags`. Use `Detector.scaled_confidence(observed, threshold)` so confidence grows with how far past the threshold the value is.
+3. **Implement `inspect(context)`.** Return `None` in the common case. When the criteria are met, return `self.build(context=..., title=..., description=..., evidence=[...], confidence=...)`, with optional `severity`, `recommended_action`, `observation_window`, `packet_count` and `tags`. Use `Detector.scaled_confidence(observed, threshold)` so confidence grows with how far past the threshold the value is. Do not set timestamps yourself: the engine stamps each detection with the capture time of the triggering packet.
 4. **Add thresholds to `DetectionSettings`** in `config/settings.py`, with bounds and a `description`. They become settable as `DETECTION__<FIELD>` and are editable at runtime through the configuration service. If you add a window length, check `WINDOW_FIELDS` in `services/config.py` and `max_rule_window()` in `services/rules.py`.
-5. **Register it** in `BUILTIN_DETECTORS` in `detection/engine.py`. Order matters: cheap, precise detectors run first. Add the name to `_SIGNATURE_DETECTORS` only if it matches facts rather than rates and should run in `signature_only` mode.
-6. **Add a scenario** to `packages/sentinelx/testing/scenarios.py` and to the `SCENARIOS` dict, with `expected_detectors` and `expected_source`. If the scenario is a known evasion, say so in its description.
+5. **Register it** in `BUILTIN_DETECTORS` in `detection/engine.py`. Order matters: cheap, precise detectors run first. Add the name to `_SIGNATURE_DETECTORS` only if it matches facts rather than rates and should run in `signature_only` mode. A detector that is attached separately (like the anomaly detectors) must be attached in `assembly.py`, so live capture, replays and benchmarks all get it.
+6. **Add a scenario** to `packages/sentinelx/testing/scenarios.py` and to the `SCENARIOS` dict, with `expected_detectors` and `expected_source`. Draw all randomness from the scenario's seeded generator so the fixture stays reproducible, and add bounds for any new parameter to `validate_scenario_params`. If the scenario is a known evasion, say so in its description.
 7. **Test it** in `tests/detection/test_detectors.py`: a positive case on the scenario, negative cases on traffic that shares a surface feature with the attack but not its shape, and edge cases. Assert that every detection has evidence with descriptions.
 8. **Document it** in the detector catalogue in [detection-engine.md](detection-engine.md). If it should be benchmarked, add an `Experiment` in `packages/sentinelx/bench/experiments.py` and re-run the benchmark.
 
@@ -207,7 +283,7 @@ Every rule in the repository must carry embedded tests. `tests/detection/test_ru
         expect: no_match
 ```
 
-`scenario` is a name from `scenarios.py`, `params` are passed to the scenario function, and `expect` is `match` or `no_match`. A rule's `within` may not exceed the longest built-in detector window, because the feature engine keeps no more history than that.
+`scenario` is a name from `scenarios.py`, `params` are passed to the scenario function, and `expect` is `match` or `no_match`. Scenario names and parameters are checked when the rule is validated. A rule's `within` may not exceed the longest built-in detector window, because the feature engine keeps no more history than that. Rule files may not use YAML anchors or aliases.
 
 ```bash
 sentinelx rules validate                                     # all files in RULES_DIRECTORY; exit 1 if any are invalid
@@ -221,12 +297,12 @@ Because `tests/detection/test_rules.py` loads every file in `rules/` (with a 60-
 
 ## Adding an API endpoint
 
-1. **Route.** Add the handler to the matching module in `packages/sentinelx/api/routes/` (`auth`, `system`, `detections`, `firewall`, `rules`, `stats`, `replay`). A new module must also be added to the router loop in `api/app.py`, which mounts routers under `/api/v1`.
+1. **Route.** Add the handler to the matching module in `packages/sentinelx/api/routes/` (`auth`, `system`, `detections`, `firewall`, `rules`, `stats`, `replay`). A new module must also be added to the router loop in `api/app.py`, which mounts routers under `/api/v1`. Give the route a `tags=[...]` entry so it is grouped in the OpenAPI document.
 2. **Authorisation.** Take a role dependency from `api/security.py` as a parameter: `Viewer`, `Analyst` or `Admin`. Take the platform as `PlatformDep`.
-3. **Input.** Define request bodies in `api/schemas.py` as `StrictModel` subclasses with bounded fields, and bound query parameters with `Query(...)`.
-4. **Logic.** Call a service. Put validation that protects the system, file and path handling, response and firewall decisions, and audit recording in the service, not in the handler.
+3. **Input.** Define request bodies in `api/schemas.py` as `StrictModel` subclasses with bounded fields, and bound query and path parameters with `Query(...)` and `Path(...)` (for example `offset: int = Query(default=0, ge=0, le=1_000_000)`).
+4. **Logic.** Call a service. Put validation that protects the system, file and path handling, response and firewall decisions, and audit recording in the service, not in the handler. If the change should reach other open dashboards, publish an event on `platform.bus`, as `PATCH /incidents/{incident_id}` does with `incident.updated`.
 5. **Errors.** Raise typed errors and let `api/errors.py` map them, or raise `HTTPException` for plain request errors such as 404.
-6. **Tests.** Add cases to `tests/api/test_api.py`, including the role check and invalid input. `tests/api/conftest.py` builds an isolated app with a file SQLite database and an unreachable Redis.
+6. **Tests.** Add cases to `tests/api/test_api.py`, including the role check and invalid input. `tests/api/conftest.py` builds an isolated app with a file SQLite database and an unreachable Redis, and requests go through `httpx.ASGITransport` without opening a network port. Tests for abuse cases (races, lockout, forged headers, resource exhaustion, token revocation) belong in `tests/api/test_security_hardening.py`.
 7. **Contract.** Regenerate and commit the dashboard's typed contract:
 
    ```bash
@@ -245,21 +321,29 @@ Because `tests/detection/test_rules.py` loads every file in `rules/` (with a 60-
 
 SQLAlchemy models are in `packages/sentinelx/storage/models.py`; Alembic revisions are in `packages/sentinelx/storage/migrations/versions/`, named `YYYYMMDD_<revision>_<slug>.py`. The Alembic environment reads the database URL from SentinelX settings (`DATABASE_URL`), renders batch operations so that `ALTER TABLE` migrations also work on SQLite, and compares column types.
 
-The development server creates the schema directly on SQLite. PostgreSQL deployments must run `sentinelx db upgrade` before the first start, so every model change needs a migration.
+How the schema is prepared at startup (`Database._prepare_schema` in `storage/database.py`):
+
+- An in-memory SQLite database (the test default) is created directly from the models.
+- A SQLite file is migrated to the latest revision automatically. A file created before migrations were tracked is stamped at the initial revision first.
+- PostgreSQL is never changed automatically. Startup fails with `database schema is at revision <x> but this version of SentinelX needs <head>; run: sentinelx db upgrade` unless the database is at the latest revision.
+
+Every model change therefore needs a migration.
 
 1. Change the models.
-2. Point `DATABASE_URL` at a disposable database and bring it to the current head:
+2. Point `DATABASE_URL` at a disposable scratch database and bring it to the current head **before** generating, so the new revision contains only your change:
 
    ```bash
-   export DATABASE_URL=postgresql://sentinelx:password@127.0.0.1:5432/sentinelx_dev
+   export DATABASE_URL=postgresql://sentinelx:password@127.0.0.1:5432/sentinelx_scratch
    sentinelx db upgrade
    ```
 
-3. Generate the revision and review it by hand. Autogenerate misses some changes and can produce wrong ones; the initial revision contains a hand correction for an expression-based index.
+3. Generate the revision against that upgraded database and review it by hand. Autogenerate misses some changes and can produce wrong ones; the initial revision contains a hand correction for an expression-based index.
 
    ```bash
    .venv/bin/python -m alembic revision --autogenerate -m "add replay notes"
    ```
+
+   Rename the file to the `YYYYMMDD_<revision>_<slug>.py` pattern if needed.
 
 4. Apply it and check for drift:
 
@@ -269,7 +353,7 @@ The development server creates the schema directly on SQLite. PostgreSQL deploym
    .venv/bin/python -m alembic check
    ```
 
-`alembic check` exits with an error if the models and the migrated schema still differ. CI runs it against PostgreSQL. Prefer PostgreSQL for this check: on SQLite, Alembic cannot reflect expression-based indexes and skips comparing them. The PostgreSQL storage tests (`make test-integration`) build their schema through the migrations rather than `create_all`, so they also exercise the new revision. Generated revisions are excluded from mypy.
+`alembic check` exits with an error if the models and the migrated schema still differ. CI runs it against an empty PostgreSQL database. Prefer PostgreSQL for this check: on SQLite, Alembic cannot reflect expression-based indexes and skips comparing them. If existing rows need values for a new column, write the data migration in the revision; existing SQLite files are upgraded on the next start. The PostgreSQL storage tests (`make test-integration`) build their schema through the migrations rather than `create_all`, and `tests/integration/test_schema.py` checks that an outdated SQLite file is upgraded and an outdated PostgreSQL schema is refused, so they also exercise the new revision. Generated revisions are excluded from mypy.
 
 ## Dashboard conventions
 
@@ -284,7 +368,7 @@ npm run build
 ```
 
 - **Pages.** Console pages live in `src/app/(console)/<name>/page.tsx`. Add navigation entries to `NAV` in `src/components/shell/app-shell.tsx`.
-- **API access.** The browser only talks to same-origin `/api/v1`, which `next.config.ts` proxies to `SENTINELX_API_URL`. Use the client in `src/lib/api.ts`: `useSWR<T>("/path")` for reads (the global fetcher is configured in `src/app/providers.tsx`) and `api<T>(path, { method, json })` for writes. The client attaches the CSRF header and refreshes the session on a 401. Do not call `fetch` directly for API requests unless the client cannot express the request. The multipart upload on the PCAP Lab page is the current exception, and it sends the CSRF and client headers itself.
+- **API access.** The browser only talks to its own origin. `next.config.ts` rewrites `/api/*` to `SENTINELX_API_URL`, and the development server also forwards WebSocket upgrades, so the event stream uses the same origin by default. Use the client in `src/lib/api.ts`: `useSWR<T>("/path")` for reads (the global fetcher is configured in `src/app/providers.tsx`) and `api<T>(path, { method, json })` for JSON writes. For a non-JSON body, pass `body` and `headers` instead of `json`, as the PCAP Lab upload does (`body: file`, `Content-Type: application/octet-stream`). The client attaches the CSRF header and refreshes the session on a 401. Do not call `fetch` directly for API requests.
 - **Live updates.** Subscribe to WebSocket events with `useEvents().subscribe([...types], handler)` from `src/lib/events.tsx`.
 - **No mock data.** Every view shows data from the API. Where the API has no data, show an empty state; do not invent sample rows or placeholder numbers. The login page's example explanation is the only fixed example: it is copied from the engine's real output for the `tcp_port_scan` fixture and labelled on screen as an example.
 - **Loading, empty and error states.** Every data-driven view handles all three with the primitives in `src/components/ui/primitives.tsx`: `Skeleton` or `TableSkeleton` while loading, `EmptyState` when there is nothing to show, and `ErrorState` (with `onRetry` where a retry makes sense) on failure.
@@ -298,14 +382,16 @@ npm run build
 
 Tests live under `tests/` and run with `.venv/bin/python -m pytest` (`make test`).
 
-| Directory | Covers |
+| Path | Covers |
 |---|---|
-| `tests/unit/` | CLI commands and exit codes, configuration and logging, network utilities and models, scoring and correlation, sliding windows |
-| `tests/capture/` | Packet decoding and application parsers, capture sources |
+| `tests/unit/` | CLI commands and exit codes, configuration and logging (including secret redaction in tracebacks), capability detection, network utilities and models, scoring and correlation, sliding windows |
+| `tests/capture/` | Packet decoding and application parsers, capture sources, and the capture-file reader (`test_pcapfile.py`: pcap and pcapng formats, timestamp resolutions, per-interface link types, hostile files, reproducible fixtures) |
 | `tests/detection/` | Built-in detectors (including `TestDocumentedEvasions`), rules (including every file in `rules/`), anomaly detection |
-| `tests/response/` | Response engine and safety guard |
-| `tests/api/` | The HTTP API, with its own `conftest.py` |
-| `tests/integration/` | The full pipeline and storage, on SQLite and optionally PostgreSQL and Redis |
+| `tests/response/` | Response engine and safety guard; pf and Windows Firewall adapters against recorded command results (`test_platform_firewalls.py`) |
+| `tests/api/test_api.py` | The HTTP API and WebSocket, with the fixtures in `tests/api/conftest.py` |
+| `tests/api/test_security_hardening.py` | Regression tests from the security review: concurrent refresh-token and WebSocket-ticket reuse, access-token revocation on sign-out, two-level lockout, forged `X-Forwarded-For`, metrics behind a proxy and non-ASCII metrics tokens, YAML alias expansion, oversized scenario parameters, prevention confirmation and environment precedence, replay and live detector parity, and operator-address protection |
+| `tests/integration/` | The full pipeline, storage on SQLite and optionally PostgreSQL and Redis, and schema checks at startup (`test_schema.py`) |
+| `tests/kernel/` | Real capture and firewall tests, run only by `make test-kernel` (see [Kernel tests](#kernel-tests)) |
 
 Configuration (`[tool.pytest.ini_options]` in `pyproject.toml`):
 
@@ -318,8 +404,8 @@ Registered markers:
 
 | Marker | Meaning | Current use |
 |---|---|---|
-| `integration` | Requires external services (PostgreSQL or Redis) | PostgreSQL storage test parameters and Redis tests in `tests/integration/test_storage.py`. They run only when `SENTINELX_TEST_POSTGRES_URL` or `SENTINELX_TEST_REDIS_URL` is set |
-| `root` | Requires root privileges (live capture or firewall) | Registered, not currently applied to any test |
+| `integration` | Requires external services (PostgreSQL or Redis) | PostgreSQL storage test parameters and Redis tests in `tests/integration/test_storage.py`. They run only when `SENTINELX_TEST_POSTGRES_URL` or `SENTINELX_TEST_REDIS_URL` is set. `tests/integration/test_schema.py` uses a plain `skipif` on the PostgreSQL variable |
+| `root` | Requires root privileges (live capture or firewall) | Added to every test in `tests/kernel/` by its `conftest.py` |
 | `slow` | Long-running benchmark or replay test | Registered, not currently applied to any test |
 
 Select or exclude with `-m`, for example `.venv/bin/python -m pytest -m "not integration"`.
@@ -330,19 +416,22 @@ Guidelines:
 
 - Use the synthetic scenarios and frame builders (`build_tcp`, `build_udp`, `build_icmp`, `build_dns_query`, `build_dns_response`, `build_http_request`) from `sentinelx.testing.scenarios` for traffic with known ground truth. Do not add real captures to the repository.
 - Every detector has positive, negative and edge-case tests. A negative case should share a surface feature with the attack.
-- Tests must not need network access, root privileges or a running server, unless they carry the matching marker.
+- A security fix gets a regression test that fails without the fix.
+- Tests must not need network access, root privileges or a running server, unless they carry the matching marker or live in `tests/kernel/`. API tests use `httpx.ASGITransport` or Starlette's `TestClient`, which do not bind a port.
 
 ## Benchmark policy
 
-Do not make a performance or detection-quality claim in code, documentation, a commit message or a pull request without running `scripts/benchmark.py`.
+Do not make a performance or detection-quality claim in code, documentation, a commit message or a pull request without running the benchmark that measures it.
 
 ```bash
-make benchmark                                            # --runs 5
+make benchmark                                            # detection experiments, --runs 5
 .venv/bin/python scripts/benchmark.py --only tcp_port_scan ssh_brute_force
 .venv/bin/python scripts/benchmark.py --no-rules
+.venv/bin/python scripts/benchmark_platform.py            # API, WebSocket, storage and pipeline load
+.venv/bin/python scripts/benchmark_platform.py --postgres postgresql://user:password@127.0.0.1:5432/scratch
 ```
 
-Results are written to `benchmarks/results/<UTC timestamp>.json` and `.md` (override with `--output`). The directory is ignored by git because results are machine-specific. When a change affects detectors, thresholds or the per-packet path, re-run the benchmark and update [benchmarking.md](benchmarking.md) from the generated report, including its environment block. Do not edit figures by hand, and keep the evasion results next to the detection results. The method and metric definitions are in [benchmarking.md](benchmarking.md).
+`scripts/benchmark.py` writes `benchmarks/results/<UTC timestamp>.json` and `.md`; `scripts/benchmark_platform.py` writes `benchmarks/results/platform-<UTC timestamp>.json` and `.md` (both accept `--output`). Reports cited by [benchmarking.md](benchmarking.md) are committed, so every quoted figure can be traced to its report. When a change affects detectors, thresholds, the per-packet path, the API or storage, re-run the relevant benchmark, commit the new report, and update [benchmarking.md](benchmarking.md) from it, including its environment line. Do not edit figures by hand, and keep the evasion results next to the detection results. The method and metric definitions are in [benchmarking.md](benchmarking.md).
 
 The replay report printed by `sentinelx replay` also contains throughput and latency. Those are single-run measurements on whatever machine ran them, not benchmark results.
 
@@ -356,10 +445,11 @@ Before opening a pull request:
 - If you changed the API, run `make openapi` and commit `openapi.json` and `api-schema.d.ts`.
 - If you changed `storage/models.py`, add a reviewed migration and run `alembic check` (see [Database migrations](#database-migrations)).
 - If you changed PostgreSQL- or Redis-specific behaviour, run `make test-integration`.
+- If you changed capture backends or firewall adapters, run `make test-kernel` on Linux.
 - If you changed detection behaviour or the per-packet path, re-run the benchmark and update [benchmarking.md](benchmarking.md).
 - Add or update tests for the behaviour you changed, and update the affected documents in `docs/`.
 - Keep one logical change per pull request, and describe what changed, why, and how it was tested.
-- Never commit `.env`, secrets, databases, model files or packet captures. `.gitignore` excludes `.env`, `*.db`, `models/`, `pcaps/*` and `benchmarks/results/`. If a capture is needed to explain a problem, follow the privacy guidance in [pcap-lab.md](pcap-lab.md#privacy-when-sharing-captures).
+- Never commit `.env`, secrets, databases, model files or packet captures. `.gitignore` excludes `.env` and `.env.*` (except `.env.example`), `*.db`, `models/` and `pcaps/*`. If a capture is needed to explain a problem, follow the privacy guidance in [pcap-lab.md](pcap-lab.md#privacy-when-sharing-captures).
 
 ## Reporting security issues
 

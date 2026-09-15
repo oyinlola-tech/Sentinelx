@@ -59,7 +59,7 @@ export default function NetworkPage() {
       </div>
 
       <Panel title="Interfaces" className="mt-4" bodyClassName="p-0">
-        {!data ? <TableSkeleton /> : !data.interfaces.length ? <EmptyState title="No interfaces reported">Interface enumeration reads /sys/class/net, which is only available on Linux.</EmptyState> : (
+        {!data ? <TableSkeleton /> : !data.interfaces.length ? <EmptyState title="No interfaces reported">The server could not list network interfaces on this host (Linux, macOS and Windows are supported). Platform capabilities in Settings shows whether interface enumeration is available and how to enable it.</EmptyState> : (
           <div className="overflow-x-auto">
             <table className="data-table">
               <thead><tr><th scope="col">Name</th><th scope="col">State</th><th scope="col">Addresses</th><th scope="col">MAC</th><th scope="col">MTU</th><th scope="col">RX packets</th><th scope="col">TX packets</th><th scope="col">RX bytes</th><th scope="col">RX dropped</th></tr></thead>

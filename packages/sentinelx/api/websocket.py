@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -139,6 +140,7 @@ async def events(websocket: WebSocket) -> None:
             # One long-lived pending read. Cancelling a read on every ping interval
             # (wait_for) would close the async generator and silently end the stream.
             next_event: asyncio.Future[Any] = asyncio.ensure_future(anext(iterator))
+            last_checked = time.monotonic()
             try:
                 while not receiver.done():
                     done, _ = await asyncio.wait(
@@ -148,23 +150,27 @@ async def events(websocket: WebSocket) -> None:
                     )
                     if receiver in done:
                         break
+                    # Confirm the account may still see this stream at least every ping
+                    # interval, whether the stream is idle or busy with events.
+                    if user_id is not None and time.monotonic() - last_checked >= _PING_INTERVAL:
+                        last_checked = time.monotonic()
+                        verdict = await _still_permitted(platform, user_id, role)
+                        if verdict is not None:
+                            close_code, close_reason = verdict
+                            break
                     if next_event in done:
                         message: dict[str, Any] = next_event.result().to_dict()
                         next_event = asyncio.ensure_future(anext(iterator))
                     else:
-                        # Idle: confirm the account is still allowed to see this stream.
-                        if user_id is not None:
-                            verdict = await _still_permitted(platform, user_id, role)
-                            if verdict is not None:
-                                close_code, close_reason = verdict
-                                break
                         message = {"type": "ping"}
                     await asyncio.wait_for(websocket.send_json(message), timeout=_SEND_TIMEOUT)
             finally:
                 next_event.cancel()
                 with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration, Exception):
                     await next_event
-    except (WebSocketDisconnect, TimeoutError, RuntimeError):
+    except (WebSocketDisconnect, TimeoutError, RuntimeError, OSError):
+        # OSError covers the server's ClientDisconnected: a browser closing the tab is
+        # routine, not an application error.
         pass
     finally:
         if receiver is not None:
@@ -175,7 +181,8 @@ async def events(websocket: WebSocket) -> None:
         if not _connections[username]:
             _connections.pop(username, None)
         metrics.websocket_clients.dec()
-        with contextlib.suppress(RuntimeError):
+        # The client may already be gone; closing an absent socket is not an error.
+        with contextlib.suppress(RuntimeError, OSError, WebSocketDisconnect):
             await websocket.close(code=close_code, reason=close_reason)
         log.info("websocket_disconnected", user=username, code=close_code)
 

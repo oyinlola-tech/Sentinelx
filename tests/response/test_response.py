@@ -191,6 +191,22 @@ class TestResponseModes:
         ]
         assert audit[-1]["actor"] == "admin"
 
+    async def test_expired_approval_request_cannot_be_approved(self) -> None:
+        from dataclasses import replace as replace_field
+        from datetime import UTC, datetime, timedelta
+
+        from sentinelx.response.engine import PENDING_APPROVAL_TTL
+
+        engine, firewall, _, _ = await engine_for(ResponseMode.MANUAL_APPROVAL, dry_run=False)
+        await engine.handle_detection(detection(), risk(99))
+        action_id, pending = next(iter(engine.pending.items()))
+        stale = datetime.now(UTC) - PENDING_APPROVAL_TTL - timedelta(minutes=1)
+        engine.pending[action_id] = replace_field(pending, created_at=stale)
+        assert engine.pending_actions() == []
+        with pytest.raises(KeyError):
+            await engine.approve(action_id, actor="admin")
+        assert firewall.operations == []
+
     async def test_reject_removes_pending_and_audits(self) -> None:
         engine, firewall, audit, _ = await engine_for(ResponseMode.MANUAL_APPROVAL, dry_run=False)
         await engine.handle_detection(detection(), risk(99))

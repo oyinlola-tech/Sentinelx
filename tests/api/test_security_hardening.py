@@ -59,6 +59,37 @@ class TestTokenRaces:
         assert (await client.post("/auth/logout", headers=admin)).status_code == 204
         assert (await client.get("/auth/me", headers=admin)).status_code == 401
 
+    async def test_password_change_ends_other_sessions_but_not_the_callers_new_one(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        other = (
+            await client.post("/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD})
+        ).json()
+        await asyncio.sleep(1.1)  # access-token cut-off has one-second resolution
+        caller = await login(client)
+        changed = await client.post(
+            "/auth/change-password",
+            headers=caller,
+            json={
+                "current_password": ADMIN_PASSWORD,
+                "new_password": "A-much-better-passphrase-77",
+            },
+        )
+        assert changed.status_code == 200
+        new_session = changed.json()
+        # The other session's access token stops working now, not when it expires.
+        stale = {"Authorization": f"Bearer {other['access_token']}"}
+        assert (await client.get("/auth/me", headers=stale)).status_code == 401
+        # Its refresh token is refused without being treated as theft...
+        assert (
+            await client.post("/auth/refresh", json={"refresh_token": other["refresh_token"]})
+        ).status_code == 401
+        # ...so the session the password was changed from keeps working.
+        refreshed = await client.post(
+            "/auth/refresh", json={"refresh_token": new_session["refresh_token"]}
+        )
+        assert refreshed.status_code == 200
+
 
 class TestLockout:
     async def test_failures_from_one_address_do_not_lock_the_owner_elsewhere(
@@ -138,6 +169,13 @@ class TestProxyAddresses:
             "/metrics", headers={"Authorization": "Bearer é".encode("latin-1")}
         )
         assert response.status_code == 401
+        # A non-ASCII token sent correctly (UTF-8 on the wire) must still match.
+        platform.settings.api.metrics_token = "métriques-" + "m" * 32
+        correct = await client.get(
+            "/metrics",
+            headers={"Authorization": f"Bearer {platform.settings.api.metrics_token}".encode()},
+        )
+        assert correct.status_code == 200
 
 
 class TestResourceExhaustion:
@@ -210,3 +248,62 @@ class TestPreventionSettings:
         await service.load_overrides()
         assert platform.settings.response.dry_run is True
         assert not platform.settings.prevention_active
+
+    async def test_turning_dry_run_off_requires_confirmation_and_changes_the_banner(
+        self, platform: Platform, client: httpx.AsyncClient, admin: dict[str, str]
+    ) -> None:
+        platform.settings.response.firewall_backend = "nftables"
+        refused = await client.patch(
+            "/config/response", headers=admin, json={"changes": {"dry_run": False}}
+        )
+        assert refused.status_code == 422 and "ENABLE PREVENTION" in refused.json()["detail"]
+        assert platform.settings.response.dry_run is True
+        accepted = await client.patch(
+            "/config/response",
+            headers=admin,
+            json={"changes": {"dry_run": False}, "confirmation": "ENABLE PREVENTION"},
+        )
+        assert accepted.status_code == 200
+        banner = platform.settings.safety_banner()
+        # Still detect_only, but manual blocks are real: the banner must say so.
+        assert banner.startswith("MANUAL BLOCKS ENFORCED") and "nftables" in banner
+
+
+class TestReplayParity:
+    async def test_replay_pipeline_runs_the_same_detectors_as_live(
+        self, platform: Platform
+    ) -> None:
+        platform.settings.anomaly.enabled = True
+        from sentinelx.assembly import attach_anomaly_detectors
+
+        live = platform.require()[0]
+        attach_anomaly_detectors(live, platform.settings)  # fixture disables anomaly
+        _, _, replay, _ = platform.require()
+        replayed = replay._isolated_pipeline("parity")
+        platform.rules.attach(replayed.detection)
+        await platform.rules.apply()
+        names = lambda pipeline: sorted(d.name for d in pipeline.detection.detectors)  # noqa: E731
+        assert names(replayed) == names(live)
+        assert "statistical_anomaly" in names(replayed)
+        assert replayed.intel is platform.intel
+        platform.rules.engines.remove(replayed.detection)
+
+
+class TestOperatorProtection:
+    async def test_admin_cannot_block_their_own_workstation(self, platform: Platform) -> None:
+        async with client_from(platform, "198.51.100.23") as workstation:
+            headers = await login(workstation)
+            refused = await workstation.post(
+                "/firewall/block",
+                headers=headers,
+                json={"target": "198.51.100.23", "reason": "oops"},
+            )
+            body = refused.json()
+            assert body["outcome"] == "failed" and "operator" in body["error"]
+            other = await workstation.post(
+                "/firewall/block",
+                headers=headers,
+                json={"target": "203.0.113.99", "reason": "unrelated scanner"},
+            )
+            assert other.status_code == 200, other.text
+            assert other.json()["outcome"] == "simulated"  # dry run default

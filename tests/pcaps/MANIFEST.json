@@ -1,0 +1,151 @@
+{
+  "benign/normal_traffic.pcap": {
+    "scenario": "normal_traffic",
+    "sha256": "7865527ea175900abe5157582e3b22bf2431479952d319edaa2007cb6928c16e",
+    "benign": true,
+    "expected_source": null,
+    "intended_detectors": [],
+    "packets": 600,
+    "detections": [],
+    "incidents": 0
+  },
+  "attacks/tcp_port_scan.pcap": {
+    "scenario": "tcp_port_scan",
+    "sha256": "a9daffa75cacf8e53488075744b9a8f2882ce8b33d1738dcb4e0dd25785c6ef4",
+    "benign": false,
+    "expected_source": "203.0.113.45",
+    "intended_detectors": [
+      "tcp_port_scan"
+    ],
+    "packets": 440,
+    "detections": [
+      "connection_rate@203.0.113.45",
+      "rule:rapid_syn_scan@203.0.113.45",
+      "tcp_port_scan@203.0.113.45"
+    ],
+    "incidents": 1
+  },
+  "attacks/horizontal_scan.pcap": {
+    "scenario": "horizontal_scan",
+    "sha256": "2503d37417c90ba7bc60aff5fe979b8d409743b22e58117d9161588962ebae96",
+    "benign": false,
+    "expected_source": "203.0.113.77",
+    "intended_detectors": [
+      "horizontal_scan"
+    ],
+    "packets": 120,
+    "detections": [
+      "horizontal_scan@203.0.113.77",
+      "rule:smb_sweep@203.0.113.77"
+    ],
+    "incidents": 1
+  },
+  "attacks/udp_scan.pcap": {
+    "scenario": "udp_scan",
+    "sha256": "4ef6dd269b6d0938b663c068d41ef25c00e059a25768c625567425a6dc0644c2",
+    "benign": false,
+    "expected_source": "203.0.113.90",
+    "intended_detectors": [
+      "udp_scan"
+    ],
+    "packets": 200,
+    "detections": [
+      "udp_scan@203.0.113.90"
+    ],
+    "incidents": 0
+  },
+  "attacks/ssh_brute_force.pcap": {
+    "scenario": "ssh_brute_force",
+    "sha256": "4869c153998fe551290fe4c1013098457d6cc40458adc813772f9af4dc84b49c",
+    "benign": false,
+    "expected_source": "198.51.100.23",
+    "intended_detectors": [
+      "ssh_brute_force"
+    ],
+    "packets": 360,
+    "detections": [
+      "rule:ssh_brute_force@198.51.100.23",
+      "ssh_brute_force@198.51.100.23"
+    ],
+    "incidents": 1
+  },
+  "attacks/dns_tunneling.pcap": {
+    "scenario": "dns_tunneling",
+    "sha256": "416f02c913b2a233a15ac8c6530300159ae18f8632d481cab50634cbe7ad3673",
+    "benign": false,
+    "expected_source": "192.168.10.66",
+    "intended_detectors": [
+      "dns_anomaly"
+    ],
+    "packets": 400,
+    "detections": [
+      "dns_anomaly@192.168.10.66",
+      "rule:dns_txt_tunnel@192.168.10.66"
+    ],
+    "incidents": 1
+  },
+  "attacks/mixed_intrusion.pcap": {
+    "scenario": "mixed_intrusion",
+    "sha256": "92932822844aae2565715043d8dd0843d7c612b42e9e3b461ac6547ff1c041e6",
+    "benign": false,
+    "expected_source": "203.0.113.200",
+    "intended_detectors": [
+      "icmp_flood",
+      "ssh_brute_force",
+      "tcp_port_scan"
+    ],
+    "packets": 1080,
+    "detections": [
+      "icmp_flood@203.0.113.200",
+      "rule:rapid_syn_scan@203.0.113.200",
+      "rule:ssh_brute_force@203.0.113.200",
+      "ssh_brute_force@203.0.113.200",
+      "tcp_port_scan@203.0.113.200"
+    ],
+    "incidents": 1
+  },
+  "evasion/slow_port_scan.pcap": {
+    "scenario": "slow_port_scan",
+    "sha256": "9a579db4f876610843b0778d7f3bc92a56ce729fb52456c31cacfa1b50d44bf8",
+    "benign": false,
+    "expected_source": "203.0.113.61",
+    "intended_detectors": [
+      "tcp_port_scan"
+    ],
+    "packets": 120,
+    "detections": [],
+    "incidents": 0
+  },
+  "evasion/low_rate_brute_force.pcap": {
+    "scenario": "low_rate_brute_force",
+    "sha256": "769cdf1a92b9d92ce336ebe74ed2e7eb64e6ff2cdaba313a71a70a93928a1e26",
+    "benign": false,
+    "expected_source": "198.51.100.44",
+    "intended_detectors": [
+      "ssh_brute_force"
+    ],
+    "packets": 180,
+    "detections": [],
+    "incidents": 0
+  },
+  "malformed/truncated_record.pcap": {
+    "sha256": "0a03f3a08b1165653736661770f1a8c2c4f0637dacbe13bb924f7057cfb94f82",
+    "error": "PcapError"
+  },
+  "malformed/oversized_record.pcap": {
+    "sha256": "d42f3a4ae890ce1cd9a88ee08688f27e6249e12b7a1da370f2b383d2a4eabe9f",
+    "error": "PcapError"
+  },
+  "malformed/not_a_capture.pcap": {
+    "sha256": "4c978059238d24f3ada3dee6091310f96414fd74bf78da8dbd7640b1ba62f3b1",
+    "error": "PcapError"
+  },
+  "malformed/empty.pcap": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "error": "PcapError"
+  },
+  "malformed/bad_block_length.pcapng": {
+    "sha256": "efdd89924a4998c79bfe9fbb825a0fb01906eea568bda1212b69594140d24865",
+    "error": "PcapError"
+  }
+}

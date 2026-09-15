@@ -74,17 +74,19 @@ export default function MonitorPage() {
       />
 
       <div className="panel mb-4 grid grid-cols-2 gap-px overflow-hidden bg-line sm:grid-cols-4 lg:grid-cols-6" aria-label="Pipeline statistics">
-        {[
-          ["Source", stats ? String(stats.source ?? "—") : "—"],
-          ["Packets", compact(Number(stats?.frames ?? 0))],
-          ["Packets / s", compact(Number(stats?.packets_per_second ?? 0))],
-          ["Active flows", compact(Number(stats?.active_flows ?? 0))],
-          ["Detections", compact(Number(stats?.detections ?? 0))],
+        {/* Until the first packet.stats event arrives there is nothing to count: show a dash, not a zero. */}
+        {([
+          ["Source", stats ? String(stats.source ?? "—") : null],
+          ["Packets", stats ? statValue(stats.frames) : null],
+          ["Packets / s", stats ? statValue(stats.packets_per_second) : null],
+          ["Active flows", stats ? statValue(stats.active_flows) : null],
+          ["Detections", stats ? statValue(stats.detections) : null],
           ["Stream", state],
-        ].map(([label, value]) => (
+        ] as [string, string | null][]).map(([label, value]) => (
           <div key={label} className="bg-panel px-4 py-2.5">
             <p className="eyebrow">{label}</p>
-            <p className="truncate font-mono text-sm tabular text-frost">{value}</p>
+            <p className="truncate font-mono text-sm tabular text-frost">{value ?? "—"}</p>
+            {value === null && <p className="truncate text-2xs text-fog">waiting for sensor data</p>}
           </div>
         ))}
       </div>
@@ -135,6 +137,10 @@ export default function MonitorPage() {
   );
 }
 
+function statValue(value: number | string | undefined): string {
+  return value == null || value === "" ? "—" : compact(Number(value));
+}
+
 function FeedRow({ event }: { event: StreamEvent }) {
   const time = <Mono className="w-16 shrink-0 text-fog">{clock(event.timestamp)}</Mono>;
   const replay = (event.payload as { replay_id?: string | null }).replay_id ? <span className="rounded-sm border border-line-strong px-1 font-mono text-2xs text-fog">replay</span> : null;
@@ -172,7 +178,7 @@ function FeedRow({ event }: { event: StreamEvent }) {
     return (
       <li className="flex flex-wrap items-center gap-3 px-4 py-2">
         {time}
-        <OutcomeBadge outcome={event.type === "response.pending_approval" ? "pending_approval" : action.outcome} />
+        <OutcomeBadge outcome={event.type === "response.pending_approval" ? "pending_approval" : action.outcome} action={action.action} />
         <span className="text-sm text-frost">{humanise(action.action)} <Mono>{action.target}</Mono></span>
         <span className="min-w-0 flex-1 truncate text-xs text-mist">{action.reason}</span>
       </li>

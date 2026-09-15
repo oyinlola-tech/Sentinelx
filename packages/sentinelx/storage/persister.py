@@ -132,7 +132,8 @@ class EventPersister:
                 if event.type in (EventType.INCIDENT_OPENED, EventType.INCIDENT_UPDATED):
                     await incidents.upsert(self._incident(payload, sensor))
                     await detections.link_incident(
-                        list(payload.get("detection_ids", [])), payload["incident_id"]
+                        list(payload.get("linked_detection_ids", payload.get("detection_ids", []))),
+                        payload["incident_id"],
                     )
                 elif event.type is EventType.RESPONSE_DECIDED:
                     await actions.add(self._action(payload, sensor))
@@ -228,6 +229,7 @@ class EventPersister:
             incident_id=payload.get("incident_id"),
             error=payload.get("error"),
             sensor=sensor,
+            replay_id=payload.get("replay_id"),
         )
 
     def _stats(

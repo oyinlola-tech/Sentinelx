@@ -387,10 +387,13 @@ class NftablesAdapter(FirewallAdapter):
 
     async def health(self) -> dict[str, object]:
         result = await self._runner.run("list", "table", self.family, self.table, check=False)
+        not_set_up = not result.ok and _is_missing(result.stderr)
         return {
             "backend": self.backend,
-            "ok": result.ok,
+            # The table is created on first use; not existing yet is not a failure.
+            "ok": result.ok or not_set_up,
             "enforcing": result.ok,
             "table": f"{self.family} {self.table}",
-            "error": None if result.ok else result.stderr.strip()[:300],
+            "state": "ready" if result.ok else "not set up yet" if not_set_up else "error",
+            "error": None if result.ok or not_set_up else result.stderr.strip()[:300],
         }

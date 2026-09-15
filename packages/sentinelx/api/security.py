@@ -166,6 +166,7 @@ async def current_principal(
     if principal.must_change_password and request.url.path not in allowed_paths:
         raise HTTPException(status_code=403, detail="password change required before continuing")
     request.state.principal = principal
+    platform.note_operator_address(client_ip(request))
     return principal
 
 

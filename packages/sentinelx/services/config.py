@@ -37,7 +37,14 @@ from sentinelx.storage.database import Database
 from sentinelx.storage.repositories import SettingRepository
 from sentinelx.telemetry.logging import get_logger
 
-__all__ = ["EDITABLE", "PREVENTION_CONFIRMATION", "WINDOW_FIELDS", "ConfigService", "redact_url"]
+__all__ = [
+    "EDITABLE",
+    "PREVENTION_CONFIRMATION",
+    "WINDOW_FIELDS",
+    "ConfigService",
+    "redact_url",
+    "redacted_settings",
+]
 
 log = get_logger(__name__)
 
@@ -96,14 +103,8 @@ class ConfigService:
 
     def view(self) -> dict[str, Any]:
         """Current settings with secrets removed, plus what is editable."""
-        data = self.settings.model_dump(mode="json")
-        _redact_secrets(data)
-        data["storage"]["database_url"] = redact_url(self.settings.storage.database_url)
-        data["storage"]["redis_url"] = redact_url(self.settings.storage.redis_url)
-        if data["response"].get("webhook_url"):
-            data["response"]["webhook_url"] = webhook_display(data["response"]["webhook_url"])
         return {
-            "settings": data,
+            "settings": redacted_settings(self.settings),
             "editable": {section: sorted(fields) for section, fields in EDITABLE.items()},
             "safety": {
                 "banner": self.settings.safety_banner(),
@@ -171,7 +172,7 @@ class ConfigService:
         enabling = self._would_enable_prevention(section, changes)
         if enabling and confirmation != PREVENTION_CONFIRMATION:
             raise ConfigurationError(
-                f"enabling prevention allows SentinelX to modify this host's firewall automatically; "
+                f"this change allows SentinelX to modify this host's firewall; "
                 f"resend with confirmation '{PREVENTION_CONFIRMATION}'"
             )
         try:
@@ -187,8 +188,11 @@ class ConfigService:
             existing = (await repo.all()).get(section, {})
             await repo.set(section, {**existing, **applied}, actor)
 
+        # The diff goes to the audit log and to every connected dashboard, so values
+        # are shown the way the configuration view shows them (webhook URLs can carry
+        # tokens in their path or query).
         diff = {
-            key: {"from": before.get(key), "to": value}
+            key: {"from": _display(key, before.get(key)), "to": _display(key, value)}
             for key, value in applied.items()
             if before.get(key) != value
         }
@@ -211,16 +215,21 @@ class ConfigService:
         return self.view()
 
     def _would_enable_prevention(self, section: str, changes: dict[str, Any]) -> bool:
-        """True when applying ``changes`` would switch prevention on (it is off now)."""
-        if section != "response" or self.settings.prevention_active:
+        """True when ``changes`` would let SentinelX modify the firewall where it cannot now.
+
+        That is switching dry run off (manual blocks and approvals become real) or
+        switching automatic prevention on. Both need the confirmation phrase.
+        """
+        if section != "response":
             return False
+        current = self.settings.response
         try:
-            trial = ResponseSettings.model_validate(
-                {**self.settings.response.model_dump(), **changes}
-            )
+            trial = ResponseSettings.model_validate({**current.model_dump(), **changes})
         except ValidationError:
             return False  # _apply reports the validation error itself
-        return trial.prevention_active
+        enforcement_on = current.dry_run and not trial.dry_run
+        prevention_on = trial.prevention_active and not current.prevention_active
+        return enforcement_on or prevention_on
 
     def _apply(
         self, section: str, changes: dict[str, Any], *, allow_prevention: bool
@@ -261,6 +270,25 @@ class ConfigService:
 
 
 _SECRET_MARKERS = ("secret", "token", "password", "api_key", "apikey", "credential")
+#: Settings whose names contain a marker but hold no secret (durations, policy).
+_NOT_SECRET = frozenset(
+    {"access_token_ttl_seconds", "refresh_token_ttl_seconds", "password_min_length"}
+)
+
+
+def _is_secret(key: str) -> bool:
+    return key not in _NOT_SECRET and any(marker in key.lower() for marker in _SECRET_MARKERS)
+
+
+def redacted_settings(settings: Settings) -> dict[str, Any]:
+    """Settings as JSON with every secret removed: the one view the API and CLI show."""
+    data = settings.model_dump(mode="json")
+    _redact_secrets(data)
+    data["storage"]["database_url"] = redact_url(settings.storage.database_url)
+    data["storage"]["redis_url"] = redact_url(settings.storage.redis_url)
+    if data["response"].get("webhook_url"):
+        data["response"]["webhook_url"] = webhook_display(data["response"]["webhook_url"])
+    return data
 
 
 def _redact_secrets(data: dict[str, Any]) -> None:
@@ -273,8 +301,19 @@ def _redact_secrets(data: dict[str, Any]) -> None:
         value = data[key]
         if isinstance(value, dict):
             _redact_secrets(value)
-        elif any(marker in key.lower() for marker in _SECRET_MARKERS):
+        elif _is_secret(key):
             data[key] = "[redacted]" if value else ""
+
+
+def _display(key: str, value: Any) -> Any:
+    """A setting value as it may be shown to any dashboard user."""
+    if not value:
+        return value
+    if key == "webhook_url":
+        return webhook_display(str(value))
+    if _is_secret(key):
+        return "[redacted]"
+    return value
 
 
 def redact_url(url: str) -> str:

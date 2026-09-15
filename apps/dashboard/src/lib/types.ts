@@ -210,8 +210,39 @@ export interface SensorStatus {
   error: string | null;
   backend: string | null;
   capture: Record<string, number> | null;
-  has_capture_privileges: boolean;
+  capture_capabilities: CaptureCapabilities;
   safety: string;
+}
+
+export interface CaptureCapabilities {
+  backend: string;
+  available: boolean;
+  live: boolean;
+  reason: string;
+  remedy: string;
+  bpf_filter: boolean;
+  any_interface: boolean;
+  promiscuous: boolean;
+  kernel_drop_counters: boolean;
+}
+
+export interface Capability {
+  available: boolean;
+  status: "AVAILABLE" | "UNAVAILABLE";
+  detail: string;
+  remedy: string;
+  backend: string | null;
+}
+
+export interface PlatformCapabilities {
+  operating_system: string;
+  architecture: string;
+  environment: { label: string; wsl: number | null; container: string | null; python_version: string };
+  capabilities: Record<
+    "detection_engine" | "pcap_replay" | "interface_enumeration" | "packet_capture" | "live_capture" | "firewall" | "automatic_blocking" | "privileged_access",
+    Capability
+  >;
+  firewall_backends: { backend: string; available: boolean; reason: string; remedy: string; native_expiry: boolean; rate_limit: boolean }[];
 }
 
 export interface NetworkInterface {

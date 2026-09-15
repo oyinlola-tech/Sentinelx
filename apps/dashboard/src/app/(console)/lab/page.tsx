@@ -7,10 +7,10 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { PageHeader } from "@/components/shell/page-header";
 import { DetectionTable } from "@/components/views/detection-table";
-import { Button, EmptyState, ErrorState, Field, KeyValue, Panel, Select, TableSkeleton } from "@/components/ui/primitives";
+import { Button, Dialog, EmptyState, ErrorState, Field, KeyValue, Panel, Select, TableSkeleton } from "@/components/ui/primitives";
 import { Mono, OutcomeBadge, RiskScore, SeverityBadge } from "@/components/ui/security";
 import { useToast } from "@/components/ui/toast";
-import { api } from "@/lib/api";
+import { api, query } from "@/lib/api";
 import { useEvents } from "@/lib/events";
 import { ago, bytes, humanise, num } from "@/lib/format";
 import { useSession } from "@/lib/session";
@@ -58,12 +58,14 @@ function Lab() {
   async function upload(file: File) {
     setBusy("upload");
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const csrf = document.cookie.split("; ").find((part) => part.startsWith("sx_csrf="))?.slice(8) ?? "";
-      const response = await fetch("/api/v1/replay/upload", { method: "POST", body: form, headers: { "X-CSRF-Token": decodeURIComponent(csrf), "X-SentinelX-Client": "dashboard" }, credentials: "same-origin" });
-      const body = (await response.json()) as { path?: string; packet_count?: number; detail?: string };
-      if (!response.ok) throw new Error(body.detail ?? `Upload failed (${response.status})`);
+      // The file is the request body (not a form), streamed after authentication; the
+      // shared client adds CSRF protection, refreshes an expired session and reports
+      // any error body, JSON or not.
+      const body = await api<{ path?: string; packet_count?: number }>(`/replay/upload${query({ filename: file.name })}`, {
+        method: "POST",
+        body: file,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
       toast("success", `Uploaded ${file.name}`, `${num(body.packet_count)} packets`);
       await mutateFiles();
       if (body.path) setPath(body.path);
@@ -184,6 +186,8 @@ function ReplayReportView({ id, live, onClose }: { id: string; live?: Progress; 
   const toast = useToast();
   const { can } = useSession();
   const { data: run, error, mutate } = useSWR<ReplayRun>(`/replay/${id}`, { refreshInterval: (latest) => (latest && ["queued", "running"].includes(latest.status) ? 1000 : 0) });
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   useEffect(() => {
     if (live && run?.status === "running") void mutate();
   }, [live, run?.status, mutate]);
@@ -193,12 +197,16 @@ function ReplayReportView({ id, live, onClose }: { id: string; live?: Progress; 
   const report = run.report;
   const running = run.status === "running" || run.status === "queued";
   async function cancel() {
+    setCancelling(true);
     try {
       await api(`/replay/${id}/cancel`, { method: "POST" });
       toast("info", "Cancelling replay");
+      setConfirmCancel(false);
       await mutate();
     } catch (caught) {
-      toast("error", "Could not cancel", caught instanceof Error ? caught.message : undefined);
+      toast("error", "Could not cancel the replay", caught instanceof Error ? caught.message : undefined);
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -209,7 +217,7 @@ function ReplayReportView({ id, live, onClose }: { id: string; live?: Progress; 
         title={run.filename}
         actions={
           <>
-            {running && can("analyst") && <Button size="sm" variant="ghost" onClick={() => void cancel()}>Cancel</Button>}
+            {running && can("analyst") && <Button size="sm" variant="ghost" onClick={() => setConfirmCancel(true)}>Cancel replay</Button>}
             <Button size="sm" variant="ghost" icon={<X className="size-3.5" />} onClick={onClose} aria-label="Close report" />
           </>
         }
@@ -262,19 +270,21 @@ function ReplayReportView({ id, live, onClose }: { id: string; live?: Progress; 
 
       {report?.decisions?.length ? (
         <Panel title="Response decisions" eyebrow="Simulated" bodyClassName="p-0">
-          <table className="data-table">
-            <thead><tr><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Reason</th></tr></thead>
-            <tbody>
-              {report.decisions.map((decision) => (
-                <tr key={decision.decision_id}>
-                  <td className="whitespace-nowrap">{humanise(decision.action)}</td>
-                  <td><Mono>{decision.target}</Mono></td>
-                  <td><OutcomeBadge outcome={decision.outcome} /></td>
-                  <td className="max-w-md truncate text-mist">{decision.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead><tr><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Reason</th></tr></thead>
+              <tbody>
+                {report.decisions.map((decision) => (
+                  <tr key={decision.decision_id}>
+                    <td className="whitespace-nowrap">{humanise(decision.action)}</td>
+                    <td><Mono>{decision.target}</Mono></td>
+                    <td><OutcomeBadge outcome={decision.outcome} action={decision.action} /></td>
+                    <td className="max-w-md truncate text-mist">{decision.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Panel>
       ) : null}
 
@@ -283,6 +293,17 @@ function ReplayReportView({ id, live, onClose }: { id: string; live?: Progress; 
           <DetectionTable detections={report.detections} showStatus={false} emptyTitle="No detections" emptyBody="The engine found nothing suspicious in this capture." />
         </Panel>
       )}
+
+      <Dialog
+        open={confirmCancel && running}
+        onClose={() => setConfirmCancel(false)}
+        title="Cancel replay"
+        footer={<><Button variant="ghost" onClick={() => setConfirmCancel(false)}>Keep replaying</Button><Button variant="danger" loading={cancelling} onClick={() => void cancel()}>Cancel replay</Button></>}
+      >
+        <p className="text-sm text-mist">
+          Stop replaying <span className="text-frost">{run.filename}</span>{live ? ` after ${num(live.frames)} packets` : ""}? The run is marked cancelled and no report is produced. Detections and incidents it has already raised are kept. You can start a new replay of the same capture at any time.
+        </p>
+      </Dialog>
     </div>
   );
 }

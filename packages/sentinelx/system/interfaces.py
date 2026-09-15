@@ -40,8 +40,17 @@ def list_interfaces() -> list[dict[str, Any]]:
             "no addresses".
     """
     addresses = psutil.net_if_addrs()
-    stats = psutil.net_if_stats()
-    counters = psutil.net_io_counters(pernic=True)
+    # State and counters are descriptive; addresses are what safety decisions use.
+    # Some kernels and emulators refuse the ethtool ioctl behind net_if_stats (seen
+    # under QEMU user-mode emulation), which must not make the addresses unreadable.
+    try:
+        stats = psutil.net_if_stats()
+    except OSError:
+        stats = {}
+    try:
+        counters = psutil.net_io_counters(pernic=True)
+    except OSError:
+        counters = {}
     link_family = getattr(psutil, "AF_LINK", None)
 
     interfaces: list[dict[str, Any]] = []
@@ -60,7 +69,7 @@ def list_interfaces() -> list[dict[str, Any]]:
         interfaces.append(
             {
                 "name": name,
-                "state": state or ("up" if stat and stat.isup else "down"),
+                "state": state or (("up" if stat.isup else "down") if stat else "unknown"),
                 "mac": mac if mac and mac != "00:00:00:00:00:00" else None,
                 "mtu": stat.mtu if stat else 0,
                 "is_up": bool(stat and stat.isup),

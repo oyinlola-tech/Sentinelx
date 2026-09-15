@@ -140,20 +140,23 @@ function RuleEditor({ state, onClose, onSaved }: { state: { mode: "create" | "ed
   const { can } = useSession();
   const toast = useToast();
   const { data: meta } = useSWR<FieldsResponse>("/rules/fields");
-  const { data: files } = useSWR<PcapFile[]>("/replay/files");
+  const { data: files } = useSWR<PcapFile[]>(can("analyst") ? "/replay/files" : null);
   const [definition, setDefinition] = useState(state.rule?.definition ?? TEMPLATE);
   const [validation, setValidation] = useState<{ valid: boolean; problems: string[] } | null>(null);
   const [target, setTarget] = useState("tests");
   const [result, setResult] = useState<RuleTestResult | null>(null);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const readOnly = state.mode === "view" || !can("admin");
+  // Validating and testing are analyst actions; viewers see the definition only.
+  const canTest = can("analyst");
 
   useEffect(() => {
+    if (!canTest) return;
     const handle = setTimeout(() => {
       api<{ valid: boolean; problems: string[] }>("/rules/validate", { method: "POST", json: { definition } }).then(setValidation).catch(() => setValidation(null));
     }, 400);
     return () => clearTimeout(handle);
-  }, [definition]);
+  }, [definition, canTest]);
 
   const targets = useMemo(() => [
     { value: "tests", label: "Embedded tests (positive and negative)" },
@@ -204,9 +207,9 @@ function RuleEditor({ state, onClose, onSaved }: { state: { mode: "create" | "ed
     >
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <div className="flex flex-col gap-2">
-          {state.rule?.origin === "file" && <p className="rounded-md border border-line-strong px-3 py-2 text-xs text-mist">Defined in <span className="font-mono">{state.rule.source_path}</span>. Edit that file to change it; you can test changes here without saving.</p>}
+          {state.rule?.origin === "file" && <p className="rounded-md border border-line-strong px-3 py-2 text-xs text-mist">Defined in <span className="font-mono">{state.rule.source_path}</span>. Edit that file to change it{can("analyst") ? "; you can test changes here without saving" : ""}.</p>}
           <Field label="Rule (YAML)" htmlFor="rule-yaml">
-            <Textarea id="rule-yaml" rows={18} value={definition} onChange={(event) => setDefinition(event.target.value)} aria-describedby="rule-validation" />
+            <Textarea id="rule-yaml" rows={18} value={definition} readOnly={!canTest} onChange={(event) => setDefinition(event.target.value)} aria-describedby="rule-validation" />
           </Field>
           <div id="rule-validation" role="status" aria-live="polite">
             {validation?.valid && <p className="flex items-center gap-1.5 text-xs text-ok"><CheckCircle2 className="size-3.5" aria-hidden />Valid rule</p>}
@@ -218,14 +221,18 @@ function RuleEditor({ state, onClose, onSaved }: { state: { mode: "create" | "ed
           </div>
         </div>
         <div className="flex min-w-0 flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <Field label="Test against" htmlFor="rule-target">
-              <Select id="rule-target" value={target} onChange={(event) => setTarget(event.target.value)}>
-                {targets.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </Select>
-            </Field>
-            <Button variant="secondary" icon={<FlaskConical className="size-4" />} loading={busy === "test"} disabled={validation?.valid === false} onClick={() => void test()}>Run test</Button>
-          </div>
+          {canTest ? (
+            <div className="flex flex-col gap-2">
+              <Field label="Test against" htmlFor="rule-target">
+                <Select id="rule-target" value={target} onChange={(event) => setTarget(event.target.value)}>
+                  {targets.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </Select>
+              </Field>
+              <Button variant="secondary" icon={<FlaskConical className="size-4" />} loading={busy === "test"} disabled={validation?.valid === false} onClick={() => void test()}>Run test</Button>
+            </div>
+          ) : (
+            <p className="rounded-md border border-line-strong px-3 py-2 text-xs text-mist">You have read-only access to rules. Analysts and administrators can validate this definition and test it against scenarios and captures.</p>
+          )}
           {result && <TestResult result={result} />}
           <details className="text-xs text-mist">
             <summary className="cursor-pointer text-frost">Fields and operators</summary>

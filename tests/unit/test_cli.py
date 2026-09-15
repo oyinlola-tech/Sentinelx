@@ -45,6 +45,21 @@ def test_fixtures_and_replay_json_is_clean_on_stdout(cli_env: Path) -> None:
     assert report["safety_note"].startswith("Replay responses are always simulated")
 
 
+def test_cli_replay_in_manual_approval_mode_shows_decisions_like_the_api(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RESPONSE_MODE", "manual_approval")
+    assert (
+        invoke("fixtures", "generate", "mixed_intrusion", "-o", str(cli_env / "fx")).exit_code == 0
+    )  # type: ignore[attr-defined]
+    result = CliRunner().invoke(
+        app, ["replay", str(cli_env / "fx" / "mixed_intrusion.pcap"), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "pending_approval" not in result.stdout
+    assert "simulated" in result.stdout
+
+
 def test_rules_validate_and_test_exit_codes(cli_env: Path, tmp_path: Path) -> None:
     assert invoke("rules", "validate").exit_code == 0  # type: ignore[attr-defined]
     bad = tmp_path / "bad.yml"
@@ -77,8 +92,25 @@ def test_status_and_doctor_json(cli_env: Path) -> None:
         "DETECTION ONLY"
     )
     doctor = CliRunner().invoke(app, ["doctor", "--json"])
-    checks = {c["check"]: c["status"] for c in json.loads(doctor.stdout)}
-    assert checks["rules"] == "ok" and checks["database"] == "ok" and checks["redis"] == "warn"
+    checks = {c["name"]: c["status"] for c in json.loads(doctor.stdout)}
+    assert checks["rules"] == "PASS" and checks["database"] == "PASS"
+    assert checks["redis"] == "WARN" and checks["pcap replay"] == "PASS"
+    # Nothing unavailable may be reported as passing.
+    assert checks["firewall backend"] != "PASS"
+
+
+def test_doctor_inspects_a_fresh_database_without_migrating_it(cli_env: Path) -> None:
+    doctor = CliRunner().invoke(app, ["doctor", "--json"])
+    checks = {c["name"]: c for c in json.loads(doctor.stdout)}
+    # A new SQLite file is reachable and is migrated when SentinelX starts: not a failure.
+    assert checks["database"]["status"] == "PASS"
+    assert checks["migrations"]["status"] == "WARN"
+    assert "migrated automatically" in checks["migrations"]["detail"]
+    import sqlite3
+
+    with sqlite3.connect(cli_env / "cli.db") as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    assert "alembic_version" not in tables
 
 
 def test_config_set_rejects_prevention_without_confirmation(
@@ -88,3 +120,24 @@ def test_config_set_rejects_prevention_without_confirmation(
     monkeypatch.setenv("RESPONSE_MODE", "automatic")
     result = CliRunner().invoke(app, ["config", "set", "response", "dry_run", "false"])
     assert result.exit_code == 1 and "ENABLE PREVENTION" in result.output
+
+
+def test_cli_never_prints_secrets(cli_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "cli-secret-0123456789abcdefghijklmnopqrstuvwxyz"
+    monkeypatch.setenv("JWT_SECRET", secret)
+    monkeypatch.setenv(
+        "RESPONSE__WEBHOOK_URL", "https://hooks.example.com/services/SECRETPATH?sig=abc"
+    )
+    shown = CliRunner().invoke(app, ["config", "--json"])
+    assert shown.exit_code == 0, shown.output
+    assert secret not in shown.output and "SECRETPATH" not in shown.output
+    data = json.loads(shown.stdout)
+    # Durations and policy with "token"/"password" in their names are not secrets.
+    assert isinstance(data["api"]["access_token_ttl_seconds"], int)
+    assert isinstance(data["api"]["password_min_length"], int)
+    # Rich tracebacks with locals printed the whole Settings object, secret included.
+    assert app.pretty_exceptions_show_locals is False
+    unknown = CliRunner().invoke(
+        app, ["rules", "test", str(REPO_RULES / "network-recon.yml"), "--scenario", "nope"]
+    )
+    assert unknown.exit_code == 2 and secret not in unknown.output

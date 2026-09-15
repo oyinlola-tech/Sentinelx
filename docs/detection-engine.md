@@ -27,7 +27,9 @@ For every captured frame the pipeline (`packages/sentinelx/pipeline.py`) does th
 3. `DetectionEngine.evaluate()` runs every enabled detector against that context and returns the detections that pass engine policy.
 4. Each detection goes on to threat intelligence, risk scoring, correlation and response.
 
-The feature extractor and the detection engine perform no I/O and read no wall clock: all windows are measured in packet capture time. Live capture, PCAP replay, the benchmark harness and unit tests therefore produce identical detections for identical input.
+The feature extractor and the detection engine perform no I/O and read no wall clock: all windows are measured in packet capture time, and every emitted detection is stamped with the capture time of the packet that triggered it. Live capture, PCAP replay, the benchmark harness and unit tests therefore produce identical detections, with identical timestamps, for identical input.
+
+Which detectors a pipeline gets is decided in one place, `packages/sentinelx/assembly.py`. Live capture (the platform), API and dashboard replays, `sentinelx replay`, `sentinelx monitor` and the benchmark all use it, so they run the same built-in detectors, custom rules, statistical and optional ML anomaly detectors and local threat-intelligence providers for the same configuration. See [Detection modes](#detection-modes).
 
 ## Feature extraction and source profiles
 
@@ -65,6 +67,12 @@ The scan structures are the exception. Distinct TCP destination ports and hosts 
 - **UDP service replies are not counted as scanning.** A UDP packet from a port below 1024 to a port at or above 1024 is treated as a server reply and is not added to `udp_ports`; otherwise every DNS resolver would look like a UDP scanner.
 - **DNS queries are classified once.** A query is added to `dns_suspicious` (keyed by its parent domain, the last two labels, or three when the second-to-last label has three characters or fewer) when its longest label is at least `dns_long_label_length`, or when its leftmost label is at least 20 characters and its entropy is at least `dns_high_entropy_threshold`.
 
+### Windows are expired before detectors read them
+
+Window structures drop old entries when something is added to them. A profile that did not receive a matching event on this packet could otherwise still hold entries from long ago: the attacker's `short_sessions` when the server's RST arrives, or `dns_suspicious` on an ordinary query. `SourceProfile.expire(now)` drops everything outside each window as of the current packet time. The feature extractor calls it on the sender's profile before returning the context, and `FeatureContext.profile_of(ip)` calls it on any other profile before handing it to a detector. Each call is amortised O(1).
+
+Without this, a detector could count stale activity: for example, `ssh_brute_force` could fire again on a new session using attempts that had left the window long before.
+
 ### Bounded memory
 
 An IDS is a resource-exhaustion target, so state is capped:
@@ -87,7 +95,7 @@ Counts and ratios in this vector cover W, except `unique_udp_ports`, which cover
 
 Code: `packages/sentinelx/detection/engine.py`.
 
-`DetectionEngine.evaluate(context)` calls `inspect()` on each enabled detector in order and passes any returned `Detection` through `_admit()`. Built-in detectors run first, in this order (cheap, precise detectors first): `denylist`, `tcp_flag_anomaly`, `tcp_port_scan`, `horizontal_scan`, `udp_scan`, `ssh_brute_force`, `syn_flood`, `connection_rate`, `icmp_flood`, `http_flood`, `dns_anomaly`. Detectors added later with `add_detector()` (the statistical and ML anomaly detectors, then one detector per custom rule) run after them.
+`DetectionEngine.evaluate(context)` calls `inspect()` on each enabled detector in order and passes any returned `Detection` through `_admit()`. Built-in detectors run first, in this order (cheap, precise detectors first): `denylist`, `tcp_flag_anomaly`, `tcp_port_scan`, `horizontal_scan`, `udp_scan`, `ssh_brute_force`, `syn_flood`, `connection_rate`, `icmp_flood`, `http_flood`, `dns_anomaly`. Detectors added later with `add_detector()` run after them, in the order they were added. The platform and API replays add the anomaly detectors and then one detector per custom rule; `sentinelx replay`, `sentinelx monitor` and the benchmark add rules first. Detectors are independent, so the order does not change which detections are produced.
 
 Four policies are applied by the engine so that no detector has to implement them.
 
@@ -125,37 +133,47 @@ Escalations are counted in `escalations`. Every emitted detection, escalated or 
 
 The reason for escalation: detectors fire as soon as a threshold is crossed, when evidence is thinnest. Without it, the record of a scan would stay frozen at "20 ports, confidence 0.6" while the scan grew to thousands of ports. Because confidence saturates below 1.0 and severity has five levels, each pair can escalate only a few times per cooldown. The test `test_cooldown_collapses_repeats_but_allows_escalation` in `tests/detection/test_detectors.py` pins this: a 1,200-packet ICMP flood produces between one and four `icmp_flood` detections, with more than 500 suppressed.
 
-Behaviour that persists after the cooldown has elapsed is reported again. Cooldown state is pruned of expired entries once it exceeds 100,000 pairs. The cooldown length is read when the engine is constructed, so a runtime change to it takes effect on the next start.
+Behaviour that persists after the cooldown has elapsed is reported again. Cooldown state is pruned of expired entries once it exceeds 100,000 pairs. The cooldown length is read from the settings on every evaluation, so a runtime change to `detection_cooldown_seconds` (dashboard or `PATCH /api/v1/config/detection`) takes effect immediately in the running server.
 
-For emitted detections the engine also increments the source profile's `detections_triggered`, the `sentinelx_detections_total{detector,severity,category}` metric, and logs a `detection` event.
+For emitted detections the engine also:
+
+- replaces the detection's `timestamp` with the capture time of the triggering packet (`context.now`), so a replay reproduces the original timeline, and the risk engine's history and the correlation engine's windows (see [architecture.md](architecture.md)) follow capture time rather than replay speed;
+- increments the source profile's `detections_triggered` and the `sentinelx_detections_total{detector,severity,category}` metric; and
+- logs a `detection` event.
 
 ### Engine statistics
 
-`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. On restart, `disabled_detectors` is applied to built-in detectors only, so a disabled `statistical_anomaly` or `ml_anomaly` detector comes back enabled. See [api.md](api.md).
+`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. On restart, a built-in detector named in `disabled_detectors` is created disabled, and `statistical_anomaly` or `ml_anomaly` named there is not attached at all. Because a detector that is not attached cannot be toggled (the endpoint returns 404), re-enable an anomaly detector after such a restart by removing its name from `detection.disabled_detectors` (for example with `PATCH /api/v1/config/detection`) and restarting. See [api.md](api.md).
 
 ## Detection modes
 
-`DETECTION_MODE` (nested form `DETECTION__MODE`; when both are set in the same place, environment or `.env`, the nested form wins) selects which built-in detectors are instantiated when the pipeline is built. Values are defined in `packages/sentinelx/common/enums.py` and applied in `default_detectors()` in `engine.py`.
+`DETECTION_MODE` (nested form `DETECTION__MODE`; both are read from the environment and from `.env`, the environment wins over `.env`, and the nested form wins when both are set at the same level) selects the detector set. Values are defined in `packages/sentinelx/common/enums.py`. Built-in detectors are selected by `default_detectors()` in `detection/engine.py`; rules and anomaly detectors are attached by `packages/sentinelx/assembly.py` (and, in the platform, by the rule service).
 
-| Value | Built-in detectors instantiated |
-|---|---|
-| `disabled` | None |
-| `signature_only` | `denylist` and `tcp_flag_anomaly` only (the detectors that match facts rather than rates) |
-| `balanced` (default) | All eleven built-in detectors |
-| `aggressive` | All eleven built-in detectors. No code currently reads this value, so it behaves exactly like `balanced`; thresholds are not changed |
+| Value | Built-in detectors | Custom rules | Statistical and ML anomaly detectors |
+|---|---|---|---|
+| `disabled` | none | none | none |
+| `signature_only` | `denylist` and `tcp_flag_anomaly` only (the detectors that match facts rather than rates) | attached | not attached |
+| `balanced` (default) | all eleven | attached | attached as configured |
+| `aggressive` | all eleven | attached | attached as configured |
 
-After the mode is applied:
+`aggressive` currently selects exactly the same detectors as `balanced` and changes no thresholds. It is reserved for more sensitive thresholds.
 
-- If `DETECTION__ENABLED_DETECTORS` is non-empty, only built-in detectors whose names appear in it are kept.
-- Built-in detectors named in `DETECTION__DISABLED_DETECTORS` are instantiated but start disabled.
+Within the mode:
 
-What the mode does not affect:
+- If `DETECTION__ENABLED_DETECTORS` is non-empty, only built-in detectors whose names appear in it are kept. It does not affect rules or anomaly detectors.
+- Built-in detectors named in `DETECTION__DISABLED_DETECTORS` are instantiated but start disabled. `statistical_anomaly` and `ml_anomaly` named there are not attached.
+- The statistical detector is attached when `ANOMALY__ENABLED=true`; the ML detector when `ANOMALY__ML_ENABLED=true` and a trusted model loads (see [Model file checks](#model-file-checks)).
+- In the platform and API replays, rules disabled in the dashboard or with `sentinelx rules` are left out. `sentinelx replay`, `sentinelx monitor` and the benchmark have no database and load every valid rule file from the rules directory.
 
-- **Custom rules** are attached regardless of mode, including `disabled`. Disable rules individually.
-- **The statistical anomaly detector** is attached whenever `ANOMALY__ENABLED=true`, and **the ML detector** whenever `ANOMALY__ML_ENABLED=true` and a trusted model loads, regardless of mode.
-- `enabled_detectors` and `disabled_detectors` are only consulted for built-in detectors when the engine is constructed.
+Built-in and anomaly detectors are chosen when the pipeline is constructed, so a mode change affects them on the next start. Rule detectors are rebuilt whenever the rule service re-applies rules (at startup and after a rule is created, changed, deleted or toggled), and that rebuild reads the current mode.
 
-The detector set is built once, when the pipeline is constructed, so a mode change takes effect on the next start.
+### Custom rules as detectors
+
+Each enabled rule becomes one `RuleDetector` named `rule:<id>`, subject to the same engine policy as built-in detectors. The rule format is documented in [rule-engine.md](rule-engine.md); three properties matter for the engine:
+
+- **Restricted YAML.** Rule files and rule definitions are parsed by `load_rule_yaml()` in `signatures/rules.py`, a `SafeLoader` that refuses YAML anchors and aliases and nesting deeper than 32 levels (`MAX_YAML_DEPTH`), so a small document cannot expand into a very large one. Rule files larger than 1 MiB are skipped.
+- **Validated tests.** The synthetic scenarios named in a rule's `tests` are checked with `validate_scenario_params()` when the rule is validated: unknown scenarios, unknown parameters, wrong types and out-of-range values (for example counts above 50,000, durations above 3,600 seconds, or a `dns_rate_spike` that would generate more than 2,000,000 packets) make the rule invalid. The same checks apply to scenarios requested through the API.
+- **Block duration.** A rule's `duration` is carried on its detections as `recommended_duration_seconds` and sets the length of the automatic block or rate limit.
 
 ## The Detection model
 
@@ -176,7 +194,8 @@ Every detector, whatever its method, returns the same frozen dataclass. That is 
 | `evidence` | list[Evidence] | Must be non-empty to pass the engine |
 | `destination_ip`, `source_port`, `destination_port`, `protocol` | optional | Taken from the triggering packet unless the detector overrides them |
 | `recommended_action` | ActionType | `alert` by default. A recommendation only; whether anything happens depends on risk and response settings |
-| `timestamp` | datetime | UTC time the object was created |
+| `recommended_duration_seconds` | int or None | How long an automatic `temporary_block` or `rate_limit` should last. Set from a custom rule's `duration`; `None` means `RESPONSE__DEFAULT_BLOCK_SECONDS`. See [response-engine.md](response-engine.md#action-types) |
+| `timestamp` | datetime | UTC capture time of the packet that triggered the detection, set by the engine when it admits the detection |
 | `detection_id` | str | Random hex identifier |
 | `rule_name` | str or None | Set for detections from custom rules |
 | `observation_window_seconds`, `packet_count` | optional | Size of the evidence window |
@@ -466,7 +485,7 @@ Code: `packages/sentinelx/anomaly/statistical.py` (`StatisticalAnomalyDetector`,
 
 Thresholds cannot be right for every network: 300 DNS queries per second is normal for a large resolver and alarming in a small office. The statistical detector learns what is normal for a set of network-wide metrics and reports departures.
 
-It is attached when `ANOMALY__ENABLED=true` (the default), independently of `DETECTION_MODE`.
+It is attached when `ANOMALY__ENABLED=true` (the default) and `DETECTION_MODE` is `balanced` or `aggressive`, unless `statistical_anomaly` is listed in `DETECTION__DISABLED_DETECTORS`.
 
 ### Metrics
 
@@ -507,6 +526,7 @@ The last rule resists baseline poisoning. If anomalous intervals were allowed to
 - `source_ip` is the top contributor to the metric in that interval: the source with the most SYNs, DNS queries or ICMP packets for the three per-protocol metrics, and the source with the most packets for the others.
 - Severity is high when the score is at least 0.97 and the top contributor produced at least half of the metric; otherwise medium.
 - Confidence is `min(0.85, 0.4 + 0.45 * score * max(share, 0.3))`, capped below the rule-based detectors because deviation is weaker evidence than a matched pattern.
+- The title is `Unusual <metric label>`, with the label's first letter lowercased unless it starts an acronym (for example `Unusual total packet rate`, `Unusual DNS query rate`, `Unusual TCP connection attempts`).
 - Action is always `alert`; category is `anomaly`.
 - Evidence: `metric`, `anomaly_score` (with the deviation in standard deviations), `baseline` (mean, stddev, samples), `top_contributor`.
 - The detection is returned on the packet that closed the interval, which may be up to one interval after the traffic it describes.
@@ -515,13 +535,13 @@ The last rule resists baseline poisoning. If anomalous intervals were allowed to
 
 ### Where it runs
 
-The statistical detector is attached by the live platform and by `sentinelx replay` (the CLI). Replays started through the API or dashboard build an isolated pipeline with rules only, without anomaly detectors. Baselines are in memory and start empty on every start.
+The statistical detector is attached through `assembly.py` everywhere a pipeline runs: the live platform, API and dashboard replays, `sentinelx replay`, `sentinelx monitor` and the benchmark. Each replay pipeline has its own detector instance, so a replay starts with an empty baseline and does not disturb the live one. Baselines are in memory and start empty on every start.
 
 ## Machine-learning anomaly detection
 
 Code: `packages/sentinelx/anomaly/ml.py` (`MlAnomalyDetector`, registered as `ml_anomaly`).
 
-The ML layer is optional and off by default (`ANOMALY__ML_ENABLED=false`). It scores per-source behaviour with a scikit-learn Isolation Forest trained on the sensor's own normal traffic. It finds combinations of behaviour that are rare on that network. Rare is not the same as malicious, attacks that resemble normal traffic are invisible to it, and its quality depends entirely on the training capture being clean. Its detections are leads for review, which is why they are capped at low confidence and always recommend `alert`.
+The ML layer is optional and off by default (`ANOMALY__ML_ENABLED=false`). Its dependencies (NumPy, scikit-learn and joblib) are not installed by default; install the `ml` extra, for example `pip install "sentinelx[ml]"` or `pip install -e ".[ml]"` (the Docker image includes it). Without them, training, saving and loading a model raise `ConfigurationError` naming the missing packages (`require_ml_dependencies()` in `anomaly/ml.py`), and `sentinelx doctor` reports a failed "machine learning" check when `ANOMALY__ML_ENABLED=true`. It scores per-source behaviour with a scikit-learn Isolation Forest trained on the sensor's own normal traffic. It finds combinations of behaviour that are rare on that network. Rare is not the same as malicious, attacks that resemble normal traffic are invisible to it, and its quality depends entirely on the training capture being clean. Its detections are leads for review, which is why they are capped at low confidence and always recommend `alert`.
 
 ### Feature vector
 
@@ -561,7 +581,7 @@ Model files are joblib pickles, and loading a pickle can execute code. `save_mod
 - its stored format is not `MODEL_FORMAT_VERSION`;
 - its stored feature list differs from the current feature list.
 
-These checks reduce the risk of loading a tampered model; they do not make it safe to load a model from an untrusted source. At startup, a model that fails any check is logged as `ml_model_unavailable` and the ML detector is left out; detection continues without it.
+The ML dependencies must also be installed. These checks reduce the risk of loading a tampered model; they do not make it safe to load a model from an untrusted source. When a pipeline is assembled, a model that fails any check is logged as `ml_model_unavailable` and the ML detector is left out; detection continues without it.
 
 ### Scoring at runtime
 
@@ -571,7 +591,7 @@ These checks reduce the risk of loading a tampered model; they do not make it sa
 - Severity is medium when the score is at least 0.95, otherwise low. Confidence is `min(0.6, 0.3 + 0.3 * score)`. Action is `alert`; category `anomaly`.
 - Evidence: `anomaly_score`, `model` (version, training time, samples, contamination), up to four `feature:<name>` items for the largest non-zero feature values (a heuristic, not a feature attribution), and `interpretation: lead`.
 
-The ML detector is attached only by the live platform at startup. `sentinelx replay` and API replays do not include it.
+The ML detector is attached through `assembly.py` wherever the statistical detector is: the live platform, API and dashboard replays, `sentinelx replay`, `sentinelx monitor` and the benchmark, when `ANOMALY__ML_ENABLED=true`, `DETECTION_MODE` is `balanced` or `aggressive`, `ml_anomaly` is not in `DETECTION__DISABLED_DETECTORS`, and the model loads.
 
 ## Writing a new detector
 
@@ -684,7 +704,8 @@ Every later packet of the same session also matches; the engine cooldown turns t
 ### Registering it
 
 - **As a library:** `DetectionEngine.add_detector(CleartextTelnetDetector(settings))`, or `Pipeline(settings, extra_detectors=[...])`. A detector added with the same name as an existing one replaces it.
-- **As a built-in:** add the class to `BUILTIN_DETECTORS` in `packages/sentinelx/detection/engine.py`, add any thresholds to `DetectionSettings` in `packages/sentinelx/config/settings.py` (they become `DETECTION__...` environment variables automatically), and, if the detector matches facts rather than rates, consider adding its name to `_SIGNATURE_DETECTORS` so it runs in `signature_only` mode.
+- **As a built-in:** add the class to `BUILTIN_DETECTORS` in `packages/sentinelx/detection/engine.py`, add any thresholds to `DetectionSettings` in `packages/sentinelx/config/settings.py` (they become `DETECTION__...` environment variables automatically), and, if the detector matches facts rather than rates, consider adding its name to `_SIGNATURE_DETECTORS` so it runs in `signature_only` mode. Built-in detectors reach every pipeline automatically.
+- **As an always-attached extra** (like the anomaly detectors): attach it in `packages/sentinelx/assembly.py`, so live capture, replays, the monitor and the benchmark all get it.
 
 If the logic can be expressed as a condition over existing fields, a YAML rule is simpler and needs no code; see [rule-engine.md](rule-engine.md).
 
@@ -694,7 +715,7 @@ If the logic can be expressed as a condition over existing fields, a YAML rule i
 
 ## Settings reference
 
-Settings live in `packages/sentinelx/config/settings.py`. Environment variables use a double underscore between section and field, are case-insensitive, and may be placed in `.env`. List values are given as JSON, for example `DETECTION__BRUTE_FORCE_PORTS='[22, 2222]'`. Most detection settings and some anomaly settings can also be changed while the server runs, from the dashboard or the API (see [api.md](api.md)). `sentinelx config set detection <key> <json-value>` persists a change that takes effect on the next server start.
+Settings live in `packages/sentinelx/config/settings.py`. Environment variables use a double underscore between section and field, are case-insensitive, and may be placed in `.env`. List values are given as JSON, for example `DETECTION__BRUTE_FORCE_PORTS='[22, 2222]'`. Every detection setting except `max_tracked_sources`, and some anomaly settings, can also be changed while the server runs, from the dashboard or `PATCH /api/v1/config/<section>` (see [api.md](api.md)). What a runtime change does depends on the setting: the cooldown, allowlist, denylist and thresholds read by detectors apply immediately; a window change rebuilds the feature extractor and discards traffic state; the mode and the detector lists apply to built-in and anomaly detectors at the next start. `sentinelx config set detection <key> <json-value>` persists a change that takes effect on the next server start.
 
 ### DetectionSettings
 
@@ -724,7 +745,7 @@ Settings live in `packages/sentinelx/config/settings.py`. Environment variables 
 | `DETECTION__DNS_LONG_LABEL_LENGTH` | `52` | 10-63 | `dns_anomaly`, profile classification |
 | `DETECTION__DNS_HIGH_ENTROPY_THRESHOLD` | `3.8` | >= 0 | `dns_anomaly`, profile classification |
 | `DETECTION__MAX_TRACKED_SOURCES` | `50000` | >= 100; not editable at runtime | Feature extractor |
-| `DETECTION__DETECTION_COOLDOWN_SECONDS` | `60.0` | >= 0 | Engine |
+| `DETECTION__DETECTION_COOLDOWN_SECONDS` | `60.0` | >= 0; runtime changes apply immediately | Engine |
 | `DETECTION__DENYLIST_NETWORKS` | `[]` | valid networks | `denylist` |
 | `DETECTION__ALLOWLIST_NETWORKS` | `[]` | valid networks | Engine |
 
@@ -734,13 +755,13 @@ All six window settings together determine W, which also caps the `within` windo
 
 | Environment variable | Default | Constraint | Meaning |
 |---|---|---|---|
-| `ANOMALY__ENABLED` | `true` | | Attach the statistical detector |
+| `ANOMALY__ENABLED` | `true` | | Attach the statistical detector (in `balanced` and `aggressive` modes) |
 | `ANOMALY__BASELINE_ALPHA` | `0.05` | 0.0-1.0 | EWMA decay; lower adapts more slowly |
 | `ANOMALY__MIN_SAMPLES` | `60` | >= 5 | Intervals before deviations are reported |
 | `ANOMALY__SAMPLE_INTERVAL_SECONDS` | `1.0` | > 0 | Interval length in packet time |
 | `ANOMALY__ANOMALY_THRESHOLD` | `0.85` | 0.0-1.0 | Score at or above which a metric is anomalous |
 | `ANOMALY__SIGMA_SATURATION` | `6.0` | > 0 | Deviation, in standard deviations, that maps to a score of 1.0 |
-| `ANOMALY__ML_ENABLED` | `false` | | Load the Isolation Forest model and attach `ml_anomaly` |
+| `ANOMALY__ML_ENABLED` | `false` | needs the `ml` extra | Load the Isolation Forest model and attach `ml_anomaly` (in `balanced` and `aggressive` modes) |
 | `ANOMALY__ML_MODEL_PATH` | `models/isolation_forest.joblib` | | Model file to load, and default training output |
 | `ANOMALY__ML_CONTAMINATION` | `0.02` | > 0, < 0.5 | Defined but not read by `sentinelx anomaly train`; use `--contamination` |
 | `ANOMALY__ML_MIN_SCORE` | `0.75` | 0.0-1.0 | Normalised score at or above which `ml_anomaly` reports |
@@ -749,7 +770,7 @@ All six window settings together determine W, which also caps the `within` windo
 
 Defaults are tuned against the synthetic scenarios in `packages/sentinelx/testing/scenarios.py` and the benchmark in [benchmarking.md](benchmarking.md). They are starting points. To tune for a site:
 
-1. Capture a period of known-normal traffic and replay it with `sentinelx replay <file>`. Anything reported is a false positive to tune away, or an allowlist candidate.
+1. Capture a period of known-normal traffic and replay it with `sentinelx replay <file>`. Anything reported is a false positive to tune away, or an allowlist candidate. The replay runs the same detector set as the live sensor.
 2. Replay attack traffic, or scenario captures written with `sentinelx fixtures generate`, and confirm it is still detected.
 3. Lowering thresholds or lengthening windows catches slower attacks at the cost of more false positives and more state per source. Lengthening any window also lengthens W for every profile.
 
@@ -769,5 +790,5 @@ These are properties of the current design, not configuration mistakes.
 - **Heuristics produce false positives.** Short-lived sessions to monitored ports can come from health checks and monitoring systems; high-entropy DNS names come from some CDNs and security products. Use the allowlist, tune thresholds, or disable detectors that do not fit the network.
 - **The statistical detector starts cold.** Baselines are in memory; after every restart there is a warm-up of `min_samples` intervals with no statistical detections, and a baseline learned during an attack will treat that attack as normal.
 - **The ML model is only as good as its training data.** A capture that contains an attack teaches the model that the attack is normal. The model is not retrained online.
-- **Anomaly detectors are not included in every replay path.** CLI replays include the statistical detector but not the ML detector; API and dashboard replays include neither.
-- **`aggressive` mode has no distinct behaviour** in the current release.
+- **`aggressive` mode has no distinct behaviour** in the current release; it selects the same detectors as `balanced`.
+- **Replayed detections are filed at capture time.** A replay of an older capture produces detections, incidents and risk history dated when the traffic was captured. Time-filtered views such as the dashboard's default "last 24 hours" do not show them (`scripts/seed_demo.py` shifts scenario timestamps to the present for that reason), and stored detections older than `STORAGE__RETENTION_DAYS` are deleted by the next retention run, which first runs 60 seconds after the server starts.

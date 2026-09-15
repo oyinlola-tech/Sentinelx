@@ -18,7 +18,7 @@ $(BIN)/python:
 
 .PHONY: install
 install: $(BIN)/python ## Install backend (editable, with dev tools) and dashboard dependencies
-	$(BIN)/pip install -e ".[dev]"
+	$(BIN)/pip install -e ".[dev,ml]"
 	cd $(DASH) && npm ci
 	@test -f .env || (cp .env.example .env && echo "created .env from .env.example - review it")
 

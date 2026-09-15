@@ -33,6 +33,15 @@ async def status(principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
     return report
 
 
+@router.get(
+    "/system/capabilities",
+    tags=["system"],
+    summary="What this host can do: live capture, PCAP replay, firewall control, blocking",
+)
+async def capabilities(principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
+    return await platform.capabilities()
+
+
 @router.get("/sensors", tags=["sensors"])
 async def sensors(principal: Viewer, platform: PlatformDep) -> list[dict[str, Any]]:
     _, sensor, _, _ = platform.require()
@@ -96,8 +105,9 @@ async def prometheus(request: Request, platform: PlatformDep) -> Response:
     token = platform.settings.api.metrics_token
     if token:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        # Compare bytes: str comparison raises on non-ASCII input.
-        if not hmac.compare_digest(supplied.encode(), token.encode()):
+        # Compare the raw header bytes (Starlette decodes headers as Latin-1) with the
+        # UTF-8 token: str comparison raises on non-ASCII input.
+        if not hmac.compare_digest(supplied.encode("latin-1"), token.encode()):
             raise HTTPException(status_code=401, detail="metrics token required")
     else:
         # Without a token, only a scraper on this host may read metrics. A request that
@@ -146,7 +156,7 @@ async def audit(
     target: str | None = Query(default=None, max_length=512),
     since: datetime | None = None,
     limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
 ) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     return await queries.audit(

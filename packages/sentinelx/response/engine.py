@@ -30,7 +30,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sentinelx.common.enums import ActionType, ResponseMode
@@ -50,6 +50,14 @@ log = get_logger(__name__)
 
 #: Receives one audit record per decision. Storage supplies the real implementation.
 AuditSink = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+#: Webhooks waiting for delivery; beyond this they are dropped and counted.
+WEBHOOK_QUEUE_SIZE = 200
+
+#: Approval requests kept at once, and how long one stays actionable.
+MAX_PENDING_APPROVALS = 1000
+PENDING_APPROVAL_TTL = timedelta(hours=24)
 
 
 @dataclass(slots=True)
@@ -82,7 +90,7 @@ class PendingAction:
         }
 
 
-def decision_payload(decision: ResponseDecision) -> dict[str, Any]:
+def decision_payload(decision: ResponseDecision, replay_id: str | None = None) -> dict[str, Any]:
     return {
         "decision_id": decision.decision_id,
         "action": decision.action.value,
@@ -97,6 +105,7 @@ def decision_payload(decision: ResponseDecision) -> dict[str, Any]:
         "incident_id": decision.incident_id,
         "error": decision.error,
         "decided_at": decision.decided_at.isoformat(),
+        "replay_id": replay_id,
     }
 
 
@@ -136,6 +145,12 @@ class ResponseEngine:
         self._reaper: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self._firewall_ready = False
+        self.replay_id: str | None = None
+        """Tags published decisions while a capture is being replayed."""
+        self._webhook_worker: asyncio.Task[None] | None = None
+        self._webhooks: asyncio.Queue[tuple[Detection, RiskAssessment]] = asyncio.Queue(
+            maxsize=WEBHOOK_QUEUE_SIZE
+        )
 
     # ------------------------------------------------------------- lifecycle
 
@@ -160,6 +175,10 @@ class ResponseEngine:
         metrics.blocked_addresses.set(len(self._blocks))
         if self._reaper is None or self._reaper.done():
             self._reaper = asyncio.create_task(self._reap_expired(), name="response-reaper")
+        if self._webhook_worker is None or self._webhook_worker.done():
+            self._webhook_worker = asyncio.create_task(
+                self._deliver_webhooks(), name="response-webhooks"
+            )
         log.info(
             "response_engine_started",
             mode=self.settings.mode.value,
@@ -169,11 +188,12 @@ class ResponseEngine:
         )
 
     async def stop(self) -> None:
-        reaper, self._reaper = self._reaper, None
-        if reaper is not None:
-            reaper.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reaper
+        for task in (self._reaper, self._webhook_worker):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._reaper = self._webhook_worker = None
 
     # ------------------------------------------------------ automatic path
 
@@ -195,7 +215,7 @@ class ResponseEngine:
         decisions.append(await self._finalise(alert, source="engine"))
 
         if self.settings.webhook_url and risk.score >= self.settings.webhook_min_risk:
-            decisions.append(await self._webhook(detection, risk))
+            decisions.append(self._queue_webhook(detection, risk))
 
         action = detection.recommended_action
         if not action.is_preventive or action is ActionType.UNBLOCK_IP:
@@ -320,7 +340,13 @@ class ResponseEngine:
                 incident_id=incident_id,
                 evidence=evidence or [],
             )
+            self._prune_pending()
             if not any(p.target == target and p.action is action for p in self.pending.values()):
+                if len(self.pending) >= MAX_PENDING_APPROVALS:
+                    # Keep the newest requests; the oldest is the least likely to still matter.
+                    oldest = min(self.pending.values(), key=lambda p: p.created_at)
+                    self.pending.pop(oldest.action_id)
+                    log.warning("pending_approval_evicted", target=oldest.target)
                 self.pending[pending.action_id] = pending
                 if self.bus:
                     await self.bus.publish(EventType.RESPONSE_PENDING_APPROVAL, pending.as_dict())
@@ -370,8 +396,10 @@ class ResponseEngine:
         """Approve a queued action.
 
         Raises:
-            KeyError: when no pending action has that id.
+            KeyError: when no pending action has that id, or it is older than
+                :data:`PENDING_APPROVAL_TTL` (expired requests cannot be approved).
         """
+        self._prune_pending()
         pending = self.pending.pop(action_id)
         return await self.manual_action(
             pending.action,
@@ -382,7 +410,18 @@ class ResponseEngine:
             source="approval",
         )
 
+    def pending_actions(self) -> list[PendingAction]:
+        """Queued actions that can still be approved, oldest first."""
+        self._prune_pending()
+        return sorted(self.pending.values(), key=lambda p: p.created_at)
+
+    def _prune_pending(self) -> None:
+        cutoff = datetime.now(UTC) - PENDING_APPROVAL_TTL
+        for action_id in [a for a, p in self.pending.items() if p.created_at < cutoff]:
+            self.pending.pop(action_id)
+
     async def reject(self, action_id: str, *, actor: str, reason: str = "") -> PendingAction:
+        self._prune_pending()
         pending = self.pending.pop(action_id)
         await self._audit_record(
             {
@@ -513,7 +552,7 @@ class ResponseEngine:
             return decision  # alerts are the detection itself; auditing each would duplicate it
         if not record:
             return decision
-        payload = decision_payload(decision)
+        payload = decision_payload(decision, self.replay_id)
         if self.bus:
             await self.bus.publish(EventType.RESPONSE_DECIDED, payload)
         if decision.action.is_preventive:
@@ -546,6 +585,36 @@ class ResponseEngine:
             log.exception(
                 "audit_write_failed", action=record.get("action"), target=record.get("target")
             )
+
+    def _queue_webhook(self, detection: Detection, risk: RiskAssessment) -> ResponseDecision:
+        """Hand a webhook to the delivery worker without waiting on the network.
+
+        The detection path must never wait on a slow or unreachable receiver. When the
+        queue is full the webhook is dropped and counted.
+        """
+        decision = ResponseDecision(
+            action=ActionType.WEBHOOK,
+            target=webhook_display(self.settings.webhook_url),
+            reason=f"{detection.title}: queued for delivery",
+            executed=False,
+            dry_run=False,
+            detection_id=detection.detection_id,
+        )
+        try:
+            self._webhooks.put_nowait((detection, risk))
+        except asyncio.QueueFull:
+            metrics.webhook_failures.inc()
+            log.warning("webhook_queue_full", dropped=detection.detection_id)
+            return replace(decision, error="webhook queue full; delivery skipped")
+        return decision
+
+    async def _deliver_webhooks(self) -> None:
+        while True:
+            detection, risk = await self._webhooks.get()
+            try:
+                await self._webhook(detection, risk)
+            except Exception:  # the worker must keep delivering whatever one call does
+                log.exception("webhook_worker_error")
 
     async def _webhook(self, detection: Detection, risk: RiskAssessment) -> ResponseDecision:
         import httpx

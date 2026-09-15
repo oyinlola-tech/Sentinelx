@@ -128,6 +128,7 @@ def train_model(
         raise ValueError(
             f"need at least 50 training samples, got {len(vectors)}; capture more normal traffic"
         )
+    require_ml_dependencies()
     import numpy as np
     from sklearn.ensemble import IsolationForest
 
@@ -151,7 +152,27 @@ def train_model(
     )
 
 
+def require_ml_dependencies() -> None:
+    """Raise a clear error when the optional machine-learning packages are missing.
+
+    Raises:
+        ConfigurationError: naming the extra to install.
+    """
+    import importlib.util
+
+    missing = [
+        name for name in ("numpy", "sklearn", "joblib") if importlib.util.find_spec(name) is None
+    ]
+    if missing:
+        raise ConfigurationError(
+            "the optional machine-learning detector needs "
+            + ", ".join(missing)
+            + ' (install with: pip install "sentinelx[ml]")'
+        )
+
+
 def save_model(bundle: ModelBundle, path: Path) -> None:
+    require_ml_dependencies()
     import joblib
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +203,7 @@ def load_model(path: Path) -> ModelBundle:
             f"model file not found: {path}; train one with 'sentinelx anomaly train'"
         )
     _check_file_is_trusted(path)
+    require_ml_dependencies()
     import joblib
 
     data = joblib.load(path)

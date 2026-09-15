@@ -1,4 +1,4 @@
-import { Ban, CheckCircle2, CircleDashed, Clock3, FlaskConical, ShieldAlert, XCircle } from "lucide-react";
+import { Ban, BellRing, CheckCircle2, CircleDashed, Clock3, FlaskConical, ShieldAlert, XCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { bandColor, bandFor, humanise, severityColor } from "@/lib/format";
 import type { Evidence, ResponseAction, Risk, Severity } from "@/lib/types";
@@ -140,8 +140,14 @@ const OUTCOMES: Record<ResponseAction["outcome"], { label: string; icon: ReactNo
   pending_approval: { label: "Awaiting approval", icon: <Clock3 className="size-3" />, className: "text-iris border-iris/40" },
 };
 
-export function OutcomeBadge({ outcome }: { outcome: ResponseAction["outcome"] }) {
-  const meta = OUTCOMES[outcome] ?? OUTCOMES.skipped;
+const ALERT_RAISED = { label: "Alert raised", icon: <BellRing className="size-3" />, className: "text-mist border-line-strong" };
+
+/**
+ * Outcome of a response decision. Pass `action` whenever it is known: an "alert"
+ * decision that executed only raised an alert, and must not look like an applied block.
+ */
+export function OutcomeBadge({ outcome, action }: { outcome: ResponseAction["outcome"]; action?: string }) {
+  const meta = action === "alert" && outcome === "executed" ? ALERT_RAISED : (OUTCOMES[outcome] ?? OUTCOMES.skipped);
   return (
     <span className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-px text-2xs font-medium ${meta.className}`}>
       <span aria-hidden>{meta.icon}</span>

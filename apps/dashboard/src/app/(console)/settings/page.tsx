@@ -1,17 +1,17 @@
 "use client";
 
-import { AlertOctagon, KeyRound, ShieldAlert, UserPlus } from "lucide-react";
+import { AlertOctagon, KeyRound, ShieldAlert, Trash2, UserPlus } from "lucide-react";
 import { useState } from "react";
 import useSWR from "swr";
 import { PageHeader } from "@/components/shell/page-header";
-import { Button, Dialog, EmptyState, ErrorState, Field, Input, Panel, Select, TableSkeleton, Textarea } from "@/components/ui/primitives";
+import { Button, Dialog, EmptyState, ErrorState, Field, Input, Panel, Select, Skeleton, TableSkeleton, Textarea } from "@/components/ui/primitives";
 import { Mono } from "@/components/ui/security";
 import { useToast } from "@/components/ui/toast";
 import { ApiError, api } from "@/lib/api";
 import { useEventRefresh } from "@/lib/events";
 import { ago, humanise } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import type { ConfigView, Role, User } from "@/lib/types";
+import type { ConfigView, PlatformCapabilities, Role, User } from "@/lib/types";
 
 type Kind = "number" | "text" | "list" | "bool" | "select";
 interface Spec { key: string; label: string; hint?: string; kind: Kind; options?: string[] }
@@ -101,7 +101,7 @@ export default function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description={readOnly ? "You can view settings. Only administrators can change them." : "Changes apply immediately, are saved across restarts, and are recorded in the audit log."} />
+      <PageHeader title="Settings" description={readOnly ? "You can view settings. Only administrators can change them." : "Changes apply immediately and are recorded in the audit log. They are kept across restarts, except response mode and dry run when the server environment sets them: the environment wins, so prevention can always be switched off there."} />
       <div className="grid gap-6 lg:grid-cols-[12rem_minmax(0,1fr)]">
         <nav aria-label="Settings sections" className="lg:sticky lg:top-20 lg:self-start">
           <ul className="flex flex-wrap gap-1 lg:flex-col">
@@ -112,6 +112,7 @@ export default function SettingsPage() {
         </nav>
         <div className="flex min-w-0 flex-col gap-4">
           <HealthPanel />
+          <CapabilitiesPanel />
           {data ? <ResponsePanel key={`${String(data.settings.response?.mode)}:${String(data.settings.response?.dry_run)}`} view={data} readOnly={readOnly} onSaved={() => void mutate()} /> : <Panel><TableSkeleton rows={3} /></Panel>}
           {data ? SECTIONS.map((spec) => <SectionForm key={`${spec.id}:${JSON.stringify(spec.fields.map((field) => data.settings[spec.section]?.[field.key]))}`} spec={spec} view={data} readOnly={readOnly} onSaved={() => void mutate()} />) : null}
           {can("admin") && <UsersPanel />}
@@ -207,7 +208,10 @@ function ResponsePanel({ view, readOnly, onSaved }: { view: ConfigView; readOnly
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const wouldEnable = mode === "automatic" && !dryRun && !view.safety.prevention_active;
+  // Same rule as the server: turning dry run off (manual blocks and approvals become
+  // real) or switching automatic prevention on both need the typed confirmation.
+  const enablesAutomatic = mode === "automatic" && !dryRun && !view.safety.prevention_active;
+  const wouldEnable = enablesAutomatic || (Boolean(response.dry_run) && !dryRun);
   const changed = mode !== response.mode || dryRun !== response.dry_run;
   const backend = view.safety.firewall_backend;
 
@@ -216,7 +220,11 @@ function ResponsePanel({ view, readOnly, onSaved }: { view: ConfigView; readOnly
     setProblem(null);
     try {
       await api("/config/response", { method: "PATCH", json: { changes: { mode, dry_run: dryRun }, confirmation } });
-      toast(wouldEnable ? "info" : "success", wouldEnable ? "Prevention enabled" : "Response settings saved", wouldEnable ? `SentinelX may now change the ${backend} firewall automatically.` : undefined);
+      toast(
+        wouldEnable ? "info" : "success",
+        enablesAutomatic ? "Prevention enabled" : wouldEnable ? "Enforcement enabled" : "Response settings saved",
+        enablesAutomatic ? `SentinelX may now change the ${backend} firewall automatically.` : wouldEnable ? `Blocks and approvals will now change the ${backend} firewall.` : undefined,
+      );
       setConfirmOpen(false);
       setPhrase("");
       onSaved();
@@ -254,7 +262,7 @@ function ResponsePanel({ view, readOnly, onSaved }: { view: ConfigView; readOnly
       {!readOnly && (
         <div className="mt-4 flex gap-3">
           {wouldEnable ? (
-            <Button variant="danger" icon={<ShieldAlert className="size-4" />} disabled={!changed} onClick={() => setConfirmOpen(true)}>Enable prevention…</Button>
+            <Button variant="danger" icon={<ShieldAlert className="size-4" />} disabled={!changed} onClick={() => setConfirmOpen(true)}>{enablesAutomatic ? "Enable prevention…" : "Turn off dry run…"}</Button>
           ) : (
             <Button variant="primary" size="sm" disabled={!changed} loading={busy} onClick={() => void apply()}>Save response mode</Button>
           )}
@@ -263,13 +271,17 @@ function ResponsePanel({ view, readOnly, onSaved }: { view: ConfigView; readOnly
       <Dialog
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
-        title="Enable automatic prevention"
-        footer={<><Button variant="ghost" onClick={() => setConfirmOpen(false)}>Keep detection only</Button><Button variant="danger" loading={busy} disabled={phrase !== view.safety.confirmation_phrase} onClick={() => void apply(phrase)}>Enable prevention</Button></>}
+        title={enablesAutomatic ? "Enable automatic prevention" : "Turn off dry run"}
+        footer={<><Button variant="ghost" onClick={() => setConfirmOpen(false)}>Keep dry run</Button><Button variant="danger" loading={busy} disabled={phrase !== view.safety.confirmation_phrase} onClick={() => void apply(phrase)}>{enablesAutomatic ? "Enable prevention" : "Turn off dry run"}</Button></>}
       >
         <div className="flex flex-col gap-4 text-sm">
           <div className="flex gap-3 rounded-md border border-sev-critical/50 bg-sev-critical/10 p-3 text-sev-critical">
             <AlertOctagon className="mt-0.5 size-5 shrink-0" aria-hidden />
-            <p>SentinelX will modify the <strong>{backend}</strong> firewall on this host without asking, for any source whose risk reaches <strong>{String(view.settings.scoring?.auto_block_threshold)}</strong>. A misconfigured threshold can block legitimate users.</p>
+            {enablesAutomatic ? (
+              <p>SentinelX will modify the <strong>{backend}</strong> firewall on this host without asking, for any source whose risk reaches <strong>{String(view.settings.scoring?.auto_block_threshold)}</strong>. A misconfigured threshold can block legitimate users.</p>
+            ) : (
+              <p>Blocks made from this dashboard, the API or the CLI, and approved responses, will modify the <strong>{backend}</strong> firewall on this host. {mode === "automatic" ? "" : "Automatic responses stay off."}</p>
+            )}
           </div>
           <ul className="list-inside list-disc text-mist">
             <li>Loopback, this host&apos;s addresses, management addresses and the allowlist are never blocked.</li>
@@ -285,6 +297,53 @@ function ResponsePanel({ view, readOnly, onSaved }: { view: ConfigView; readOnly
   );
 }
 
+function CapabilitiesPanel() {
+  const { data, error, mutate } = useSWR<PlatformCapabilities>("/system/capabilities", { refreshInterval: 60_000 });
+  const rows: [string, keyof PlatformCapabilities["capabilities"]][] = [
+    ["Detection engine", "detection_engine"],
+    ["PCAP replay", "pcap_replay"],
+    ["Live capture", "live_capture"],
+    ["Packet capture backend", "packet_capture"],
+    ["Interface enumeration", "interface_enumeration"],
+    ["Firewall control", "firewall"],
+    ["Automatic blocking", "automatic_blocking"],
+    ["Privileged access", "privileged_access"],
+  ];
+  return (
+    <Panel id="capabilities" title="Platform capabilities" eyebrow={data ? data.environment.label : undefined}>
+      {error ? (
+        <ErrorState error={error} onRetry={() => void mutate()} />
+      ) : !data ? (
+        <Skeleton className="h-40" />
+      ) : (
+        <>
+          <p className="mb-3 max-w-2xl text-sm text-mist">What this server can do on this host, detected when you open this page (also available as <Mono>sentinelx capabilities</Mono>).</p>
+          <div className="overflow-x-auto">
+            <table className="data-table min-w-[36rem]">
+              <thead><tr><th scope="col">Capability</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
+              <tbody>
+                {rows.map(([label, key]) => {
+                  const capability = data.capabilities[key];
+                  return (
+                    <tr key={key}>
+                      <th scope="row" className="text-left font-normal text-frost">{label}</th>
+                      <td><span className={`font-mono text-2xs ${capability.available ? "text-ok" : "text-sev-medium"}`}>{capability.status}</span></td>
+                      <td className="text-xs text-mist">
+                        {capability.detail}
+                        {!capability.available && capability.remedy && <span className="block text-fog">To enable: {capability.remedy}</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
 interface StatusReport { status: string; version: string; safety: string; components: Record<string, Record<string, unknown> & { ok?: boolean }>; process: { cpu_percent: number; memory_bytes: number; uptime_seconds: number } }
 
 function HealthPanel() {
@@ -293,37 +352,50 @@ function HealthPanel() {
   return (
     <Panel id="health" title="Health" bodyClassName="p-0">
       {error ? <ErrorState error={error} onRetry={() => void mutate()} /> : !data ? <TableSkeleton rows={4} columns={3} /> : (
-        <table className="data-table">
-          <thead><tr><th scope="col">Component</th><th scope="col">State</th><th scope="col">Detail</th></tr></thead>
-          <tbody>
-            {Object.entries(data.components).filter(([name]) => name !== "sensor").map(([name, component]) => {
-              const degraded = component.degraded === true;
-              const ok = component.ok !== false && !degraded;
-              const detail = name === "event_bus" ? `${component.published} published · ${component.dropped} dropped · ${component.subscribers} subscribers`
-                : name === "rules" ? ((component.problems as string[] | undefined)?.join("; ") || "all rules valid")
-                : name === "redis" ? (degraded ? "unreachable: rate limits and tickets are per-process" : "connected")
-                : name === "persister" ? `${component.written} events written · ${component.failed_batches} failed batches`
-                : name === "firewall" ? `${component.backend}${component.enforcing ? " · enforcing" : " · not enforcing"}${component.error ? ` · ${component.error}` : ""}`
-                : String(component.url ?? component.dialect ?? "");
-              return (
-                <tr key={name}>
-                  <td className="capitalize">{humanise(name)}</td>
-                  <td className={ok ? "text-ok" : degraded ? "text-sev-medium" : "text-sev-high"}>{ok ? "ok" : degraded ? "degraded" : "failing"}</td>
-                  <td className="max-w-lg truncate font-mono text-xs text-mist" title={detail}>{detail}</td>
-                </tr>
-              );
-            })}
-            <tr>
-              <td>Process</td>
-              <td className="text-ok">v{data.version}</td>
-              <td className="font-mono text-xs text-mist">{data.process.cpu_percent.toFixed(1)}% CPU · {(data.process.memory_bytes / 1_048_576).toFixed(0)} MB · up {Math.round(data.process.uptime_seconds / 60)} min</td>
-            </tr>
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead><tr><th scope="col">Component</th><th scope="col">State</th><th scope="col">Detail</th></tr></thead>
+            <tbody>
+              {Object.entries(data.components).filter(([name]) => name !== "sensor").map(([name, component]) => {
+                const degraded = component.degraded === true;
+                const ok = component.ok !== false && !degraded;
+                const detail = name === "event_bus" ? `${component.published} published · ${component.dropped} dropped · ${component.subscribers} subscribers`
+                  : name === "rules" ? ((component.problems as string[] | undefined)?.join("; ") || "all rules valid")
+                  : name === "redis" ? (degraded ? "unreachable: rate limits and tickets are per-process" : "connected")
+                  : name === "persister" ? `${component.written} events written · ${component.failed_batches} failed batches`
+                  : name === "firewall" ? `${component.backend}${component.enforcing ? " · enforcing" : " · not enforcing"}${component.error ? ` · ${component.error}` : ""}`
+                  : String(component.url ?? component.dialect ?? "");
+                return (
+                  <tr key={name}>
+                    <td className="capitalize">{humanise(name)}</td>
+                    <td className={ok ? "text-ok" : degraded ? "text-sev-medium" : "text-sev-high"}>{ok ? "ok" : degraded ? "degraded" : "failing"}</td>
+                    <td className="max-w-lg truncate font-mono text-xs text-mist" title={detail}>{detail}</td>
+                  </tr>
+                );
+              })}
+              <tr>
+                <td>Process</td>
+                <td className="text-ok">v{data.version}</td>
+                <td className="font-mono text-xs text-mist">{data.process.cpu_percent.toFixed(1)}% CPU · {(data.process.memory_bytes / 1_048_576).toFixed(0)} MB · up {Math.round(data.process.uptime_seconds / 60)} min</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       )}
     </Panel>
   );
 }
+
+type UserChange =
+  | { kind: "role"; user: User; role: Role }
+  | { kind: "active"; user: User; active: boolean }
+  | { kind: "delete"; user: User };
+
+const ROLE_ABILITIES: Record<Role, string> = {
+  viewer: "read detections, incidents and settings, but not change anything",
+  analyst: "triage detections and incidents, test rules and replay captures",
+  admin: "change rules, the firewall, settings and user accounts",
+};
 
 function UsersPanel() {
   const toast = useToast();
@@ -331,6 +403,7 @@ function UsersPanel() {
   const { data, error, mutate } = useSWR<User[]>("/users");
   const [creating, setCreating] = useState(false);
   const [resetting, setResetting] = useState<User | null>(null);
+  const [change, setChange] = useState<UserChange | null>(null);
   const [form, setForm] = useState({ username: "", password: "", role: "viewer" as Role });
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -350,43 +423,103 @@ function UsersPanel() {
     }
   }
 
+  async function applyChange() {
+    if (!change) return;
+    const { user } = change;
+    const done =
+      change.kind === "role"
+        ? await act(() => api(`/users/${user.id}`, { method: "PATCH", json: { role: change.role } }), `${user.username} is now ${change.role}`)
+        : change.kind === "active"
+          ? await act(() => api(`/users/${user.id}`, { method: "PATCH", json: { is_active: change.active } }), `${user.username} ${change.active ? "reactivated" : "deactivated"}`)
+          : await act(() => api(`/users/${user.id}`, { method: "DELETE" }), `Deleted ${user.username}`);
+    if (done) setChange(null);
+  }
+
+  async function createUser() {
+    if (await act(() => api("/users", { method: "POST", json: form }), `Created ${form.username}`)) {
+      setCreating(false);
+      setForm({ username: "", password: "", role: "viewer" });
+    }
+  }
+
+  const changeTitle = !change ? "" : change.kind === "role" ? `Change role for ${change.user.username}` : change.kind === "active" ? `${change.active ? "Reactivate" : "Deactivate"} ${change.user.username}` : `Delete ${change.user.username}`;
+  const changeLabel = !change ? "" : change.kind === "role" ? `Make ${change.role}` : change.kind === "active" ? (change.active ? "Reactivate user" : "Deactivate user") : "Delete user";
+  // Deleting, deactivating, granting admin and removing permissions get the danger style.
+  const rank: Record<Role, number> = { viewer: 0, analyst: 1, admin: 2 };
+  const destructive = change !== null && (change.kind === "delete" || (change.kind === "active" && !change.active) || (change.kind === "role" && (change.role === "admin" || rank[change.role] < rank[change.user.role])));
+
   return (
     <Panel id="users" title="Users" bodyClassName="p-0" actions={<Button size="sm" variant="secondary" icon={<UserPlus className="size-3.5" />} onClick={() => setCreating(true)}>Add user</Button>}>
       {error ? <ErrorState error={error} onRetry={() => void mutate()} /> : !data ? <TableSkeleton rows={3} /> : (
-        <table className="data-table">
-          <thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Active</th><th scope="col">Last sign-in</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
-          <tbody>
-            {data.map((user) => (
-              <tr key={user.id}>
-                <td>{user.username}{user.id === me?.id && <span className="ml-2 text-2xs text-fog">you</span>}{user.must_change_password && <span className="ml-2 text-2xs text-sev-medium">must change password</span>}</td>
-                <td>
-                  <Select aria-label={`Role for ${user.username}`} value={user.role} disabled={busy || user.id === me?.id} onChange={(event) => void act(() => api(`/users/${user.id}`, { method: "PATCH", json: { role: event.target.value } }), `${user.username} is now ${event.target.value}`)} className="h-7 w-28 text-xs">
-                    {(["viewer", "analyst", "admin"] as Role[]).map((role) => <option key={role} value={role}>{role}</option>)}
-                  </Select>
-                </td>
-                <td>
-                  <input type="checkbox" aria-label={`${user.is_active ? "Deactivate" : "Activate"} ${user.username}`} checked={user.is_active} disabled={busy || user.id === me?.id} onChange={(event) => void act(() => api(`/users/${user.id}`, { method: "PATCH", json: { is_active: event.target.checked } }), `${user.username} ${event.target.checked ? "activated" : "deactivated"}`)} className="size-4 accent-[var(--color-iris)]" />
-                </td>
-                <td><Mono className="text-mist">{ago(user.last_login_at)}</Mono></td>
-                <td className="text-right"><Button size="sm" variant="ghost" icon={<KeyRound className="size-3.5" />} onClick={() => setResetting(user)}>Reset password</Button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Active</th><th scope="col">Last sign-in</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+            <tbody>
+              {data.map((user) => {
+                const self = user.id === me?.id;
+                return (
+                  <tr key={user.id}>
+                    <td className="whitespace-nowrap">{user.username}{self && <span className="ml-2 text-2xs text-fog">you</span>}{user.must_change_password && <span className="ml-2 text-2xs text-sev-medium">must change password</span>}</td>
+                    <td>
+                      <Select aria-label={`Role for ${user.username}`} value={user.role} disabled={busy || self} title={self ? "You cannot change your own role" : undefined} onChange={(event) => setChange({ kind: "role", user, role: event.target.value as Role })} className="h-7 w-28 text-xs">
+                        {(["viewer", "analyst", "admin"] as Role[]).map((role) => <option key={role} value={role}>{role}</option>)}
+                      </Select>
+                    </td>
+                    <td>
+                      <input type="checkbox" aria-label={`${user.is_active ? "Deactivate" : "Reactivate"} ${user.username}`} title={self ? "You cannot deactivate your own account" : undefined} checked={user.is_active} disabled={busy || self} onChange={(event) => setChange({ kind: "active", user, active: event.target.checked })} className="size-4 accent-[var(--color-iris)]" />
+                    </td>
+                    <td><Mono className="text-mist">{ago(user.last_login_at)}</Mono></td>
+                    <td className="text-right whitespace-nowrap">
+                      <Button size="sm" variant="ghost" icon={<KeyRound className="size-3.5" />} onClick={() => setResetting(user)}>Reset password</Button>
+                      {!self && <Button size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} disabled={busy} onClick={() => setChange({ kind: "delete", user })} aria-label={`Delete ${user.username}`} />}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
-      <Dialog open={creating} onClose={() => setCreating(false)} title="Add user" footer={<><Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button><Button variant="primary" loading={busy} onClick={async () => { if (await act(() => api("/users", { method: "POST", json: form }), `Created ${form.username}`)) { setCreating(false); setForm({ username: "", password: "", role: "viewer" }); } }}>Create user</Button></>}>
-        <div className="flex flex-col gap-3">
-          <Field label="Username" htmlFor="new-username"><Input id="new-username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} autoComplete="off" /></Field>
-          <Field label="Initial password" htmlFor="new-password" hint="At least 12 characters. Share it out of band."><Input id="new-password" type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" /></Field>
+      <Dialog open={creating} onClose={() => setCreating(false)} title="Add user" footer={<><Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button><Button type="submit" form="create-user-form" variant="primary" loading={busy}>Create user</Button></>}>
+        <form id="create-user-form" className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); void createUser(); }}>
+          <Field label="Username" htmlFor="new-username"><Input id="new-username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} autoComplete="off" required /></Field>
+          <Field label="Initial password" htmlFor="new-password" hint="At least 12 characters. Share it out of band."><Input id="new-password" type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /></Field>
           <Field label="Role" htmlFor="new-role" hint="Viewers read; analysts triage, test rules and replay captures; administrators change rules, firewall and settings.">
             <Select id="new-role" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
               <option value="viewer">viewer</option><option value="analyst">analyst</option><option value="admin">admin</option>
             </Select>
           </Field>
-        </div>
+        </form>
       </Dialog>
       <Dialog open={resetting !== null} onClose={() => setResetting(null)} title={`Reset password for ${resetting?.username ?? ""}`} footer={<><Button variant="ghost" onClick={() => setResetting(null)}>Cancel</Button><Button variant="primary" loading={busy} onClick={async () => { if (resetting && (await act(() => api(`/users/${resetting.id}/reset-password`, { method: "POST", json: { new_password: password } }), `Password reset for ${resetting.username}`))) { setResetting(null); setPassword(""); } }}>Reset password</Button></>}>
         <Field label="Temporary password" htmlFor="reset-password" hint="They must choose a new password at next sign-in. All their sessions are signed out."><Input id="reset-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></Field>
+      </Dialog>
+      <Dialog
+        open={change !== null}
+        onClose={() => setChange(null)}
+        title={changeTitle}
+        footer={<><Button variant="ghost" onClick={() => setChange(null)}>Cancel</Button><Button variant={destructive ? "danger" : "primary"} loading={busy} onClick={() => void applyChange()}>{changeLabel}</Button></>}
+      >
+        {change?.kind === "role" && (
+          <div className="flex flex-col gap-2 text-sm text-mist">
+            <p>
+              <span className="text-frost">{change.user.username}</span> changes from <span className="font-mono text-frost">{change.user.role}</span> to <span className="font-mono text-frost">{change.role}</span>. They will be able to {ROLE_ABILITIES[change.role]}.
+            </p>
+            <p>The change is recorded in the audit log.</p>
+          </div>
+        )}
+        {change?.kind === "active" && (
+          <p className="text-sm text-mist">
+            {change.active
+              ? <><span className="text-frost">{change.user.username}</span> can sign in again with their existing password, as {change.user.role}.</>
+              : <><span className="text-frost">{change.user.username}</span> can no longer sign in, and their existing sessions are revoked. Their account, role and audit history are kept, so you can reactivate them later.</>}
+          </p>
+        )}
+        {change?.kind === "delete" && (
+          <p className="text-sm text-mist">
+            Delete <span className="text-frost">{change.user.username}</span> ({change.user.role}) permanently? They can no longer sign in and the account cannot be restored. Audit log entries that name them are kept. To remove access but keep the account, deactivate it instead.
+          </p>
+        )}
       </Dialog>
     </Panel>
   );

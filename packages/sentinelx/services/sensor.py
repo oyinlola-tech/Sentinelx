@@ -83,7 +83,9 @@ class SensorService:
 
     async def _run(self, capture: LiveCapture) -> RunReport:
         try:
-            report = await self.pipeline.run(capture, record_latency=False, progress_interval=1.0)
+            report = await self.pipeline.run(
+                capture, record_latency=False, progress_interval=1.0, max_results=500
+            )
         except CaptureError as exc:
             self.state, self.error = "error", str(exc)
             log.error("capture_failed", error=str(exc))

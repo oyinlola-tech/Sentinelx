@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import Path as FastApiPath
 
 from sentinelx.api.schemas import (
     ChangePasswordRequest,
@@ -31,6 +32,7 @@ from sentinelx.storage.repositories import UserRepository
 
 router = APIRouter(tags=["auth"])
 Authenticated = Annotated[Principal, Depends(current_principal)]
+UserId = Annotated[int, FastApiPath(ge=1, le=2**31 - 1)]
 
 
 def _user(user: User) -> UserResponse:
@@ -195,7 +197,11 @@ async def create_user(
 
 @router.patch("/users/{user_id}", response_model=UserResponse, tags=["users"])
 async def update_user(
-    user_id: int, body: UserUpdateRequest, principal: Admin, request: Request, platform: PlatformDep
+    user_id: UserId,
+    body: UserUpdateRequest,
+    principal: Admin,
+    request: Request,
+    platform: PlatformDep,
 ) -> UserResponse:
     if user_id == principal.user_id and (
         body.role not in (None, UserRole.ADMIN) or body.is_active is False
@@ -237,7 +243,7 @@ async def _admin_count(users: UserRepository) -> int:
 
 @router.post("/users/{user_id}/reset-password", status_code=204, tags=["users"])
 async def reset_password(
-    user_id: int,
+    user_id: UserId,
     body: PasswordResetRequest,
     principal: Admin,
     request: Request,
@@ -256,7 +262,7 @@ async def reset_password(
 
 @router.delete("/users/{user_id}", status_code=204, tags=["users"])
 async def delete_user(
-    user_id: int, principal: Admin, request: Request, platform: PlatformDep
+    user_id: UserId, principal: Admin, request: Request, platform: PlatformDep
 ) -> Response:
     if user_id == principal.user_id:
         raise HTTPException(status_code=422, detail="you cannot delete your own account")

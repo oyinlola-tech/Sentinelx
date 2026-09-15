@@ -224,11 +224,15 @@ class IptablesAdapter(FirewallAdapter):
 
     async def health(self) -> dict[str, object]:
         result = await self._v4.run("-w", "-S", CHAIN, check=False)
+        text = result.stderr.lower()
+        not_set_up = not result.ok and ("no chain" in text or "does not exist" in text)
         return {
             "backend": self.backend,
-            "ok": result.ok,
+            # The chain is created on first use; not existing yet is not a failure.
+            "ok": result.ok or not_set_up,
             "enforcing": result.ok,
             "chain": CHAIN,
             "ipv6": self._v6 is not None,
-            "error": None if result.ok else result.stderr.strip()[:300],
+            "state": "ready" if result.ok else "not set up yet" if not_set_up else "error",
+            "error": None if result.ok or not_set_up else result.stderr.strip()[:300],
         }

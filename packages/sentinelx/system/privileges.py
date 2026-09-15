@@ -15,6 +15,7 @@ import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 #: ``sys.platform`` as a plain string, so type checkers analyse every branch rather
 #: than only the one for the platform the check happens to run on.
@@ -23,6 +24,7 @@ PLATFORM: str = sys.platform
 __all__ = [
     "PrivilegeCheck",
     "capture_privilege",
+    "ensure_ambient_capability",
     "firewall_privilege",
     "is_elevated",
     "libpcap_library",
@@ -67,6 +69,49 @@ def linux_capabilities() -> set[int] | None:
             mask = int(line.split()[1], 16)
             return {bit for bit in range(64) if mask >> bit & 1}
     return None
+
+
+_PR_CAP_AMBIENT = 47
+_PR_CAP_AMBIENT_IS_SET = 1
+_PR_CAP_AMBIENT_RAISE = 2
+_CAPABILITY_VERSION_3 = 0x20080522
+_EFFECTIVE, _PERMITTED, _INHERITABLE = 0, 1, 2
+
+
+def ensure_ambient_capability(capability: int) -> bool:
+    """Make ``capability`` pass to child processes. True when children will have it.
+
+    Capabilities granted by file capabilities (``setcap`` on the interpreter) belong to
+    this process only: they are dropped when it executes another program such as
+    ``nft``. Linux lets a process raise a capability it already holds into its
+    *ambient* set, which children inherit. Firewall adapters call this before running
+    commands. Root needs nothing; without the capability nothing is raised, and the
+    command fails with a permission error that is reported as such.
+    """
+    if not PLATFORM.startswith("linux"):
+        return False
+    if is_elevated():
+        return True
+    try:
+        libc: Any = ctypes.CDLL(None, use_errno=True)
+        header = (ctypes.c_uint32 * 2)(_CAPABILITY_VERSION_3, 0)
+        # Two 32-bit words, each holding effective, permitted and inheritable masks.
+        data = (ctypes.c_uint32 * 6)()
+        if libc.capget(ctypes.byref(header), ctypes.byref(data)) != 0:
+            return False
+        word, bit = divmod(capability, 32)
+        if not (data[3 * word + _PERMITTED] >> bit) & 1:
+            return False
+        if libc.prctl(_PR_CAP_AMBIENT, _PR_CAP_AMBIENT_IS_SET, capability, 0, 0) == 1:
+            return True
+        # An ambient capability must also be inheritable; a process may add any
+        # capability it holds in its permitted set to its inheritable set.
+        data[3 * word + _INHERITABLE] |= 1 << bit
+        if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
+            return False
+        return bool(libc.prctl(_PR_CAP_AMBIENT, _PR_CAP_AMBIENT_RAISE, capability, 0, 0) == 0)
+    except (OSError, AttributeError):
+        return False
 
 
 def libpcap_library() -> str | None:
@@ -159,9 +204,20 @@ def _windows_capture() -> PrivilegeCheck:
 def firewall_privilege() -> PrivilegeCheck:
     """Can this process change the host firewall?"""
     if PLATFORM.startswith("linux"):
+        if is_elevated():
+            return PrivilegeCheck(True, "running as root")
         caps = linux_capabilities()
         if caps is not None and CAP_NET_ADMIN in caps:
-            return PrivilegeCheck(True, "CAP_NET_ADMIN is in the effective set")
+            # Firewall tools run as child processes: the capability only helps if it
+            # can be passed on to them (ambient capabilities).
+            if ensure_ambient_capability(CAP_NET_ADMIN):
+                return PrivilegeCheck(True, "CAP_NET_ADMIN is held and passed to firewall commands")
+            return PrivilegeCheck(
+                False,
+                "CAP_NET_ADMIN is held by this process but cannot be passed to firewall "
+                "commands (ambient capabilities unavailable)",
+                "run the sensor as root",
+            )
         return PrivilegeCheck(
             False,
             "CAP_NET_ADMIN is not in the effective set",

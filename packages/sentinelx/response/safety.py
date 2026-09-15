@@ -76,6 +76,7 @@ class SafetyGuard:
         *,
         local_addresses: Callable[[], Collection[str]] | None = None,
         active_block_count: Callable[[], int] | None = None,
+        operator_addresses: Callable[[], Collection[str]] | None = None,
     ) -> None:
         self.settings = settings
         self._allowlist = parse_networks(settings.allowlist_networks)
@@ -86,6 +87,7 @@ class SafetyGuard:
             local_addresses = cached_local_addresses
         self._local_addresses = local_addresses
         self._active_block_count = active_block_count or (lambda: 0)
+        self._operator_addresses = operator_addresses or (lambda: ())
         self.refusals = 0
 
     def update_allowlist(self, networks: list[str]) -> None:
@@ -196,6 +198,21 @@ class SafetyGuard:
                         target,
                         "local_address",
                         f"{network} contains {local.network_address}, an address of this host",
+                    )
+
+        if self.settings.protect_management_addresses:
+            for raw in self._operator_addresses():
+                try:
+                    operator = parse_network(raw)
+                except ValueError:
+                    continue
+                if operator.version == network.version and network.overlaps(operator):
+                    self._refuse(
+                        record,
+                        target,
+                        "operator_address",
+                        f"{network} contains {operator.network_address}, the address of an "
+                        "operator signed in within the last hour",
                     )
 
         if self._active_block_count() >= self.settings.max_blocked_addresses:

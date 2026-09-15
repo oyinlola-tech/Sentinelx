@@ -145,6 +145,17 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
   );
 }
 
+/** Inline notice shown above data that is still displayed while a refresh is rate limited. */
+export function StaleNotice({ error, className = "" }: { error: unknown; className?: string }) {
+  const message = error instanceof Error ? error.message : "Too many requests. Wait a moment and try again.";
+  return (
+    <p role="status" className={`flex items-start gap-2 rounded-md border border-sev-medium/40 bg-sev-medium/10 px-3 py-2 text-xs text-sev-medium ${className}`}>
+      <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden />
+      <span>Showing the last data loaded. {message} This view refreshes on its own.</span>
+    </p>
+  );
+}
+
 export function Skeleton({ className = "" }: { className?: string }) {
   return <div className={`animate-pulse rounded bg-raised ${className}`} aria-hidden />;
 }

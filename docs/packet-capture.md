@@ -1,6 +1,6 @@
 # Packet capture
 
-This document covers how SentinelX gets packets: capture sources, required privileges, interface selection, BPF filters, capture settings, what the protocol decoders extract, how malformed traffic is handled, the capture statistics you can monitor, performance expectations, and troubleshooting.
+This document covers how SentinelX gets packets: capture sources and live-capture backends, required privileges on each operating system, interface selection, BPF filters, capture settings, what the protocol decoders extract, how malformed traffic is handled, the capture statistics and capability report you can monitor, performance expectations, and troubleshooting.
 
 For how decoded packets flow through detection, see [architecture.md](architecture.md). For running captures through the PCAP Lab, see [pcap-lab.md](pcap-lab.md).
 
@@ -10,11 +10,11 @@ Every packet source implements `PacketCapture` (`packages/sentinelx/capture/base
 
 | Source | Class and file | `source_kind` | Used by |
 |---|---|---|---|
-| Live interface | `LiveCapture`, `capture/live.py` | `live` | `sentinelx start --capture`, `POST /api/v1/sensors/start`, `sentinelx monitor -i` |
-| PCAP or pcapng file | `PcapFileCapture`, `capture/pcap.py` | `pcap` | `sentinelx replay`, `sentinelx monitor --pcap`, PCAP Lab replays through the API |
-| In-memory frames | `MockCapture`, `capture/mock.py` | `mock` | `sentinelx monitor --scenario`, tests |
+| Live interface | `LiveCapture`, `capture/live.py` (backends in `capture/afpacket.py` and `capture/libpcap.py`) | `live` | `sentinelx start --capture`, `POST /api/v1/sensors/start`, `sentinelx monitor -i` |
+| PCAP or pcapng file | `PcapFileCapture`, `capture/pcap.py` (reader in `capture/pcapfile.py`) | `pcap` | `sentinelx replay`, `sentinelx monitor --pcap`, PCAP Lab replays through the API |
+| In-memory frames | `MockCapture`, `capture/mock.py` | `mock` | `sentinelx monitor --scenario`, tests, benchmarks |
 
-`create_capture()` in `capture/factory.py` picks the source from configuration: it returns a `PcapFileCapture` when given a file path, otherwise a `LiveCapture` built from `CaptureSettings`.
+`create_capture()` in `capture/factory.py` picks the source from configuration: it returns a `PcapFileCapture` when given a file path, otherwise a `LiveCapture` built from `CaptureSettings` (interface, backend, filter, snapshot length, promiscuous mode, buffer size and queue size).
 
 A `RawFrame` carries:
 
@@ -22,51 +22,76 @@ A `RawFrame` carries:
 |---|---|
 | `data` | Captured bytes, possibly truncated by the snapshot length |
 | `timestamp` | UNIX epoch seconds |
-| `link_type` | libpcap link-layer type (DLT) of `data` |
-| `interface` | Interface name, or `pcap:<filename>` for replays |
-| `wire_length` | Original length on the wire, when the source knows it |
+| `link_type` | libpcap link-layer type (DLT) of `data`, set per frame |
+| `interface` | Interface the frame arrived on, or `pcap:<filename>` for replays |
+| `wire_length` | Original length on the wire, when the source knows it (otherwise the captured length) |
+
+`PacketCapture` also has two discovery methods: `capabilities()` returns a `CaptureCapabilities` record (backend, whether it is available on this host, the reason, a remedy, and whether it supports BPF filters, `any`, promiscuous mode and kernel drop counters), and `list_interfaces()` returns the interfaces a live source can use. File and mock sources report themselves as available and non-live, with no interfaces.
 
 ### Live capture
 
-`LiveCapture` has two backends, chosen when the capture opens.
+`LiveCapture` is a facade over two backends, selected by `CAPTURE__BACKEND`:
 
-**AF_PACKET (preferred, Linux).**
+| `backend` | Behaviour |
+|---|---|
+| `auto` (default) | On Linux, try `af_packet`, then `libpcap`. On other platforms, use `libpcap` only. |
+| `af_packet` | Linux `AF_PACKET` raw sockets only. |
+| `libpcap` | Scapy's sniffer: libpcap or a packet socket on Linux, `/dev/bpf*` on macOS, the Npcap driver on Windows. |
 
-1. The named interface is checked against `/sys/class/net`. An unknown name fails with an error listing the available interfaces.
-2. A raw `AF_PACKET` socket is opened for all protocols (`ETH_P_ALL`).
+`auto` moves to the next backend **only** when a backend raises `BackendUnavailableError`, which means it cannot run on this host at all (no `AF_PACKET` support in the kernel or Python build, or Scapy not installed). A missing privilege (`PermissionDeniedError`), an unknown interface (`InterfaceNotFoundError`) and an invalid BPF filter (`CaptureError`) are raised as they are, because falling back would hide them. If no backend can run, `LiveCapture` raises `BackendUnavailableError` listing each backend's reason. The backend in use is logged (`live_capture_ready backend=...`) and reported as `backend` in the sensor status, next to `requested_backend` in the pipeline status.
+
+**AF_PACKET backend (`capture/afpacket.py`, Linux).**
+
+1. A named interface is checked against the interface list (see [Interface selection](#interface-selection)). An unknown name fails with an error listing the available interfaces. `any` is not checked.
+2. A raw `AF_PACKET` socket is opened for all protocols (`ETH_P_ALL`). `EPERM` raises `PermissionDeniedError` immediately, with the remedy.
 3. The socket receive buffer is set to `buffer_size_mb`.
-4. The socket is bound to the named interface. For `any`, it is not bound.
-5. If a BPF filter is set, it is compiled and attached to the socket in the kernel (see [BPF filters](#bpf-filters)).
-6. Frames are read with `recvfrom(snapshot_length)` in a worker thread, with a 0.5-second read timeout so the capture notices a stop request.
-7. Each frame is stamped with `time.time()` when it reaches user space.
-8. Kernel drop counters are read with `PACKET_STATISTICS` every 512 frames and when the capture closes.
+4. A named interface is bound. If `promiscuous` is true, the socket joins the interface's promiscuous membership (`PACKET_ADD_MEMBERSHIP` with `PACKET_MR_PROMISC`), which the kernel reverts when the socket closes. For `any`, the socket is not bound and promiscuous mode is not requested.
+5. If a BPF filter is set, it is compiled with libpcap and attached in the kernel (see [BPF filters](#bpf-filters)).
+6. Frames are read in batches on a worker thread: the thread blocks for up to 0.5 seconds for the first frame, then drains up to 512 queued frames without blocking, and hands the batch to the event loop in one step.
+7. Each frame is stamped with `time.time()` on the worker thread when it is received.
+8. The link type is taken per frame from the ARPHRD hardware type the kernel reports in the socket address: Ethernet (1) and loopback (772, which carries a zeroed Ethernet header) decode as Ethernet; `ARPHRD_NONE` (tun and WireGuard devices), PPP, SIT, IP-GRE and IPv6-in-IPv6 tunnels decode as raw IP. Frames from other hardware types are skipped and counted in `unsupported_frames`. This is what lets `any` decode correctly when interfaces use different framing.
+9. On the loopback device, the kernel delivers every packet twice (outgoing and incoming). The outgoing copy is skipped, as libpcap does.
+10. Kernel drop counters (`PACKET_STATISTICS`) are read every 64 batches and when the capture closes, and accumulated into `dropped_kernel`.
 
-**Scapy (fallback).** If the AF_PACKET socket cannot be opened or configured for any reason other than a missing privilege, or if the platform is not Linux, `LiveCapture` logs `af_packet_unavailable` and starts a Scapy `AsyncSniffer` instead. Frames are handed to the event loop through a queue of 20,000 frames, use Scapy's packet timestamp and are always labelled as Ethernet. The chosen backend is logged (`live_capture_ready backend=...`) and reported as `backend` in the sensor status, so an unexpected throughput figure can be traced to the backend in use.
+**libpcap backend (`capture/libpcap.py`).**
 
-A missing privilege never falls back to Scapy. It fails with `PermissionDeniedError`.
+1. For `any`, the sniffer is given every interface Scapy lists; if Scapy lists none, opening fails. A named interface must appear in the interface list or in Scapy's interface table (on Windows, Npcap device names differ from friendly names).
+2. A Scapy `AsyncSniffer` is started with the filter and promiscuous setting. `open()` waits up to 5 seconds for the sniffer to report that it has started. If the sniffer thread dies first, its exception is translated: a permission failure becomes `PermissionDeniedError`, a filter or syntax error becomes `CaptureError("invalid BPF filter ...")`, anything else becomes `CaptureError`. A sniffer that does not start in time also raises `CaptureError`.
+3. While running, the frame iterator checks the sniffer thread on every read timeout (0.5 seconds) and every 256 frames, so a sniffer that fails later surfaces as an error instead of a capture that silently receives nothing.
+4. Frames are handed from the sniffer thread to the event loop through a queue of `queue_size` frames (default 20,000). When the queue is full, the frame is dropped and counted in `dropped_queue`.
+5. The link type is taken per packet from the Scapy layer class. When Scapy cannot classify a Linux interface (loopback, tun), the frame falls back to the link type derived from the interface's hardware type in `/sys/class/net/<name>/type`. Frames with no decodable link type are counted in `unsupported_frames`.
+6. The timestamp is Scapy's packet time (falling back to `time.time()` if absent), the data is cut to `snapshot_length`, and `wire_length` is Scapy's `wirelen` when present.
+
+`tests/kernel/test_live_capture.py`, run by `make test-kernel` inside a private network namespace, captures real traffic and checks that every frame decodes for AF_PACKET on `lo`, on `any` and with a BPF filter, for libpcap on `lo` and on `any`, and for `auto` on `any`.
+
+On Linux, prefer `af_packet` (which `auto` does). Scapy's listening socket cannot tell outgoing from incoming packets, so with the libpcap backend on the loopback device every packet is seen twice. `buffer_size_mb` is not applied by the libpcap backend, and it has no kernel drop counters.
 
 Live capture limitations in the current code:
 
-- **Capturing on `any` does not decode.** With `interface` set to `any` (the default), the unbound socket receives frames with each device's own link-layer header, but the frames are labelled as Linux cooked capture (`LINUX_SLL`). The decoder then misreads the header and every frame counts as a decode failure. A BPF filter compiled for `any` has the same header mismatch. **Set `CAPTURE_INTERFACE` to a named interface** such as `eth0` for live capture. This was confirmed by capturing loopback traffic with `any` (every frame failed to decode) and with `lo` (frames decoded correctly).
-- **Promiscuous mode is not applied.** The `promiscuous` setting is passed to `LiveCapture` but the AF_PACKET backend does not enable it. On a SPAN or mirror port, enable promiscuous mode on the interface yourself, for example `sudo ip link set dev eth0 promisc on`.
-- **Truncation is not visible.** Frames longer than `snapshot_length` are truncated, and the AF_PACKET backend records `wire_length` as the captured length. Byte counts undercount truncated frames.
-- **Outgoing packets are captured too.** An `ETH_P_ALL` socket sees traffic the host sends as well as traffic it receives. On loopback, each packet is seen twice.
+- **Truncation is not visible with AF_PACKET.** Frames longer than `snapshot_length` are truncated, and the AF_PACKET backend records `wire_length` as the captured length. Byte counts undercount truncated frames.
+- **Outgoing packets are captured too.** An `ETH_P_ALL` socket sees traffic the host sends as well as traffic it receives. Only the loopback duplicate is removed.
+- **BPF on `any` assumes Ethernet framing.** The AF_PACKET backend compiles the filter for Ethernet. On `any`, it does not match correctly on raw-IP interfaces (tun, WireGuard, PPP). Name the interface when filtering matters.
 
 ### PCAP replay
 
-`PcapFileCapture` reads files with Scapy's `RawPcapReader`, falling back to `RawPcapNgReader`. Both return raw bytes and the file's link type without building a Scapy packet per record. Decoding uses the SentinelX decoder, exactly as for live traffic.
+`PcapFileCapture` reads files with SentinelX's own streaming reader, `capture/pcapfile.py`. It does not use Scapy, needs no privileges and no capture library, and returns raw bytes with a link type per record. Decoding uses the SentinelX decoder, exactly as for live traffic.
 
 | Behaviour | Detail |
 |---|---|
-| Formats | pcap and pcapng |
-| Opening errors | `PcapError` for a missing path, a path that is not a regular file, an empty file, or a file neither reader accepts |
-| Timestamps | Taken from each record (`sec`/`usec` for pcap, `tshigh`/`tslow`/`tsresol` for pcapng). A record without a usable timestamp gets `index × 0.001` so ordering is preserved |
-| Wire length | Taken from the record's `wirelen` when present, otherwise the captured length |
-| `speed` | `0` (default) replays as fast as possible. `1.0` reproduces the original timing, `2.0` runs twice as fast |
+| pcap | Little- and big-endian files, microsecond (magic `0xa1b2c3d4`) and nanosecond (magic `0xa1b23c4d`) timestamps. The FCS bits in the upper part of the link-type field are masked off |
+| pcapng | Multiple sections with either byte order. Each Interface Description Block has its own link type and timestamp resolution (`if_tsresol`, decimal or binary exponent; default microseconds), so one file can mix link types. Enhanced Packet Blocks and Simple Packet Blocks are read; other block types are skipped. A Simple Packet Block has no timestamp and reuses the previous record's timestamp |
+| Length validation | Every length is checked before data is read. A pcap record may not exceed the larger of the file's snapshot length and 65,535 bytes, capped at `MAX_RECORD_BYTES` (262,144). A pcapng packet may not exceed its block or `MAX_RECORD_BYTES`; a block may not exceed `MAX_BLOCK_BYTES` (1 MiB). Block trailers must match block lengths |
+| Memory | One record is read at a time, so a file of any size uses constant memory |
+| Opening errors | `PcapError` for a missing path, a path that is not a regular file, an empty file, or a file whose first four bytes are not a pcap or pcapng magic (`not a pcap or pcapng capture file`). The first record is read at open, so a file that is corrupt from the start fails there |
+| Mid-file errors | A truncated or corrupt record raises `PcapError` (for example `capture file is truncated: incomplete packet record`). Records before it have already been processed |
+| Timestamps | Taken from each record. `rewrite_timestamps` (library option, off by default) shifts them to the present |
+| Wire length | The record's original length, or the captured length if that is larger |
+| `speed` | `0` (default) replays as fast as possible. `1.0` reproduces the original timing, `2.0` runs twice as fast. API replays accept 0 to 100 |
 | Gaps | A single pacing sleep is capped at 1 second, so long idle gaps in a capture are shortened |
 | `limit` | Stop after this many packets |
-| `rewrite_timestamps` | Library option (off by default) that shifts timestamps to the present. Detectors window on packet time, so replays normally keep the original timestamps |
-| Event loop | The reader yields to the event loop every 256 frames, so a full-speed replay does not block the API |
+| Event loop | The replay yields to the event loop whenever it has run for more than 5 ms without yielding, so a full-speed replay does not block the API, the WebSocket stream or database writes |
+
+`tests/capture/test_pcapfile.py` covers nanosecond and big-endian pcap, per-interface link types and resolution in pcapng, hostile and broken files, and checks that a capture converted by Wireshark's `editcap` to pcapng and to nanosecond pcap replays with identical results (skipped when `editcap` is not installed).
 
 From the CLI:
 
@@ -78,11 +103,11 @@ sentinelx replay capture.pcap --persist          # store results under a replay 
 sentinelx monitor --pcap capture.pcap            # live terminal view at original speed
 ```
 
-Responses are always simulated during a replay; no firewall is modified.
+Responses are always simulated during a replay; no firewall is modified. Replays run the same detector set as a live sensor (see [detection-engine.md](detection-engine.md#detection-modes)), and detections carry the capture's own timestamps.
 
-`pcap_metadata()` reads every record header of a file to report packet count, total bytes, link type, first and last timestamps, duration and average packet size without running detection.
+`pcap_metadata()` reads every record of a file to report packet count, total captured bytes, `link_type` (the lowest link type in the file), `link_types` (all of them), first and last timestamps, duration and average packet size without running detection.
 
-Files uploaded through the API are validated by magic number and limited to the smaller of `api.max_upload_mb` (default 200) and `capture.max_pcap_size_mb` (default 512). Files with `.pcap`, `.pcapng` or `.cap` extensions under `PCAP_DIRECTORY` are listed for replay. See [pcap-lab.md](pcap-lab.md).
+Files uploaded through the API are validated by magic number and limited to the smaller of `api.max_upload_mb` (default 200) and `capture.max_pcap_size_mb` (default 512). All uploads together may use at most `capture.upload_quota_mb` (default 2048); further uploads are refused until old ones are removed. In the Docker stack, the front proxy also limits request bodies to `SENTINELX_MAX_UPLOAD_MB` (default 200). Files with `.pcap`, `.pcapng` or `.cap` extensions under `PCAP_DIRECTORY` are listed for replay. See [pcap-lab.md](pcap-lab.md).
 
 ### Mock capture
 
@@ -92,58 +117,52 @@ Files uploaded through the API are validated by magic number and limited to the 
 
 ## Required privileges
 
-Opening an `AF_PACKET` socket requires the `CAP_NET_RAW` capability. PCAP replay, mock capture, fixtures and the rest of the platform do not need it.
+Only live capture needs a privilege. PCAP replay, mock capture, fixtures and the rest of the platform do not. The checks live in `packages/sentinelx/system/privileges.py` and ask the operating system's own mechanism rather than testing `euid == 0`.
 
-Check whether the current process can capture:
+| Platform | Needed for live capture | How it is checked | Remedy reported |
+|---|---|---|---|
+| Linux | `CAP_NET_RAW` (or root) | Opens and closes a real `AF_PACKET` socket | Run as root, or `sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f .venv/bin/python)` |
+| macOS | Read and write access to a `/dev/bpf*` device | Tests access to each BPF device | Run as root, or give your user access to `/dev/bpf*` (Wireshark's ChmodBPF launch daemon does this) |
+| Windows | Npcap installed; an elevated process if Npcap was installed with "restrict driver access to Administrators" | Looks for `wpcap.dll` and the Npcap `AdminOnly` registry value | Install Npcap from https://npcap.com, or run from an elevated terminal |
+
+Without the privilege, both backends raise `PermissionDeniedError` when the capture opens, with the remedy in the message. There is no fallback.
+
+Check what this host can do:
 
 ```bash
-sentinelx doctor          # "capture privileges" check
-sentinelx interfaces      # warns when capture is not possible
+sentinelx capabilities    # capability report (see below)
+sentinelx doctor          # includes "live capture" and "packet capture backend" checks
+sentinelx interfaces      # prints whether live capture is available, and the remedy
 ```
 
-Both test this by opening a raw socket rather than by reading capability bits.
-
-### Granting the capability on a host
+### Granting the capability on a Linux host
 
 Running the whole platform as root works, but granting the capability to the Python interpreter is narrower. File capabilities apply to the real binary, not a symlink, so resolve the path first:
 
 ```bash
-readlink -f .venv/bin/python                                    # the interpreter binary
-sudo setcap cap_net_raw=eip "$(readlink -f .venv/bin/python)"   # capture only
-getcap "$(readlink -f .venv/bin/python)"                        # verify
-sudo setcap -r "$(readlink -f .venv/bin/python)"                # remove again
+readlink -f .venv/bin/python                                                 # the interpreter binary
+sudo setcap cap_net_raw=eip "$(readlink -f .venv/bin/python)"                # capture only
+sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f .venv/bin/python)"  # capture and firewall
+getcap "$(readlink -f .venv/bin/python)"                                     # verify
+sudo setcap -r "$(readlink -f .venv/bin/python)"                             # remove again
 ```
 
-The error message and `sentinelx doctor` suggest `cap_net_raw,cap_net_admin=eip`. `CAP_NET_ADMIN` is needed only when a firewall backend (`nftables` or `iptables`) will modify the host firewall; see [response-engine.md](response-engine.md). Capture alone needs only `CAP_NET_RAW`.
+`CAP_NET_ADMIN` is needed only when a firewall backend (`nftables` or `iptables`) will modify the host firewall; see [response-engine.md](response-engine.md). Capture alone needs only `CAP_NET_RAW`.
 
-Be aware of what this grants. A virtual environment's `python` is usually a symlink to the system interpreter, so the capability applies to every program run with that interpreter binary, not only SentinelX. On a shared host, consider a dedicated interpreter for the sensor. See [security.md](security.md).
+Be aware of what this grants. A virtual environment's `python` is usually a symlink to the system interpreter, so the capability applies to every program run with that interpreter binary, not only SentinelX. On a shared host, use a dedicated copy of the interpreter for the sensor, as the Docker image does. See [security.md](security.md).
 
 ### Running under Docker
 
-Containers on a Docker bridge network see only their own traffic, never the host's. The default Compose stack therefore runs detection on PCAP replay and on traffic sent to the stack itself.
+Containers on a Docker bridge network see only their own traffic, never the host's. The default Compose stack therefore runs detection on PCAP replay and on traffic sent to the stack itself, and its `api` container (`cap_drop: [ALL]`) cannot capture: `sentinelx capabilities` inside it reports live capture as unavailable.
 
-For live capture of host traffic, `docker-compose.yml` defines a `sensor` service in the `capture` profile. It runs the same `sentinelx-api:local` image as `api`, with:
-
-| Setting | Value | Why |
-|---|---|---|
-| `network_mode` | `host` | Sees the host's interfaces |
-| `cap_drop` / `cap_add` | `ALL` / `NET_RAW`, `NET_ADMIN` | Packet capture; `NET_ADMIN` is used only if a firewall backend is enabled |
-| `security_opt` | `no-new-privileges:false` | The image grants file capabilities to `python3` (`setcap cap_net_raw,cap_net_admin+eip` in `docker/Dockerfile.api`), which only take effect for the non-root user when privilege gain on exec is allowed |
-| `command` | `sentinelx start --capture` | Starts live capture on `CAPTURE_INTERFACE` when the API starts |
-| `API_HOST`, `API_PORT` | `0.0.0.0`, `8001` | The API listens on the host network |
-| `DATABASE_URL`, `REDIS_URL` | `127.0.0.1:${POSTGRES_HOST_PORT:-5433}`, `127.0.0.1:${REDIS_HOST_PORT:-6381}` | Host networking cannot resolve Compose service names, so the loopback-published ports are used |
-
-It is Linux only. The command from the Compose file replaces `api` with `sensor` and points the dashboard at it:
+For live capture of host traffic on a Linux host, the `sensor` service in the `capture` profile replaces `api`. It uses host networking, runs `python3-sensor -m sentinelx start --capture` (a separate interpreter copy, `/usr/local/bin/python3-sensor`, that carries the `cap_net_raw,cap_net_admin` file capabilities), is granted `NET_RAW` and `NET_ADMIN`, and listens on `${SENSOR_PORT:-8001}`. Start it with the front proxy pointed at it:
 
 ```bash
-CAPTURE_INTERFACE=eth0 \
-DASHBOARD_API_URL=http://host.docker.internal:8001 PUBLIC_WS_URL=ws://localhost:8001 \
+SENTINELX_API_UPSTREAM=host.docker.internal:8001 \
   docker compose --profile capture up -d --build --scale api=0
 ```
 
-Set `CAPTURE_INTERFACE` to a named host interface. The Compose default is `any`, which does not decode (see [Live capture](#live-capture)).
-
-Because `API_HOST` is `0.0.0.0` on the host network, the sensor's API on port 8001 is reachable from other machines unless a host firewall blocks it. See [deployment.md](deployment.md) for exposure and TLS guidance.
+`CAPTURE_INTERFACE` (default `any`, which captures and decodes every interface) selects the interface. Docker Desktop on macOS and Windows runs containers in a virtual machine, so host networking there captures the VM's traffic. The sensor's API listens on all host interfaces. Service details, required capabilities and exposure guidance are in [deployment.md](deployment.md#the-capture-profile).
 
 ## Interface selection
 
@@ -154,23 +173,23 @@ sentinelx interfaces
 sentinelx interfaces --json
 ```
 
-The table shows name, state, addresses, MAC, MTU, received packets and dropped packets for every entry in `/sys/class/net`. The JSON form also includes `has_capture_privileges`, `is_up`, `is_loopback` and transmit counters. The same list is available from `GET /api/v1/interfaces`.
+Interfaces are enumerated with `psutil` (`packages/sentinelx/system/interfaces.py`) on every platform. The table shows name, state, addresses, MAC, MTU, received packets and dropped packets, and ends with a line saying whether live capture is available and through which backend. The JSON form is `{"capture": <capture capabilities>, "interfaces": [...]}`; each interface also has `is_up`, `is_loopback`, `speed_mbps` and transmit and byte counters. `GET /api/v1/interfaces` returns the interface list.
 
 Choose the interface in one of these ways:
 
 | Method | Example |
 |---|---|
-| Environment | `CAPTURE_INTERFACE=eth0` or `CAPTURE__INTERFACE=eth0` |
+| Environment or `.env` | `CAPTURE_INTERFACE=eth0` or `CAPTURE__INTERFACE=eth0` |
 | Server start | `sentinelx start --capture --interface eth0` (`-i` for short) |
 | Terminal monitor | `sentinelx monitor -i eth0` |
 | API | `POST /api/v1/sensors/start` with `{"interface": "eth0"}` (administrator role; see [api.md](api.md)) |
 | Stored setting | `sentinelx config set capture interface '"eth0"'` (applied at the next server start) |
 
-`sentinelx doctor` fails its "capture interface" check when the configured interface does not exist.
+`any` captures from every interface. `sentinelx doctor` fails its "capture interface" check when a named interface does not exist.
 
 ## BPF filters
 
-A BPF filter is attached to the socket in the kernel, so packets that do not match never reach Python and cost nothing to process. The expression uses standard pcap-filter syntax, for example:
+A BPF filter runs before packets reach SentinelX, so packets that do not match are never processed. The expression uses standard pcap-filter syntax, for example:
 
 ```text
 tcp or udp
@@ -184,19 +203,21 @@ Where to set it:
 
 | Method | Example |
 |---|---|
-| Environment | `BPF_FILTER='tcp or udp'` or `CAPTURE__BPF_FILTER='tcp or udp'` |
+| Environment or `.env` | `BPF_FILTER='tcp or udp'` or `CAPTURE__BPF_FILTER='tcp or udp'` |
 | Terminal monitor | `sentinelx monitor -i eth0 --bpf 'tcp or udp'` |
 | API | `POST /api/v1/sensors/start` with `{"bpf_filter": "tcp or udp"}` (at most 512 characters). If omitted, the configured filter is used |
 | Stored setting | `sentinelx config set capture bpf_filter '"tcp or udp"'` |
 
-`sentinelx start` has no filter option; it uses the configured filter.
+`sentinelx start` has no filter option; it uses the configured filter. `sentinelx monitor -i` uses only the `--bpf` value, not the configured filter, and opens the capture with the `auto` backend and default promiscuous and buffer settings, whatever `CAPTURE__BACKEND`, `CAPTURE__PROMISCUOUS` and `CAPTURE__BUFFER_SIZE_MB` say.
 
 Validation and compilation:
 
 - The characters `;`, `|`, `` ` ``, `$`, `\`, newline and carriage return are rejected. The filter is never passed through a shell; rejecting them early turns a confusing compile error into a clear configuration error. Surrounding whitespace is stripped.
-- The expression is compiled by Scapy's `compile_filter`, which calls libpcap. The libpcap shared library must be installed on the host (the Docker image installs `libpcap0.8`).
-- If Scapy cannot be imported, the filter is skipped with a `bpf_unavailable` warning and all traffic is captured.
-- **An expression that fails to compile does not stop the capture.** The AF_PACKET backend raises an error, `LiveCapture` treats it like any other AF_PACKET failure and falls back to Scapy, and the Scapy sniffer then fails in its own thread. The sensor reports `backend: scapy` and state `running` but receives no packets. The only signs are an `af_packet_unavailable` warning containing `invalid BPF filter` and a received count that stays at 0. A missing libpcap library produces the same outcome. Test a new filter with `sentinelx monitor --bpf` first and check that packets appear.
+- **AF_PACKET.** The expression is compiled by Scapy's `compile_filter`, which calls libpcap, and the program is attached with `SO_ATTACH_FILTER`. The libpcap shared library must be installed (the Docker image installs `libpcap0.8`). A missing libpcap, a missing Scapy, an expression that does not compile, or a program the kernel rejects each raise `CaptureError` and the capture does not start. None of these falls back to another backend or to unfiltered capture.
+- **libpcap.** The filter is passed to the Scapy sniffer. An expression that does not compile stops the sniffer thread, and the error is reported as `CaptureError: invalid BPF filter ...` when the capture opens.
+- The capability report shows `bpf_filter: true` for a backend when a filter can be compiled on this host.
+
+`tests/kernel/test_live_capture.py` checks that a filter is applied in the kernel and that an invalid filter is refused by both backends.
 
 ## Settings
 
@@ -204,22 +225,23 @@ Capture settings are defined by `CaptureSettings` in `packages/sentinelx/config/
 
 | Setting | Default | Nested environment variable | Flat alias | Notes |
 |---|---|---|---|---|
-| `interface` | `any` | `CAPTURE__INTERFACE` | `CAPTURE_INTERFACE` | Use a named interface for live capture |
+| `interface` | `any` | `CAPTURE__INTERFACE` | `CAPTURE_INTERFACE` | `any` captures every interface |
+| `backend` | `auto` | `CAPTURE__BACKEND` | none | `auto`, `af_packet` or `libpcap`. See [Live capture](#live-capture) |
 | `bpf_filter` | empty | `CAPTURE__BPF_FILTER` | `BPF_FILTER` | See [BPF filters](#bpf-filters) |
-| `snapshot_length` | `2048` | `CAPTURE__SNAPSHOT_LENGTH` | none | 64 to 65535. Bytes read per frame |
-| `promiscuous` | `true` | `CAPTURE__PROMISCUOUS` | none | Not applied by the AF_PACKET backend |
-| `buffer_size_mb` | `16` | `CAPTURE__BUFFER_SIZE_MB` | none | 1 to 1024. Socket receive buffer. Linux caps the value at `net.core.rmem_max` |
-| `queue_size` | `20000` | `CAPTURE__QUEUE_SIZE` | none | Minimum 100. Not currently used by any capture backend |
+| `snapshot_length` | `2048` | `CAPTURE__SNAPSHOT_LENGTH` | none | 64 to 65535. Bytes kept per frame |
+| `promiscuous` | `true` | `CAPTURE__PROMISCUOUS` | none | Applied to a named interface by both backends; not applied to `any` by AF_PACKET |
+| `buffer_size_mb` | `16` | `CAPTURE__BUFFER_SIZE_MB` | none | 1 to 1024. AF_PACKET socket receive buffer; Linux caps it at `net.core.rmem_max`. Not used by libpcap |
+| `queue_size` | `20000` | `CAPTURE__QUEUE_SIZE` | none | Minimum 100. Hand-off queue of the libpcap backend; overflow is counted in `dropped_queue` |
 | `home_networks` | `["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fd00::/8"]` | `CAPTURE__HOME_NETWORKS` (JSON list) | none | Used only to label packet direction. Every entry must be a valid network |
 | `pcap_directory` | `pcaps` | `CAPTURE__PCAP_DIRECTORY` | `PCAP_DIRECTORY` | Where replayable and uploaded captures live |
-| `max_pcap_size_mb` | `512` | `CAPTURE__MAX_PCAP_SIZE_MB` | none | Upload limit, together with `api.max_upload_mb` |
+| `max_pcap_size_mb` | `512` | `CAPTURE__MAX_PCAP_SIZE_MB` | none | Per-upload limit, together with `api.max_upload_mb` |
+| `upload_quota_mb` | `2048` | `CAPTURE__UPLOAD_QUOTA_MB` | none | Total space uploads may use |
 
 How values are resolved:
 
 - Nested names use a double underscore and are case-insensitive, for example `CAPTURE__SNAPSHOT_LENGTH=512` or `CAPTURE__HOME_NETWORKS='["10.20.0.0/16"]'`.
-- Nested names are read from the process environment and from a `.env` file in the working directory.
-- **Flat aliases (`CAPTURE_INTERFACE`, `BPF_FILTER`, `PCAP_DIRECTORY`) are read only from the process environment, not from `.env`.** A flat alias in `.env` is silently ignored unless something exports it into the environment first (Docker Compose does, because it passes `.env` values as container environment variables). When running the Python package directly with a `.env` file, use the nested names.
-- When both forms are set in the environment, the nested form wins.
+- Both nested names and flat aliases are read from the process environment and from a `.env` file in the working directory.
+- Precedence, highest first: nested environment variable, flat environment variable, nested `.env` entry, flat `.env` entry, default. A real environment variable always beats `.env`, and the nested form wins when both spellings are set at the same level.
 - `interface`, `bpf_filter` and `home_networks` can also be changed at runtime. Changes are validated, audited and stored in the database, and stored values are applied at every server start, where they take precedence over environment variables. A change made through the API also updates the running server: a new `home_networks` value replaces the decoder immediately, and a new interface or filter is used the next time capture starts. `sentinelx config set` runs in its own process and only writes the database, so a running server picks the change up at its next start.
 - Invalid values stop startup with a validation error naming the field, for example `capture.bpf_filter: Value error, bpf_filter must not contain shell metacharacters`.
 
@@ -300,6 +322,8 @@ Malformed frames are normal on real networks, and a sensor that crashes on one i
 
 Failures are counted in two places: `decoded` and `failed` on the decoder (`pipeline.decoder` in `GET /api/v1/system/status` and `GET /api/v1/metrics/summary`), and the Prometheus counter `sentinelx_parse_errors_total{layer=...}`. `tests/capture/test_parser.py` checks that malformed frames never raise and that failures are counted.
 
+Malformed capture files are handled by the reader's length validation; see [PCAP replay](#pcap-replay).
+
 ## Capture statistics
 
 Each capture source keeps a `CaptureStats` object:
@@ -308,43 +332,58 @@ Each capture source keeps a `CaptureStats` object:
 |---|---|
 | `received` | Frames delivered to the pipeline |
 | `bytes_received` | Sum of frame wire lengths |
-| `dropped_kernel` | Frames the kernel reports as dropped before user space read them (AF_PACKET `PACKET_STATISTICS`) |
-| `dropped_queue` | Frames lost in SentinelX's own hand-off queue. Only the Scapy backend has such a queue, so this stays 0 with AF_PACKET |
-| `errors` | Socket read errors |
+| `dropped_kernel` | Frames the kernel reports as dropped before user space read them (AF_PACKET `PACKET_STATISTICS`). Always 0 with libpcap |
+| `dropped_queue` | Frames lost because the libpcap backend's hand-off queue was full. Always 0 with AF_PACKET, which has no such queue |
+| `errors` | Socket read errors (AF_PACKET) or packets that could not be converted to bytes (libpcap) |
 | `elapsed_seconds` | Wall time since the capture opened |
 | `packets_per_second`, `megabits_per_second` | Measured from `received`, `bytes_received` and elapsed wall time |
 | `capture_span_seconds` | Time between the first and last packet timestamps |
 | `drop_rate` | Dropped divided by received plus dropped |
 
-Kernel and queue drops are reported separately because they have different remedies: kernel drops call for a narrower filter or larger buffer, queue drops for faster processing.
+Kernel and queue drops are reported separately because they have different remedies: kernel drops call for a narrower filter or larger buffer, queue drops for faster processing. Live backends also report `unsupported_frames` (frames with a link type the decoder cannot handle) in their description.
 
 Where to see them:
 
 | Place | Content |
 |---|---|
-| `GET /api/v1/sensors` | Sensor state, interface, filter, backend, `capture` statistics, error, `has_capture_privileges` and safety banner |
-| `GET /api/v1/system/status` | Platform health, plus `pipeline` with decoder counts, feature-extractor state (tracked sources, active flows, evictions) and detection statistics |
-| `GET /api/v1/metrics/summary` | Decoder, features, detection, capture statistics and event bus statistics |
-| `packet.stats` event | Published about once per second during a run: `frames`, `bytes`, `elapsed_seconds`, `packets_per_second`, `detections`, `incidents`, `active_flows`, `tracked_sources`, `dropped`, protocol distribution, CPU and memory |
+| `GET /api/v1/sensors` | Sensor state, interface, filter, `backend`, `capture` statistics, `error`, `capture_capabilities` (the live-capture capability report, cached for 30 seconds) and safety banner |
+| `GET /api/v1/system/status` | Platform health, plus `pipeline` with the running capture's description (backend, requested backend, snapshot length, `unsupported_frames`, statistics), decoder counts, feature-extractor state (tracked sources, active flows, evictions) and detection statistics |
+| `GET /api/v1/metrics/summary` | Decoder, features and detection counts, the live sensor's capture statistics, the last completed run's report, and event bus statistics |
+| `packet.stats` event | Published while frames arrive, at most once per progress interval (1 second for live capture, 0.5 seconds for API replays, 0.2 seconds for `sentinelx replay`), and once more when the run ends: `source`, `kind`, `frames`, `bytes`, `elapsed_seconds`, `packets_per_second`, `detections`, `incidents`, `active_flows`, `tracked_sources`, `dropped`, `protocols`, `cpu_percent`, `memory_bytes`, and `final` on the last one |
+| Prometheus | `sentinelx_packets_captured_total{source,interface}` and `sentinelx_packets_dropped_total{reason="capture"}` (kernel plus queue drops) are incremented with each `packet.stats` publication and when the run ends, so they move while a live capture runs |
 | `capture_closed` log line | The final statistics when a capture closes |
 | `sensor.status` event | Published when the sensor starts, stops or fails |
 
 `sentinelx status` builds its own platform instance, so it does not show a running server's capture statistics. Query the API instead.
 
-Prometheus counters `sentinelx_packets_captured_total{source,interface}` and `sentinelx_packets_dropped_total{reason="capture"}` are incremented only when a capture run ends, so they stay at 0 while a live capture is running. Use `sentinelx_parse_errors_total`, `sentinelx_pipeline_latency_seconds`, the `packet.stats` events and the API for live monitoring.
+## Capability report
+
+`packages/sentinelx/system/capabilities.py` probes what this host can do and explains each answer. The same report is shown by `sentinelx capabilities` (add `--json` for machine-readable output), by `GET /api/v1/system/capabilities` (viewer role; cached for 30 seconds) and on the dashboard, and `sentinelx doctor` turns it into checks.
+
+| Capability | Meaning |
+|---|---|
+| Detection engine | Always available |
+| PCAP replay | A one-packet capture is parsed in memory with the replay reader |
+| Interface enumeration | `psutil` returned the interface list |
+| Packet capture | A capture mechanism exists on this OS (AF_PACKET and optionally libpcap on Linux, BPF devices on macOS, Npcap on Windows), independent of privileges |
+| Live capture | The configured backend (or the one `auto` would pick) can open a capture now, with its reason and remedy. Under WSL it notes that capture sees the WSL virtual machine's traffic; inside a container, that it sees the container's network namespace unless it uses host networking |
+| Firewall control, automatic blocking | See [response-engine.md](response-engine.md) |
+| Privileged access | Root or elevation, or which of `CAP_NET_RAW` and `CAP_NET_ADMIN` the process holds |
+
+The JSON form also includes the operating system, architecture, detected environment (WSL version, container type) and per-backend firewall reports.
 
 ## Performance
 
 - **Decoder.** On the reference Intel Core i5-8350U, the `struct` decoder measured 2.1 to 2.5 times faster than Scapy `Ether(bytes)` across two runs of 50,000 frames.
 - **End to end.** The full pipeline (decode, features, detection, rules, scoring, correlation, response decision) processed roughly 2,900 to 4,600 packets per second on one core of that laptop CPU, using in-memory frames. Capture overhead is not included in that figure.
-- **Live capture overhead.** The AF_PACKET backend performs one `recvfrom` per frame, dispatched to a worker thread. Its throughput and drop rate under load have not been measured.
-- **Suitability.** That is enough for a home network, a lab, a small office uplink or offline PCAP analysis. It is not suitable for multi-gigabit links, or for sustained traffic on links of a few hundred megabits per second, where packet rates are one to two orders of magnitude higher. The sensor will drop packets there, and the drops will appear in `dropped_kernel`.
+- **Live capture overhead.** The AF_PACKET backend reads up to 512 frames per worker-thread hand-off. The libpcap backend builds a Scapy object per packet and is slower. Throughput and drop rate of either backend under load have not been measured.
+- **Suitability.** That is enough for a home network, a lab, a small office uplink or offline PCAP analysis. It is not suitable for multi-gigabit links, or for sustained traffic on links of a few hundred megabits per second, where packet rates are one to two orders of magnitude higher. The sensor will drop packets there, and the drops will appear in `dropped_kernel` (AF_PACKET) or `dropped_queue` (libpcap).
 
 Ways to reduce load:
 
 - A BPF filter that excludes traffic you do not need to inspect.
 - A SPAN or mirror port that carries only a subset of traffic.
-- A larger `buffer_size_mb` to absorb bursts (raise `net.core.rmem_max` if needed).
+- A larger `buffer_size_mb` to absorb bursts with AF_PACKET (raise `net.core.rmem_max` if needed).
 - A dedicated high-throughput IDS in front of SentinelX for large links.
 
 Full method and results: [benchmarking.md](benchmarking.md).
@@ -354,24 +393,28 @@ Full method and results: [benchmarking.md](benchmarking.md).
 Start with:
 
 ```bash
+sentinelx capabilities
 sentinelx doctor
 ```
 
-It checks the Python version, configuration validity, safety posture, capture privileges, whether the configured interface exists, firewall binaries, rules, whether the PCAP directory is writable, the JWT secret, database connectivity and migrations, and Redis. It exits with status 1 if any check fails. Add `--json` for machine-readable output.
+`sentinelx doctor` checks the Python version, the host environment (WSL, container), dependencies, PCAP replay, interface enumeration, the capture backend, live capture, whether a named capture interface exists, the firewall backend, automatic blocking, safety posture, rules, whether the PCAP directory is writable, the JWT secret, database connectivity and migrations, Redis, and whether the API and dashboard answer. It exits with status 1 if any check fails. Add `--json` for machine-readable output.
 
 | Symptom | Cause and fix |
 |---|---|
-| `live capture needs CAP_NET_RAW. Either run as root, or grant the capability once with: ...` | The process lacks `CAP_NET_RAW`. Grant it as described in [Granting the capability on a host](#granting-the-capability-on-a-host), or run the `capture` Compose profile. `setcap` must target the resolved interpreter binary, not the `.venv` symlink. |
-| Capability granted but still denied in Docker | The container needs `cap_add: [NET_RAW]` and `no-new-privileges:false`, as in the `sensor` service. |
-| `interface 'X' not found; available interfaces: ...` | The name does not exist in `/sys/class/net`. Pick one from `sentinelx interfaces`. Inside a container, only host networking exposes host interfaces. |
-| `received` climbs but no detections, and `pipeline.decoder.failed` climbs with it | The interface is `any`, which does not decode in the current version. Set `CAPTURE_INTERFACE` to a named interface. |
-| Sensor state `running`, backend `scapy`, `received` stays at 0 | Usually a BPF expression that failed to compile, or libpcap missing. Look for `af_packet_unavailable` with `invalid BPF filter` in the logs, fix or clear the filter, and test it with `sentinelx monitor -i <iface> --bpf '<expr>'`. |
-| Backend is `scapy` without a filter problem | AF_PACKET could not be opened or configured, or the host is not Linux. The `af_packet_unavailable` warning gives the reason. Expect lower throughput. |
+| `live capture requires CAP_NET_RAW or root: ...` or `live capture was refused (...)` | The process lacks the capture privilege. On Linux, grant it as described in [Granting the capability on a Linux host](#granting-the-capability-on-a-linux-host), or run the `capture` Compose profile; `setcap` must target the resolved interpreter binary, not the `.venv` symlink. On macOS and Windows, follow the remedy in [Required privileges](#required-privileges). |
+| Live capture unavailable or denied in Docker | The default `api` container cannot capture. Use the `capture` profile: the `sensor` service runs the `python3-sensor` interpreter with `cap_add: [NET_RAW, NET_ADMIN]` and `no-new-privileges:false`. See [deployment.md](deployment.md#the-capture-profile). |
+| `interface 'X' not found; available interfaces: ...` | The name does not exist. Pick one from `sentinelx interfaces`. Inside a container, only host networking exposes host interfaces. |
+| `invalid BPF filter '...'` | The expression does not compile. Fix or clear it, and test it with `sentinelx monitor -i <iface> --bpf '<expr>'`. |
+| `BPF filters are compiled with libpcap, which is not installed` | Install libpcap (for example `apt install libpcap0.8`) or remove the filter. |
+| `no live capture backend can run on this host (...)` | Neither backend exists here (for example Scapy is missing and the host is not Linux). PCAP replay still works. |
+| Backend is `libpcap` on Linux | `CAPTURE__BACKEND=libpcap` is set, or AF_PACKET is not available in this kernel or Python build (`capture_backend_unavailable` in the logs gives the reason). Expect lower throughput and duplicate loopback packets. |
+| `dropped_queue` rising | The pipeline cannot keep up with the libpcap backend. Switch to `af_packet` on Linux, narrow the filter, or raise `CAPTURE__QUEUE_SIZE`. |
+| `received` climbs but `pipeline.decoder.failed` climbs with it | The frames use a link type or protocol the decoder does not support (see [Known decoder limitations](#known-decoder-limitations)). Check `unsupported_frames` in `GET /api/v1/system/status`. |
 | Capture started with `sentinelx start --capture` failed but the API is up | Startup capture failures are logged as `startup_capture_failed` and do not stop the API. Fix the cause and start capture through the API or restart. |
 | Container sees only its own traffic | Bridge networking. Use the `capture` profile, which runs with `network_mode: host`. |
-| `sensor` container reported unhealthy | The image's health check probes port 8000, but the `sensor` service listens on 8001. Check `http://127.0.0.1:8001/api/v1/system/health` directly. |
-| `CAPTURE_INTERFACE` or `BPF_FILTER` in `.env` has no effect | Flat aliases are read only from the process environment. Use `CAPTURE__INTERFACE` and `CAPTURE__BPF_FILTER` in `.env`, or export the variables. Also check for a stored override with `sentinelx config --section capture`. |
+| `CAPTURE_INTERFACE` or `BPF_FILTER` has no effect | A stored runtime override takes precedence over the environment. Check with `sentinelx config --section capture`. |
 | Configuration error on `bpf_filter` | The expression contains a rejected character (`;`, `\|`, `` ` ``, `$`, `\`, newline). |
 | `dropped_kernel` rising | The pipeline cannot keep up. Narrow the BPF filter, increase `buffer_size_mb`, or reduce the traffic reaching the sensor. See [Performance](#performance). |
-| Replay fails with `not a readable pcap or pcapng file` | The file is corrupt, truncated, or not a capture. Check it with `tcpdump -r` or `capinfos`. |
-| Replay packets decode as failures | The file's link type is not one the decoder supports (see [Link, network and transport layers](#link-network-and-transport-layers)). |
+| Replay fails with `not a pcap or pcapng capture file`, `capture file is truncated` or `corrupt capture` | The file is not a capture, is cut short, or has an invalid length field. Check it with `capinfos` or `tcpdump -r`. Records before the damage were already processed. |
+| Replay packets decode as failures | The file's link type is not one the decoder supports (see [Link, network and transport layers](#link-network-and-transport-layers)). `pcap_metadata()` and the PCAP Lab show the file's `link_types`. |
+| Replayed detections do not appear in "last 24 hours" views | Detections carry the capture time of the triggering packet. A replay of an older capture is filed at that time. Widen the time range, or open the replay's own report. |

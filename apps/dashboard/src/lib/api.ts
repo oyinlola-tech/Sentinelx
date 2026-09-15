@@ -1,7 +1,8 @@
 /**
  * Browser API client.
  *
- * Talks to same-origin /api/v1 (proxied to the backend by next.config.ts), so
+ * Talks to same-origin /api/v1 (proxied to the backend by the dashboard server in
+ * development, and by the front proxy in the Docker stack), so
  * session cookies are attached automatically. State-changing requests echo the
  * sx_csrf cookie in X-CSRF-Token (double-submit). A 401 triggers one silent
  * refresh, shared by concurrent requests, then a single retry.
@@ -58,8 +59,11 @@ function messageFrom(body: unknown, status: number): string {
         .join("; ");
     }
   }
-  return status === 429 ? "Too many requests. Wait a moment and try again." : `Request failed (${status})`;
+  return `Request failed (${status})`;
 }
+
+/** Fired when the session cannot be refreshed; the session provider signs the user out. */
+export const SESSION_EXPIRED_EVENT = "sentinelx:session-expired";
 
 export async function api<T>(path: string, init: RequestInit & { json?: unknown; retry?: boolean } = {}): Promise<T> {
   const { json, retry = true, headers, ...rest } = init;
@@ -77,11 +81,20 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown;
     cache: "no-store",
   });
 
-  if (response.status === 401 && retry && !path.startsWith("/auth/login") && !path.startsWith("/auth/refresh")) {
+  const authRoute = path.startsWith("/auth/login") || path.startsWith("/auth/refresh");
+  if (response.status === 401 && retry && !authRoute) {
     if (await refreshSession()) return api<T>(path, { ...init, retry: false });
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
   }
   const body = await parse(response);
-  if (!response.ok) throw new ApiError(response.status, messageFrom(body, response.status), body);
+  if (!response.ok) {
+    let message = messageFrom(body, response.status);
+    if (response.status === 429) {
+      const wait = Number(response.headers.get("retry-after"));
+      message = `Too many requests.${Number.isFinite(wait) && wait > 0 ? ` Try again in ${Math.ceil(wait)} seconds.` : " Wait a moment and try again."}`;
+    }
+    throw new ApiError(response.status, message, body);
+  }
   return body as T;
 }
 

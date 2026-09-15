@@ -7,6 +7,8 @@ network. ``make test-kernel`` runs them inside a private network namespace (``un
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from sentinelx.system.interfaces import local_addresses
@@ -16,13 +18,20 @@ ATTACKER = "203.0.113.5"
 VICTIM = "203.0.113.6"
 
 
+_HERE = Path(__file__).parent
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    # This hook receives every collected test in the session, not only this directory's.
+    kernel_items = [item for item in items if _HERE in Path(item.path).parents]
+    if not kernel_items:
+        return
     ready = (
         capture_privilege().granted
         and firewall_privilege().granted
         and {ATTACKER, VICTIM} <= local_addresses()
     )
-    for item in items:
+    for item in kernel_items:
         item.add_marker(pytest.mark.root)
         if not ready:
             item.add_marker(

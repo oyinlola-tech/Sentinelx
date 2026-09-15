@@ -8,41 +8,54 @@ import useSWR from "swr";
 import { PageHeader } from "@/components/shell/page-header";
 import { BlockDialog } from "@/components/views/block-dialog";
 import { DetectionTable } from "@/components/views/detection-table";
-import { Button, ErrorState, Field, KeyValue, Panel, Select, Skeleton, Textarea } from "@/components/ui/primitives";
+import { Button, Dialog, ErrorState, Field, KeyValue, Panel, Select, Skeleton, StaleNotice, Textarea } from "@/components/ui/primitives";
 import { Mono, OutcomeBadge, RiskBreakdown, SeverityBadge, StatusBadge } from "@/components/ui/security";
 import { useToast } from "@/components/ui/toast";
 import { ApiError, api } from "@/lib/api";
 import { useEventRefresh } from "@/lib/events";
 import { ago, clock, humanise, severityColor, timestamp } from "@/lib/format";
+import { isTransientRateLimit } from "@/lib/rate-limit";
 import { useSession } from "@/lib/session";
 import type { Incident, IncidentStatus } from "@/lib/types";
 
 const STATUSES: IncidentStatus[] = ["open", "investigating", "contained", "resolved", "false_positive"];
+/** Statuses that close an incident, so they ask for confirmation first. */
+const CLOSING: IncidentStatus[] = ["resolved", "false_positive"];
 
 export default function IncidentPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { can, user } = useSession();
   const toast = useToast();
-  const { data, error, mutate } = useSWR<Incident>(`/incidents/${id}`);
+  // Events keep the page current; the interval covers a dropped or reconnecting stream.
+  const { data, error, mutate } = useSWR<Incident>(`/incidents/${id}`, { refreshInterval: 30_000 });
   useEventRefresh(["incident.updated", "severity.changed", "response.decided", "ip.blocked"], () => void mutate());
   const [blockTarget, setBlockTarget] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [closing, setClosing] = useState<IncidentStatus | null>(null);
 
   if (error instanceof ApiError && error.status === 404) return <div className="panel"><ErrorState error={new Error("This incident no longer exists.")} /></div>;
-  if (error) return <div className="panel"><ErrorState error={error} onRetry={() => void mutate()} /></div>;
+  const rateLimited = isTransientRateLimit(error, data);
+  if (error && !rateLimited) return <div className="panel"><ErrorState error={error} onRetry={() => void mutate()} /></div>;
   if (!data) return <div className="flex flex-col gap-4"><Skeleton className="h-10 w-1/2" /><Skeleton className="h-72" /></div>;
 
-  async function update(changes: Partial<Pick<Incident, "status" | "assigned_to" | "notes">>, message: string) {
+  async function update(changes: Partial<Pick<Incident, "status" | "assigned_to" | "notes">>, message: string): Promise<boolean> {
     setSaving(true);
     try {
       await mutate(api<Incident>(`/incidents/${id}`, { method: "PATCH", json: changes }).then((updated) => ({ ...data!, ...updated })), { revalidate: true });
       toast("success", message);
+      return true;
     } catch (caught) {
       toast("error", "Could not update the incident", caught instanceof Error ? caught.message : undefined);
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  function chooseStatus(status: IncidentStatus) {
+    if (CLOSING.includes(status)) setClosing(status);
+    else void update({ status }, `Status set to ${humanise(status)}`);
   }
 
   const detections = data.detections ?? [];
@@ -51,6 +64,7 @@ export default function IncidentPage() {
       <button onClick={() => router.back()} className="mb-3 inline-flex items-center gap-1 text-xs text-mist hover:text-frost">
         <ArrowLeft className="size-3.5" aria-hidden /> Back
       </button>
+      {rateLimited && <StaleNotice error={error} className="mb-4" />}
       <PageHeader
         eyebrow={`Incident · ${humanise(data.correlation_rule)}`}
         title={data.title}
@@ -58,7 +72,7 @@ export default function IncidentPage() {
         actions={
           <>
             {can("analyst") && (
-              <Select aria-label="Incident status" value={data.status} disabled={saving} onChange={(event) => void update({ status: event.target.value as IncidentStatus }, `Status set to ${humanise(event.target.value)}`)} className="w-44">
+              <Select aria-label="Incident status" value={data.status} disabled={saving} onChange={(event) => chooseStatus(event.target.value as IncidentStatus)} className="w-44">
                 {STATUSES.map((status) => <option key={status} value={status}>{humanise(status)}</option>)}
               </Select>
             )}
@@ -92,20 +106,22 @@ export default function IncidentPage() {
           </Panel>
           <Panel title="Actions taken" eyebrow="Response" bodyClassName="p-0">
             {data.actions?.length ? (
-              <table className="data-table">
-                <thead><tr><th scope="col">When</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Detail</th></tr></thead>
-                <tbody>
-                  {data.actions.map((action) => (
-                    <tr key={action.decision_id}>
-                      <td><Mono className="text-mist">{ago(action.decided_at)}</Mono></td>
-                      <td>{humanise(action.action)}</td>
-                      <td><Mono>{action.target}</Mono></td>
-                      <td><OutcomeBadge outcome={action.outcome} /></td>
-                      <td className="text-mist">{action.error ?? action.reason}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead><tr><th scope="col">When</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Detail</th></tr></thead>
+                  <tbody>
+                    {data.actions.map((action) => (
+                      <tr key={action.decision_id}>
+                        <td><Mono className="text-mist">{ago(action.decided_at)}</Mono></td>
+                        <td className="whitespace-nowrap">{humanise(action.action)}</td>
+                        <td><Mono>{action.target}</Mono></td>
+                        <td><OutcomeBadge outcome={action.outcome} action={action.action} /></td>
+                        <td className="text-mist">{action.error ?? action.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <p className="px-4 py-3 text-sm text-mist">No response has been applied. Recommended action: <span className="font-mono text-frost">{humanise(data.recommended_action)}</span>.</p>
             )}
@@ -143,6 +159,20 @@ export default function IncidentPage() {
         </div>
       </div>
       <BlockDialog open={blockTarget !== null} onClose={() => setBlockTarget(null)} initialTarget={blockTarget ?? ""} initialReason={`Incident: ${data.title}`} onDone={() => void mutate()} />
+      <Dialog
+        open={closing !== null}
+        onClose={() => setClosing(null)}
+        title={closing === "false_positive" ? "Mark incident as false positive" : "Resolve incident"}
+        footer={<><Button variant="ghost" onClick={() => setClosing(null)}>Keep {humanise(data.status)}</Button><Button variant="primary" loading={saving} onClick={async () => { if (closing && (await update({ status: closing }, `Status set to ${humanise(closing)}`))) setClosing(null); }}>{closing === "false_positive" ? "Mark as false positive" : "Resolve incident"}</Button></>}
+      >
+        <div className="flex flex-col gap-2 text-sm text-mist">
+          <p>
+            <span className="text-frost">{data.title}</span> changes from <span className="text-frost">{humanise(data.status)}</span> to <span className="text-frost">{humanise(closing)}</span> and moves to the Closed list on the Incidents page.
+            {closing === "false_positive" ? " Use this when the detections were not an attack, so the record shows the alert was wrong." : " Use this when the activity has been dealt with."}
+          </p>
+          <p>The change is visible to everyone and can be reversed by setting the status again.</p>
+        </div>
+      </Dialog>
     </>
   );
 }

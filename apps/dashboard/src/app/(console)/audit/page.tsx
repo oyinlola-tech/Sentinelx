@@ -9,6 +9,7 @@ import { query } from "@/lib/api";
 import { useEventRefresh } from "@/lib/events";
 import { humanise, timestamp } from "@/lib/format";
 import { useSession } from "@/lib/session";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 import type { AuditEvent, Page } from "@/lib/types";
 
 export default function AuditPage() {
@@ -18,7 +19,11 @@ export default function AuditPage() {
   const [target, setTarget] = useState("");
   const [offset, setOffset] = useState(0);
   const [expanded, setExpanded] = useState<number | null>(null);
-  const key = can("analyst") ? `/audit${query({ actor: actor || null, action: action || null, target: target || null, limit: 50, offset })}` : null;
+  // The filters are exact matches on the server; wait for a pause in typing before fetching.
+  const actorFilter = useDebouncedValue(actor.trim(), 300);
+  const actionFilter = useDebouncedValue(action.trim(), 300);
+  const targetFilter = useDebouncedValue(target.trim(), 300);
+  const key = can("analyst") ? `/audit${query({ actor: actorFilter || null, action: actionFilter || null, target: targetFilter || null, limit: 50, offset })}` : null;
   const { data, error, mutate } = useSWR<Page<AuditEvent>>(key);
   useEventRefresh(["audit.event"], () => void mutate(), 2000);
 
@@ -30,9 +35,9 @@ export default function AuditPage() {
       <PageHeader title="Audit log" description="Every administrative and response action: who did it, from where, to what, and whether it succeeded. Entries cannot be edited." />
       <Panel bodyClassName="p-0">
         <div className="grid gap-2 border-b border-line p-3 sm:grid-cols-3">
-          <Input aria-label="Filter by actor" placeholder="Actor, e.g. admin or cli:alice" value={actor} onChange={(event) => { setActor(event.target.value); setOffset(0); }} />
-          <Input aria-label="Filter by action" placeholder="Action, e.g. BLOCK_IP" value={action} onChange={(event) => { setAction(event.target.value); setOffset(0); }} className="font-mono uppercase" />
-          <Input aria-label="Filter by target" placeholder="Target, e.g. 203.0.113.45" value={target} onChange={(event) => { setTarget(event.target.value); setOffset(0); }} className="font-mono" />
+          <Input aria-label="Filter by actor" placeholder="Actor (exact match), e.g. admin" value={actor} onChange={(event) => { setActor(event.target.value); setOffset(0); }} />
+          <Input aria-label="Filter by action" placeholder="Action (exact match), e.g. BLOCK_IP" value={action} onChange={(event) => { setAction(event.target.value); setOffset(0); }} className="font-mono uppercase" />
+          <Input aria-label="Filter by target" placeholder="Target (exact match), e.g. 203.0.113.45" value={target} onChange={(event) => { setTarget(event.target.value); setOffset(0); }} className="font-mono" />
         </div>
         {error ? <ErrorState error={error} onRetry={() => void mutate()} /> : !data ? <TableSkeleton /> : !data.items.length ? <EmptyState title="No audit events match" /> : (
           <>

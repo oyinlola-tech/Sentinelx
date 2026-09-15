@@ -164,7 +164,9 @@ class QueryService:
             record = await DetectionRepository(session).get(detection_id)
             if record is None:
                 return None
-            actions = await ResponseActionRepository(session).page(detection_id=detection_id)
+            actions = await ResponseActionRepository(session).page(
+                detection_id=detection_id, include_replays=True
+            )
         data = detection_record_to_dict(record)
         data["actions"] = [action_to_dict(a) for a in actions.items]
         return data
@@ -190,18 +192,17 @@ class QueryService:
             if record is None:
                 return None
             detections = await repo.detections(incident_id)
-            actions = await ResponseActionRepository(session).page(incident_id=incident_id)
-            detection_ids = [d.detection_id for d in detections]
-            detection_actions: list[ResponseActionRecord] = []
-            for detection_id in detection_ids[:50]:
-                detection_actions.extend(
-                    (await ResponseActionRepository(session).page(detection_id=detection_id)).items
-                )
+            # One query for the incident's and its detections' actions (was one per detection).
+            actions = await ResponseActionRepository(session).page(
+                incident_id=incident_id,
+                detection_ids=[d.detection_id for d in detections],
+                include_replays=True,
+                limit=500,
+            )
         data = incident_record_to_dict(record)
         data["detections"] = [detection_record_to_dict(d) for d in detections]
-        all_actions = {a.decision_id: a for a in [*actions.items, *detection_actions]}
         data["actions"] = [
-            action_to_dict(a) for a in sorted(all_actions.values(), key=lambda a: a.decided_at)
+            action_to_dict(a) for a in sorted(actions.items, key=lambda a: a.decided_at)
         ]
         top = max(detections, key=lambda d: d.risk_score, default=None)
         data["recommended_action"] = top.recommended_action if top else "alert"
@@ -290,7 +291,7 @@ class QueryService:
             "active": [entry.as_dict() for entry in live],
             "history": [block_to_dict(r) for r in history.items],
             "actions": [action_to_dict(a) for a in actions.items],
-            "pending_approvals": [p.as_dict() for p in response.pending.values()],
+            "pending_approvals": [p.as_dict() for p in response.pending_actions()],
         }
 
     async def actions(self, **filters: Any) -> dict[str, Any]:
@@ -359,16 +360,15 @@ class QueryService:
         since = datetime.now(UTC) - timedelta(hours=24)
         async with self.database.session() as session:
             summary = await AnalyticsRepository(session).summary(since)
-            open_incidents = await IncidentRepository(session).page(
-                statuses=["open", "investigating"], limit=5
-            )
-            critical = await IncidentRepository(session).page(
-                statuses=["open", "investigating"], severities=["critical"], limit=1
-            )
+            # "Active" means the same everywhere: the Incidents page's Active tab and here.
+            active = ["open", "investigating", "contained"]
+            incidents = IncidentRepository(session)
+            open_incidents = await incidents.page(statuses=active, limit=5)
+            critical = await incidents.page(statuses=active, severities=["critical"], limit=1)
+            top_risk = await incidents.highest_risk(active)
             recent = await DetectionRepository(session).page(DetectionFilter(), limit=8)
         report = pipeline.last_report
         stats = pipeline.extractor.stats
-        top_risk = max((i.risk_score for i in open_incidents.items), default=0.0)
         return {
             "packets_processed": stats.packets,
             "bytes_processed": stats.bytes_total,
@@ -382,7 +382,7 @@ class QueryService:
             "open_incidents": open_incidents.total,
             "critical_incidents": critical.total,
             "blocked_sources": len(await pipeline.response.blocked()),
-            "pending_approvals": len(pipeline.response.pending),
+            "pending_approvals": len(pipeline.response.pending_actions()),
             "current_risk": top_risk,
             "top_incidents": [incident_record_to_dict(i) for i in open_incidents.items],
             "recent_detections": [detection_record_to_dict(d) for d in recent.items],

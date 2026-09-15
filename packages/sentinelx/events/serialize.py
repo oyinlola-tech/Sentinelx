@@ -61,7 +61,9 @@ def incident_to_dict(incident: Incident) -> dict[str, Any]:
         "severity": incident.severity.value,
         "status": incident.status.value,
         "risk": risk_to_dict(incident.risk),
-        "detection_ids": list(incident.detection_ids),
+        # Most recent ids and entries only: events and database updates stay small
+        # however long an incident runs. detection_count is always the full count.
+        "detection_ids": incident.detection_ids[-200:],
         "detection_count": incident.detection_count,
         "affected_sources": sorted(incident.affected_sources),
         "affected_destinations": sorted(incident.affected_destinations),
@@ -71,5 +73,5 @@ def incident_to_dict(incident: Incident) -> dict[str, Any]:
         "first_seen": incident.first_seen.isoformat(),
         "last_seen": incident.last_seen.isoformat(),
         "duration_seconds": round(incident.duration_seconds, 3),
-        "timeline": incident.timeline,
+        "timeline": incident.timeline[-200:],
     }

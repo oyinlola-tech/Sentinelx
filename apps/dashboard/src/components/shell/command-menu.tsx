@@ -123,7 +123,10 @@ export function CommandMenu({ pages }: { pages: CommandItem[] }) {
                 if (event.key === "Enter") { event.preventDefault(); go(items[active]); }
               }}
               placeholder="Jump to a page, or paste an IP or detection id"
+              role="combobox"
               aria-label="Search pages, addresses and ids"
+              aria-autocomplete="list"
+              aria-expanded={items.length > 0}
               aria-controls="command-results"
               aria-activedescendant={items[active] ? `command-${items[active]!.id}` : undefined}
               className="h-12 flex-1 bg-transparent text-sm outline-none placeholder:text-fog"

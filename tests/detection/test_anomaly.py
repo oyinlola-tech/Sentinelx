@@ -138,3 +138,22 @@ class TestMachineLearning:
         old.chmod(0o600)
         with pytest.raises(ConfigurationError, match="incompatible"):
             load_model(old)
+
+
+async def test_anomaly_detector_disabled_in_dashboard_can_be_switched_back_on() -> None:
+    from sentinelx.assembly import attach_anomaly_detectors
+    from sentinelx.config.settings import Settings
+    from sentinelx.firewall import MemoryFirewall
+    from sentinelx.pipeline import Pipeline
+
+    settings = Settings(
+        storage={"database_url": "sqlite+aiosqlite:///:memory:"},
+        detection={"disabled_detectors": ["statistical_anomaly"]},
+    )
+    pipeline = Pipeline(settings, firewall=MemoryFirewall())
+    assert attach_anomaly_detectors(pipeline, settings) == ["statistical_anomaly"]
+    detector = next(d for d in pipeline.detection.detectors if d.name == "statistical_anomaly")
+    assert detector.enabled is False
+    # Previously the detector was never attached, so this toggle returned "not found".
+    assert pipeline.detection.set_enabled("statistical_anomaly", True)
+    assert detector.enabled is True

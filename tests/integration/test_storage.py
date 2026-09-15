@@ -22,7 +22,7 @@ from sentinelx.firewall import MemoryFirewall
 from sentinelx.pipeline import Pipeline
 from sentinelx.storage.audit import AuditService
 from sentinelx.storage.database import Database, normalise_database_url
-from sentinelx.storage.models import AuditEvent, DetectionRecord, User
+from sentinelx.storage.models import AuditEvent, DetectionRecord, ReplayRecord, User
 from sentinelx.storage.persister import EventPersister
 from sentinelx.storage.redis_state import SharedState
 from sentinelx.storage.repositories import (
@@ -49,15 +49,19 @@ async def database(request: pytest.FixtureRequest) -> AsyncIterator[Database]:
     url = request.param
     db = Database(StorageSettings(database_url=url))
     if url.startswith("postgresql"):
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sentinelx.storage.database import normalise_database_url
         from sentinelx.storage.migrate import upgrade
 
-        await db.connect(create_schema=False)
-        async with db.engine.begin() as connection:
+        # Reset with a bare engine: Database.connect() refuses an outdated schema.
+        engine = create_async_engine(normalise_database_url(url))
+        async with engine.begin() as connection:
             await connection.execute(text("DROP SCHEMA public CASCADE"))
             await connection.execute(text("CREATE SCHEMA public"))
+        await engine.dispose()
         await upgrade(url)  # the real migration path, not create_all
-    else:
-        await db.connect()
+    await db.connect()
     yield db
     await db.close()
 
@@ -257,6 +261,56 @@ async def test_retention_purges_old_data_but_keeps_open_incidents_and_recent_aud
     async with database.session() as session:
         assert (await DetectionRepository(session).get("new")) is not None
         assert (await IncidentRepository(session).get("open-old")) is not None
+
+
+async def test_retention_expires_replay_results_with_their_replay_not_packet_time(
+    database: Database,
+) -> None:
+    # Replayed captures keep their original timestamps (here from 2023). Results of a
+    # replay run today must survive; those of a replay run long ago must not.
+    capture_time = datetime(2023, 11, 14, tzinfo=UTC)
+    long_ago = datetime.now(UTC) - timedelta(days=90)
+
+    def detection(detection_id: str, replay_id: str) -> DetectionRecord:
+        return DetectionRecord(
+            detection_id=detection_id,
+            timestamp=capture_time,
+            detector="tcp_port_scan",
+            category="reconnaissance",
+            severity="medium",
+            confidence=0.8,
+            title="t",
+            source_ip="203.0.113.45",
+            recommended_action="alert",
+            replay_id=replay_id,
+        )
+
+    async with database.session() as session:
+        session.add(ReplayRecord(replay_id="today", filename="scan.pcap"))
+        session.add(ReplayRecord(replay_id="old", filename="scan.pcap", created_at=long_ago))
+        session.add(detection("from-today", "today"))
+        session.add(detection("from-old", "old"))
+        for replay_id in ("today", "old"):
+            await IncidentRepository(session).upsert(
+                {
+                    "incident_id": f"incident-{replay_id}",
+                    "title": "t",
+                    "severity": "medium",
+                    "risk_score": 50,
+                    "first_seen": capture_time,
+                    "last_seen": capture_time,
+                    "replay_id": replay_id,
+                }
+            )
+    async with database.session() as session:
+        purged = await RetentionRepository(session).purge(
+            retention_days=30, audit_days=365, metrics_days=7
+        )
+    assert purged["detections"] == 1 and purged["incidents"] == 1 and purged["replays"] == 1
+    async with database.session() as session:
+        assert (await DetectionRepository(session).get("from-today")) is not None
+        assert (await DetectionRepository(session).get("from-old")) is None
+        assert (await IncidentRepository(session).get("incident-today")) is not None
 
 
 class TestSharedState:

@@ -1,17 +1,21 @@
-# SentinelX stack: PostgreSQL, Redis, database migration, API, dashboard.
+# SentinelX stack: PostgreSQL, Redis, migration, API, dashboard, and a front proxy.
 #
-#   cp .env.example .env    # then set the secrets it marks as required
+#   cp .env.example .env        # set POSTGRES_PASSWORD, REDIS_PASSWORD, JWT_SECRET
 #   docker compose up -d --build
+#   open http://127.0.0.1:3000  # everything (dashboard, API, event stream) is served here
 #
 # NETWORKING - read before expecting live capture:
-# Containers on a bridge network see only their own traffic, never the host's.
-# The default stack therefore runs detection on PCAP replay, and on traffic you send
-# to the stack itself. For live capture of host traffic, run the `capture` profile,
-# which starts `sensor` on the HOST network with CAP_NET_RAW (and CAP_NET_ADMIN, used
-# only if you enable a firewall backend). Linux only. See docs/deployment.md.
+# A container on a bridge network sees only its own traffic, never the host's. The
+# default stack runs detection on PCAP replays and on traffic sent to the stack
+# itself. To capture the HOST's traffic (Linux hosts only), run the sensor on the host
+# network instead of the bridge API:
 #
-#   DASHBOARD_API_URL=http://host.docker.internal:8001 PUBLIC_WS_URL=ws://localhost:8001 \
+#   SENTINELX_API_UPSTREAM=172.31.250.1:8001 \
 #     docker compose --profile capture up -d --build --scale api=0
+#
+# Docker Desktop (macOS, Windows) runs containers in a virtual machine: host networking
+# there captures the VM's traffic, not your computer's. Run SentinelX natively instead.
+# See docs/deployment.md.
 
 name: sentinelx
 
@@ -20,9 +24,12 @@ x-api-env: &api-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-sentinelx}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-sentinelx}
   REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
   JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ characters) in .env}
-  API__BOOTSTRAP_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-  API__METRICS_TOKEN: ${METRICS_TOKEN:-}
-  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  API__BOOTSTRAP_ADMIN_PASSWORD: ${API__BOOTSTRAP_ADMIN_PASSWORD:-}
+  API__METRICS_TOKEN: ${API__METRICS_TOKEN:-}
+  # Browsers reach the API through the proxy, on the dashboard's origin.
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+  # The proxy's network: X-Forwarded-For is believed only from here.
+  API__TRUSTED_PROXIES: '["${FRONTEND_SUBNET:-172.31.250.0/24}"]'
   DETECTION_MODE: ${DETECTION_MODE:-balanced}
   RESPONSE_MODE: ${RESPONSE_MODE:-detect_only}
   DRY_RUN: ${DRY_RUN:-true}
@@ -43,7 +50,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      # Loopback only; needed by the host-network `sensor` profile.
+      # Loopback only; the host-network sensor (capture profile) connects here.
       - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -76,6 +83,9 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     networks: [backend]
 
   api:
@@ -86,7 +96,7 @@ services:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     ports:
-      # Bound to loopback: put a TLS-terminating reverse proxy in front for remote access.
+      # Direct access for scripts and Prometheus, loopback only. Browsers use the proxy.
       - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - pcaps:/data/pcaps
@@ -100,23 +110,39 @@ services:
     build: { context: ., dockerfile: docker/Dockerfile.dashboard }
     image: sentinelx-dashboard:local
     restart: unless-stopped
-    environment:
-      # With the capture profile, point this at the sensor: http://host.docker.internal:8001
-      SENTINELX_API_URL: ${DASHBOARD_API_URL:-http://api:8000}
-      SENTINELX_PUBLIC_WS_URL: ${PUBLIC_WS_URL:-ws://localhost:8000}
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    depends_on:
-      api: { condition: service_healthy, required: false }
-    ports:
-      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
     read_only: true
     tmpfs: ["/tmp"]
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [frontend]
 
-  # Live capture of host traffic. Replaces `api`: same image, host network, packet
-  # capabilities. Start with: docker compose --profile capture up -d
+  proxy:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    restart: unless-stopped
+    environment:
+      SENTINELX_API_UPSTREAM: ${SENTINELX_API_UPSTREAM:-api:8000}
+      SENTINELX_MAX_UPLOAD_MB: ${SENTINELX_MAX_UPLOAD_MB:-200}
+      NGINX_ENVSUBST_FILTER: "^SENTINELX_"
+    volumes:
+      - ./docker/proxy/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      dashboard: { condition: service_healthy }
+      api: { condition: service_healthy, required: false }
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/v1/system/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [frontend]
+
+  # Live capture of the host's traffic (Linux hosts). Replaces `api`: same image, host
+  # network, and a sensor interpreter holding CAP_NET_RAW/CAP_NET_ADMIN.
   sensor:
     profiles: [capture]
     image: sentinelx-api:local
@@ -124,15 +150,19 @@ services:
     network_mode: host
     environment:
       <<: *api-env
-      # Host networking cannot resolve compose service names; published ports are used instead.
+      # Host networking cannot resolve compose service names; published ports are used.
       DATABASE_URL: postgresql://${POSTGRES_USER:-sentinelx}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-5433}/${POSTGRES_DB:-sentinelx}
       REDIS_URL: redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_HOST_PORT:-6381}/0
-      API_HOST: 0.0.0.0
-      API_PORT: "8001"
-    command: ["sentinelx", "start", "--capture"]
+      # Listen only where the proxy reaches the host (the frontend network's gateway),
+      # never on every host interface. The proxy upstream must match:
+      # SENTINELX_API_UPSTREAM=${FRONTEND_GATEWAY}:${SENSOR_PORT}.
+      API_HOST: ${FRONTEND_GATEWAY:-172.31.250.1}
+      API_PORT: ${SENSOR_PORT:-8001}
+    command: ["python3-sensor", "-m", "sentinelx", "start", "--capture"]
     cap_drop: [ALL]
     cap_add: [NET_RAW, NET_ADMIN]
-    security_opt: ["no-new-privileges:false"]  # file capabilities on python require exec privilege gain
+    # File capabilities on python3-sensor are only granted when privilege gain is allowed.
+    security_opt: ["no-new-privileges:false"]
     depends_on:
       migrate: { condition: service_completed_successfully }
     volumes:
@@ -145,3 +175,7 @@ volumes:
 networks:
   backend:
   frontend:
+    ipam:
+      config:
+        - subnet: ${FRONTEND_SUBNET:-172.31.250.0/24}
+          gateway: ${FRONTEND_GATEWAY:-172.31.250.1}

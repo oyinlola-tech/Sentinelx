@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import useSWR from "swr";
-import { ApiError, api } from "./api";
+import { ApiError, SESSION_EXPIRED_EVENT, api } from "./api";
 import type { LoginRequest, Role, User } from "./types";
 
 interface SessionValue {
@@ -35,8 +35,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const loading = isLoading && data === undefined;
 
   useEffect(() => {
+    // A request failed with 401 and the session could not be refreshed: sign out now
+    // rather than leaving pages showing "invalid token" errors.
+    const expired = () => void mutate(null, { revalidate: false });
+    window.addEventListener(SESSION_EXPIRED_EVENT, expired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expired);
+  }, [mutate]);
+
+  useEffect(() => {
     if (loading) return;
-    if (!user && pathname !== "/login") router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+    const here = `${pathname}${window.location.search}`;
+    if (!user && pathname !== "/login") router.replace(`/login?next=${encodeURIComponent(here)}`);
     if (user?.must_change_password && pathname !== "/account") router.replace("/account?required=1");
   }, [loading, user, pathname, router]);
 

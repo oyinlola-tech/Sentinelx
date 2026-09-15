@@ -374,8 +374,9 @@ class ResponseSettings(BaseModel):
     )
     protect_management_addresses: bool = Field(
         default=True,
-        description="Refuse to block any address currently assigned to a local interface, "
-        "and any address with an established connection to the API port.",
+        description="Refuse to block any address assigned to this host, and the address "
+        "of any operator who used the API in the last hour (so an administrator cannot "
+        "block their own workstation).",
     )
     management_addresses: list[str] = Field(default_factory=list)
 
@@ -751,15 +752,28 @@ class Settings(BaseSettings):
         return self.response.prevention_active
 
     def safety_banner(self) -> str:
-        """One-line description of the current safety posture, shown at startup."""
-        if self.prevention_active:
-            return (
-                f"PREVENTION ACTIVE - responses will modify the {self.response.firewall_backend} "
-                f"firewall on this host"
-            )
-        if self.response.dry_run and self.response.mode is not ResponseMode.DETECT_ONLY:
+        """One line saying what SentinelX may do to traffic right now.
+
+        The part before `` - `` is the posture shown on the dashboard's safety chip. It
+        reflects every path that can change the firewall, including manual blocks and
+        approvals, not only automatic responses.
+        """
+        response = self.response
+        backend = response.firewall_backend
+        if response.dry_run:
+            if response.mode is ResponseMode.DETECT_ONLY:
+                return "DETECTION ONLY - no traffic will be modified"
             return "DRY RUN - response decisions are recorded and shown but not applied"
-        return "DETECTION ONLY - no traffic will be modified"
+        target = (
+            "but no firewall backend is configured, so they will be refused"
+            if backend == "null"
+            else f"and will modify the {backend} firewall on this host"
+        )
+        if self.prevention_active:
+            return f"PREVENTION ACTIVE - automatic responses are enforced {target}"
+        if response.mode is ResponseMode.MANUAL_APPROVAL:
+            return f"MANUAL APPROVAL - approved responses are enforced {target}"
+        return f"MANUAL BLOCKS ENFORCED - automatic responses are off; administrator blocks are enforced {target}"
 
 
 @lru_cache(maxsize=1)

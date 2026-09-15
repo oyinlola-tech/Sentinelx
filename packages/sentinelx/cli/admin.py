@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import sys
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -119,11 +116,14 @@ def register(app: typer.Typer) -> None:
             run_rule_on_pcap,
             run_rule_tests,
         )
-        from sentinelx.testing import get_scenario
+        from sentinelx.testing import SCENARIOS, get_scenario
 
         loaded = load_rules(path, max_window_seconds=max_rule_window(settings))
         for problem in loaded.problems:
             err.print(f"[red]invalid:[/] {problem}")
+        if scenario and scenario not in SCENARIOS:
+            err.print(f"unknown scenario; available: {', '.join(sorted(SCENARIOS))}")
+            raise typer.Exit(2)
         results: list[dict[str, Any]] = []
         failed = bool(loaded.problems)
         for rule in loaded.rules:
@@ -216,16 +216,9 @@ def register(app: typer.Typer) -> None:
         if ctx.invoked_subcommand:
             return
         settings = load_settings()
-        from sentinelx.services.config import EDITABLE
+        from sentinelx.services.config import EDITABLE, redacted_settings
 
-        data = settings.model_dump(mode="json")
-        data["api"].pop("jwt_secret", None)
-        data["api"].pop("bootstrap_admin_password", None)
-        data["api"].pop("metrics_token", None)
-        from sentinelx.services.config import redact_url
-
-        data["storage"]["database_url"] = redact_url(settings.storage.database_url)
-        data["storage"]["redis_url"] = redact_url(settings.storage.redis_url)
+        data = redacted_settings(settings)
         if section:
             data = {section: data.get(section)}
         if as_json:
@@ -252,7 +245,10 @@ def register(app: typer.Typer) -> None:
         ],
         confirm_prevention: Annotated[
             bool,
-            typer.Option("--confirm-prevention", help="Required to enable automatic enforcement."),
+            typer.Option(
+                "--confirm-prevention",
+                help="Required to turn dry run off or to enable automatic enforcement.",
+            ),
         ] = False,
     ) -> None:
         """Persist a runtime setting change (audited). Takes effect on the next start of the server."""
@@ -465,140 +461,82 @@ def register(app: typer.Typer) -> None:
 
     # ----------------------------------------------------------------- doctor
     @app.command(rich_help_panel="Operate")
-    def doctor(as_json: JsonOption = False) -> None:
-        """Check this host and configuration for everything SentinelX needs. Exit 1 on failures."""
-        checks: list[dict[str, str]] = []
+    def doctor(
+        as_json: JsonOption = False,
+        api_url: Annotated[
+            str | None, typer.Option(help="API to probe (default: API_HOST:API_PORT).")
+        ] = None,
+        dashboard_url: Annotated[
+            str | None,
+            typer.Option(help="Dashboard to probe (default: SENTINELX_DASHBOARD_URL or :3000)."),
+        ] = None,
+    ) -> None:
+        """Diagnose this host and configuration: PASS, WARN, FAIL per check. Exit 1 on FAIL."""
+        from sentinelx.services.diagnostics import Check, run_diagnostics
 
-        def check(name: str, status: str, detail: str) -> None:
-            checks.append({"check": name, "status": status, "detail": detail})
-
-        version = sys.version_info
-        check(
-            "python",
-            "ok" if version >= (3, 12) else "fail",
-            f"{version.major}.{version.minor}.{version.micro}",
-        )
         try:
             settings = load_settings()
-            check("configuration", "ok", f"environment={settings.environment}")
         except typer.Exit:
-            check("configuration", "fail", "settings failed validation (run: sentinelx config)")
-            _print_checks(checks, as_json)
+            _print_checks(
+                [
+                    Check(
+                        "configuration",
+                        "FAIL",
+                        "settings failed validation",
+                        "run: sentinelx config",
+                    )
+                ],
+                as_json,
+            )
             raise typer.Exit(1) from None
 
-        check(
-            "safety posture",
-            "warn" if settings.prevention_active else "ok",
-            settings.safety_banner(),
+        checks = run(
+            lambda: run_diagnostics(settings, api_url=api_url, dashboard_url=dashboard_url)
         )
-        from sentinelx.capture.live import LiveCapture
-        from sentinelx.system.interfaces import list_interfaces
-
-        capture = LiveCapture.capabilities(settings.capture.backend)
-        check(
-            "live capture",
-            "ok" if capture.available else "warn",
-            f"available via {capture.backend}: {capture.reason}"
-            if capture.available
-            else f"unavailable: {capture.reason} (replay still works). {capture.remedy}",
-        )
-        interfaces = list_interfaces()
-        wanted = settings.capture.interface
-        present = wanted == "any" or any(i["name"] == wanted for i in interfaces)
-        check(
-            "capture interface",
-            "ok" if present else "fail",
-            f"{wanted} ({len(interfaces)} interfaces found)",
-        )
-
-        for binary, backend in (("nft", "nftables"), ("iptables", "iptables")):
-            found = shutil.which(binary)
-            needed = settings.response.firewall_backend == backend
-            check(
-                f"{backend} binary",
-                "ok" if found else ("fail" if needed else "info"),
-                found or ("missing - required by FIREWALL_BACKEND" if needed else "not installed"),
-            )
-        can_admin = os.geteuid() == 0 if hasattr(os, "geteuid") else False
-        if settings.response.firewall_backend != "null":
-            check(
-                "firewall privileges",
-                "ok" if can_admin else "warn",
-                "running as root" if can_admin else "firewall changes need root or CAP_NET_ADMIN",
-            )
-
-        from sentinelx.services.rules import max_rule_window
-        from sentinelx.signatures import load_rules
-
-        loaded = load_rules(
-            Path(settings.rules_directory), max_window_seconds=max_rule_window(settings)
-        )
-        check(
-            "rules",
-            "ok" if not loaded.problems else "fail",
-            f"{len(loaded.rules)} valid, {len(loaded.problems)} invalid in {settings.rules_directory}",
-        )
-
-        pcap_dir = Path(settings.capture.pcap_directory)
-        try:
-            pcap_dir.mkdir(parents=True, exist_ok=True)
-            probe = pcap_dir / ".doctor"
-            probe.write_bytes(b"")
-            probe.unlink()
-            check("pcap directory", "ok", f"{pcap_dir} writable")
-        except OSError as exc:
-            check("pcap directory", "fail", f"{pcap_dir}: {exc}")
-
-        if len(settings.api.jwt_secret) < 32:
-            check("jwt secret", "fail", "JWT_SECRET shorter than 32 characters")
-        elif not os.environ.get("JWT_SECRET") and not os.environ.get("API__JWT_SECRET"):
-            check(
-                "jwt secret",
-                "warn",
-                "not set: an ephemeral secret is used and sessions end on restart",
-            )
-        else:
-            check("jwt secret", "ok", "set")
-
-        async def services() -> None:
-            from sentinelx.storage.database import Database
-            from sentinelx.storage.migrate import current_revision, head_revision
-            from sentinelx.storage.redis_state import SharedState
-
-            database = Database(settings.storage)
-            try:
-                await database.connect(create_schema=False)
-                check("database", "ok", database.safe_url)
-                if database.dialect != "sqlite":
-                    applied = await current_revision(settings.storage.database_url)
-                    head = head_revision()
-                    check(
-                        "migrations",
-                        "ok" if applied == head else "fail",
-                        f"applied {applied or 'none'}, latest {head}"
-                        + ("" if applied == head else " - run: sentinelx db upgrade"),
-                    )
-            except Exception as exc:
-                check("database", "fail", str(exc))
-            finally:
-                await database.close()
-            state = SharedState(settings.storage)
-            await state.connect()
-            check(
-                "redis",
-                "ok"
-                if not state.degraded
-                else ("fail" if settings.storage.redis_required else "warn"),
-                "connected"
-                if not state.degraded
-                else "unreachable: degraded to per-process limits",
-            )
-            await state.close()
-
-        run(services)
+        checks.insert(1, Check("configuration", "PASS", f"environment={settings.environment}"))
         _print_checks(checks, as_json)
-        if any(c["status"] == "fail" for c in checks):
+        if any(check.status == "FAIL" for check in checks):
             raise typer.Exit(1)
+
+    @app.command(rich_help_panel="Operate")
+    def capabilities(as_json: JsonOption = False) -> None:
+        """What SentinelX can do on this host: capture, replay, firewall, blocking."""
+        from sentinelx.system.capabilities import detect_capabilities
+
+        report = detect_capabilities(load_settings())
+        if as_json:
+            emit_json(report.as_dict())
+            return
+        env = report.environment
+        console.print(f"[bold]{env.label()}[/]  Python {env.python_version}")
+        rows = []
+        for label, capability in report.items():
+            status = (
+                Text("AVAILABLE", style="green")
+                if capability.available
+                else Text("UNAVAILABLE", style="yellow")
+            )
+            rows.append((label.upper(), status, capability.detail, capability.remedy or "-"))
+        console.print(table("Capabilities", ["Capability", "Status", "Detail", "To enable"], rows))
+        if report.firewall_backends:
+            console.print(
+                table(
+                    "Firewall backends for this platform",
+                    ["Backend", "Status", "Detail", "Native expiry", "Rate limit"],
+                    [
+                        (
+                            b["backend"],
+                            Text("AVAILABLE", style="green")
+                            if b["available"]
+                            else Text("UNAVAILABLE", style="yellow"),
+                            b["reason"],
+                            "yes" if b["native_expiry"] else "no",
+                            "yes" if b["rate_limit"] else "no",
+                        )
+                        for b in report.firewall_backends
+                    ],
+                )
+            )
 
     @app.command(rich_help_panel="Operate")
     def version() -> None:
@@ -623,23 +561,27 @@ def _toggle_rule(rule_id: str, enabled: bool) -> None:
     )
 
 
-def _print_checks(checks: list[dict[str, str]], as_json: bool) -> None:
+def _print_checks(checks: list[Any], as_json: bool) -> None:
     if as_json:
-        emit_json(checks)
+        emit_json([check.as_dict() for check in checks])
         return
-    style = {
-        k: Text.from_markup(v)
-        for k, v in {
-            "ok": "[green]ok[/]",
-            "warn": "[yellow]warn[/]",
-            "fail": "[bold red]FAIL[/]",
-            "info": "[dim]info[/]",
-        }.items()
-    }
+    style = {"PASS": "green", "WARN": "yellow", "FAIL": "bold red", "INFO": "dim"}
     console.print(
         table(
-            "sentinelx doctor",
-            ["Check", "Status", "Detail"],
-            [(c["check"], style[c["status"]], c["detail"]) for c in checks],
+            "SentinelX doctor",
+            ["Status", "Check", "Detail", "To fix"],
+            [
+                (
+                    Text(check.status, style=style[check.status]),
+                    check.name,
+                    check.detail,
+                    check.remedy or "",
+                )
+                for check in checks
+            ],
         )
     )
+    counts = {
+        status: sum(c.status == status for c in checks) for status in ("PASS", "WARN", "FAIL")
+    }
+    console.print(f"{counts['PASS']} passed, {counts['WARN']} warnings, {counts['FAIL']} failed")

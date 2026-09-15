@@ -20,6 +20,7 @@ export function SensorControl() {
   const [iface, setIface] = useState("any");
   const [bpf, setBpf] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
   useEventRefresh(["sensor.status"], () => void mutate());
   const sensor = sensors?.[0];
 
@@ -41,6 +42,7 @@ export function SensorControl() {
     setBusy(true);
     try {
       await api("/sensors/stop", { method: "POST" });
+      setConfirmStop(false);
       toast("info", "Capture stopped");
       await mutate();
     } catch (error) {
@@ -64,7 +66,7 @@ export function SensorControl() {
         </div>
         {can("admin") &&
           (sensor.running ? (
-            <Button size="sm" variant="secondary" icon={<Square className="size-3.5" />} loading={busy} onClick={() => void stop()}>
+            <Button size="sm" variant="secondary" icon={<Square className="size-3.5" />} loading={busy} onClick={() => setConfirmStop(true)}>
               Stop capture
             </Button>
           ) : (
@@ -74,8 +76,11 @@ export function SensorControl() {
           ))}
       </div>
       {sensor.error && <p className="rounded-md border border-sev-high/40 bg-sev-high/10 px-3 py-2 text-xs text-sev-high">{sensor.error}</p>}
-      {!sensor.has_capture_privileges && !sensor.running && (
-        <p className="text-xs text-fog">This server process lacks CAP_NET_RAW, so live capture will be refused. PCAP replay still works. Run <code className="font-mono">sentinelx doctor</code> on the host for the fix.</p>
+      {!sensor.capture_capabilities.available && !sensor.running && (
+        <div className="rounded-md border border-line bg-ground/60 px-3 py-2 text-xs text-mist">
+          <p><span className="font-mono uppercase text-sev-medium">Live capture unavailable</span> · {sensor.capture_capabilities.reason}. PCAP replay still works.</p>
+          {sensor.capture_capabilities.remedy && <p className="mt-1 text-fog">To enable it: {sensor.capture_capabilities.remedy}</p>}
+        </div>
       )}
       {sensor.capture && (
         <dl className="grid grid-cols-3 gap-2 font-mono text-xs">
@@ -84,6 +89,19 @@ export function SensorControl() {
           <div><dt className="text-fog">queue drops</dt><dd className="tabular">{compact(sensor.capture.dropped_queue)}</dd></div>
         </dl>
       )}
+      <Dialog
+        open={confirmStop}
+        onClose={() => setConfirmStop(false)}
+        title="Stop live capture?"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmStop(false)}>Keep capturing</Button>
+            <Button variant="danger" loading={busy} onClick={() => void stop()}>Stop capture</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-mist">Detection of live traffic on {sensor.interface} stops until capture is started again. Detections already recorded are kept.</p>
+      </Dialog>
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
@@ -98,7 +116,7 @@ export function SensorControl() {
         <div className="flex flex-col gap-4">
           <Field label="Interface" htmlFor="iface">
             <Select id="iface" value={iface} onChange={(event) => setIface(event.target.value)}>
-              <option value="any">any (all interfaces)</option>
+              <option value="any">any (every interface)</option>
               {interfaces?.map((entry) => (
                 <option key={entry.name} value={entry.name}>
                   {entry.name} — {entry.state}{entry.addresses.length ? ` · ${entry.addresses[0]}` : ""}

@@ -1,4 +1,4 @@
-"""Programmatic migrations, used by ``sentinelx db`` and the API's startup check."""
+"""Programmatic migrations, used by ``sentinelx db`` and by start-up schema checks."""
 
 from __future__ import annotations
 
@@ -8,7 +8,19 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-__all__ = ["alembic_config", "current_revision", "downgrade", "head_revision", "upgrade"]
+__all__ = [
+    "INITIAL_REVISION",
+    "alembic_config",
+    "current_revision",
+    "downgrade",
+    "head_revision",
+    "stamp",
+    "upgrade",
+]
+
+#: The first migration. Databases created before migrations were tracked (by
+#: ``create_all``) match this revision and are stamped with it before upgrading.
+INITIAL_REVISION = "540eb200aacd"
 
 MIGRATIONS = Path(__file__).parent / "migrations"
 
@@ -24,6 +36,10 @@ def alembic_config(database_url: str) -> Config:
 async def upgrade(database_url: str, revision: str = "head") -> None:
     # env.py calls asyncio.run(), which cannot nest inside a running loop.
     await asyncio.to_thread(command.upgrade, alembic_config(database_url), revision)
+
+
+async def stamp(database_url: str, revision: str) -> None:
+    await asyncio.to_thread(command.stamp, alembic_config(database_url), revision)
 
 
 async def downgrade(database_url: str, revision: str) -> None:

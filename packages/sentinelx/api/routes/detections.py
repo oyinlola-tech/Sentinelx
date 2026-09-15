@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from sentinelx.api.schemas import DetectionStatusRequest, IncidentUpdateRequest
 from sentinelx.api.security import Analyst, PlatformDep, Viewer, client_ip
 from sentinelx.common.enums import IncidentStatus, Severity, ThreatCategory
+from sentinelx.events.bus import EventType
 from sentinelx.storage.repositories import DetectionFilter
 
 router = APIRouter()
@@ -36,7 +37,7 @@ async def list_detections(
     q: str | None = Query(default=None, max_length=200, description="Free-text search"),
     order: Literal["newest", "oldest", "risk"] = "newest",
     limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
 ) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     filters = DetectionFilter(
@@ -105,7 +106,7 @@ async def list_incidents(
     replay_id: str | None = Query(default=None, max_length=64),
     since: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
 ) -> dict[str, Any]:
     _, _, _, queries = platform.require()
     return await queries.incidents(
@@ -154,6 +155,10 @@ async def update_incident(
         details={k: v for k, v in changes.items() if k != "notes"}
         | ({"notes_changed": True} if "notes" in changes else {}),
     )
+    # Other open dashboards refresh the incident instead of showing a stale status.
+    await platform.bus.publish(
+        EventType.INCIDENT_UPDATED, {**incident, "updated_by": principal.username}
+    )
     return incident
 
 
@@ -178,7 +183,7 @@ async def alerts(
     return {
         "risk_threshold": threshold,
         "detections": detections,
-        "pending_approvals": [p.as_dict() for p in pipeline.response.pending.values()],
+        "pending_approvals": [p.as_dict() for p in pipeline.response.pending_actions()],
     }
 
 

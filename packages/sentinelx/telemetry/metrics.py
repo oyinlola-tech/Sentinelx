@@ -199,6 +199,18 @@ class _Metrics:
             "Connected dashboard WebSocket clients.",
             registry=registry,
         )
+        self.events_dropped = Counter(
+            f"{ns}_events_dropped_total",
+            "Events not delivered because a queue was full.",
+            ["target"],
+            registry=registry,
+        )
+        self.event_handler_failures = Counter(
+            f"{ns}_event_handler_failures_total",
+            "Exceptions raised by event handlers (for example, storage).",
+            ["handler"],
+            registry=registry,
+        )
         self.events_published = Counter(
             f"{ns}_events_published_total",
             "Events pushed onto the event bus.",

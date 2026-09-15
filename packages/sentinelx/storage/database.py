@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import event, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
@@ -66,13 +66,17 @@ class Database:
         """The URL with the password hidden, for logs and status output."""
         return make_url(self.url).render_as_string(hide_password=True)
 
-    async def connect(self, *, create_schema: bool | None = None) -> None:
+    async def connect(
+        self, *, create_schema: bool | None = None, prepare_schema: bool = True
+    ) -> None:
         """Create the engine and verify connectivity.
 
         Args:
             create_schema: create missing tables directly from the models. Defaults
                 to True for SQLite (zero-setup development) and False for PostgreSQL,
                 where schema changes go through Alembic (``sentinelx db upgrade``).
+            prepare_schema: check (and for SQLite, migrate) the schema. Diagnostics
+                pass False to inspect a database without changing it.
 
         Raises:
             StorageError: when the database is unreachable, with the host (never the
@@ -110,16 +114,48 @@ class Database:
 
         self._engine = engine
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
-        should_create = create_schema if create_schema is not None else self.dialect == "sqlite"
-        if should_create:
+        try:
+            if prepare_schema:
+                await self._prepare_schema(engine, create_schema)
+        except BaseException:
+            await engine.dispose()
+            self._engine = None
+            raise
+        log.info("database_connected", url=self.safe_url, dialect=self.dialect)
+
+    async def _prepare_schema(self, engine: AsyncEngine, create_schema: bool | None) -> None:
+        """Make sure the schema matches this version of SentinelX before any write.
+
+        * In-memory SQLite (tests): tables are created from the models.
+        * SQLite files (``create_schema`` default): migrated to the latest revision
+          automatically. A file created before migrations were tracked is stamped at
+          the first revision and then upgraded, so upgrading SentinelX never leaves an
+          existing database missing a column.
+        * PostgreSQL: never changed automatically. Start-up refuses a schema that is
+          not at the latest revision, instead of running and losing writes.
+        """
+        from sentinelx.storage import migrate
+
+        in_memory = ":memory:" in self.url or self.url.endswith("sqlite+aiosqlite://")
+        if in_memory or (create_schema and self.dialect != "sqlite"):
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
-        log.info(
-            "database_connected",
-            url=self.safe_url,
-            dialect=self.dialect,
-            schema_created=should_create,
-        )
+            return
+        should_migrate = create_schema if create_schema is not None else self.dialect == "sqlite"
+        async with engine.connect() as connection:
+            tables = set(await connection.run_sync(lambda sync: inspect(sync).get_table_names()))
+        head = migrate.head_revision()
+        if should_migrate:
+            if "alembic_version" not in tables and "detections" in tables:
+                await migrate.stamp(self.url, migrate.INITIAL_REVISION)
+            await migrate.upgrade(self.url)
+            return
+        applied = await migrate.current_revision(self.url)
+        if applied != head:
+            raise StorageError(
+                f"database schema is at revision {applied or 'none'} but this version of "
+                f"SentinelX needs {head}; run: sentinelx db upgrade"
+            )
 
     async def close(self) -> None:
         engine, self._engine = self._engine, None

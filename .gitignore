@@ -24,8 +24,7 @@ pcaps/*
 !pcaps/.gitkeep
 models/
 
-# Benchmark output is machine-specific; the reference run is quoted in docs/benchmarking.md
-benchmarks/results/
+# Benchmark reports cited by docs/benchmarking.md are committed (benchmarks/results/).
 
 # Dashboard
 apps/dashboard/node_modules/

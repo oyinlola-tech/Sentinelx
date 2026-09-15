@@ -17,6 +17,7 @@ import inspect
 import ipaddress
 import random
 import struct
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -42,6 +43,12 @@ __all__ = [
 
 _DEFAULT_SRC_MAC = bytes.fromhex("020000000001")
 _DEFAULT_DST_MAC = bytes.fromhex("020000000002")
+
+#: Source of IP identifiers, TCP sequence numbers and DNS ids. :func:`get_scenario`
+#: reseeds it from the scenario name and parameters, so the same scenario always
+#: produces byte-identical frames (and identical fixture files).
+_HEADER_RNG = random.Random(0)
+_HEADER_RNG_LOCK = threading.Lock()
 
 
 @dataclass(slots=True)
@@ -91,7 +98,7 @@ def _ipv4(src: str, dst: str, protocol: int, payload: bytes, ttl: int = 64) -> b
         0x45,
         0,
         total_length,
-        random.randint(0, 0xFFFF),
+        _HEADER_RNG.randint(0, 0xFFFF),
         0x4000,
         ttl,
         protocol,
@@ -135,7 +142,7 @@ def build_tcp(
         "!HHIIBBHHH",
         src_port,
         dst_port,
-        seq or random.randint(0, 2**32 - 1),
+        seq or _HEADER_RNG.randint(0, 2**32 - 1),
         ack,
         5 << 4,
         flag_bits,
@@ -183,7 +190,7 @@ def build_dns_query(
     qtype: int = 1,
 ) -> bytes:
     """Build a DNS query frame."""
-    header = struct.pack("!HHHHHH", random.randint(0, 0xFFFF), 0x0100, 1, 0, 0, 0)
+    header = struct.pack("!HHHHHH", _HEADER_RNG.randint(0, 0xFFFF), 0x0100, 1, 0, 0, 0)
     question = _encode_dns_name(query_name) + struct.pack("!HH", qtype, 1)
     return build_udp(src, dst, src_port, 53, header + question)
 
@@ -198,7 +205,7 @@ def build_dns_response(
 ) -> bytes:
     """Build a DNS response frame. ``rcode=3`` is NXDOMAIN."""
     flags = 0x8180 | (rcode & 0x0F)
-    header = struct.pack("!HHHHHH", random.randint(0, 0xFFFF), flags, 1, 0, 0, 0)
+    header = struct.pack("!HHHHHH", _HEADER_RNG.randint(0, 0xFFFF), flags, 1, 0, 0, 0)
     question = _encode_dns_name(query_name) + struct.pack("!HH", 1, 1)
     return build_udp(src, dst, 53, dst_port, header + question)
 
@@ -770,9 +777,8 @@ SCENARIOS: dict[str, Any] = {
 
 #: Upper bounds on scenario parameters. Scenarios are generated in memory from
 #: API and rule-test input, so every size-like parameter is capped.
-_COUNT_PARAMETERS = frozenset(
-    {"packet_count", "count", "hosts", "attempts", "ports", "sources", "normal_qps", "spike_qps"}
-)
+_COUNT_PARAMETERS = frozenset({"packet_count", "count", "hosts", "attempts", "ports", "sources"})
+_RATE_PARAMETERS = frozenset({"normal_qps", "spike_qps"})
 _MAX_COUNT = 50_000
 _MAX_SECONDS = 3_600
 _MAX_SCENARIO_PACKETS = 2_000_000
@@ -808,8 +814,10 @@ def validate_scenario_params(name: str, params: dict[str, Any]) -> dict[str, Any
                 limit_low, limit_high = 1, 65_535
             elif key in _COUNT_PARAMETERS:
                 limit_low, limit_high = 1, _MAX_COUNT
-            else:
-                limit_low, limit_high = 1, _MAX_SECONDS
+            elif key in _RATE_PARAMETERS:
+                limit_low, limit_high = 0, _MAX_COUNT
+            else:  # durations in seconds; 0 is meaningful ("no spike")
+                limit_low, limit_high = 0, _MAX_SECONDS
             if not limit_low <= value <= limit_high:
                 raise ValueError(f"{key}: must be between {limit_low} and {limit_high}")
         elif isinstance(default, float):
@@ -843,7 +851,9 @@ def get_scenario(name: str, **kwargs: Any) -> Scenario:
     """
     validate_scenario_params(name, kwargs)
     try:
-        return SCENARIOS[name](**kwargs)  # type: ignore[no-any-return]
+        with _HEADER_RNG_LOCK:
+            _HEADER_RNG.seed(f"{name}:{sorted(kwargs.items())!r}")
+            return SCENARIOS[name](**kwargs)  # type: ignore[no-any-return]
     except (ValueError, OverflowError) as exc:
         raise ValueError(f"scenario {name!r} cannot be built with these parameters: {exc}") from exc
 

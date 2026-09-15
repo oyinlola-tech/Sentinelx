@@ -79,6 +79,9 @@ class Event:
 
 Handler = Callable[[Event], Awaitable[None]]
 
+#: Put on subscriber queues when the bus stops, to end their iterators.
+_CLOSED = Event(type=EventType.SYSTEM_HEALTH, payload={"closed": True})
+
 
 @dataclass
 class _Subscription:
@@ -132,7 +135,12 @@ class EventBus:
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
         async with self._lock:
+            subscriptions = list(self._subscriptions.values())
             self._subscriptions.clear()
+        for subscription in subscriptions:
+            # Wake each subscriber so its iterator ends instead of waiting forever.
+            with contextlib.suppress(asyncio.QueueFull):
+                subscription.queue.put_nowait(_CLOSED)
         log.debug("event_bus_stopped", published=self._published, dropped=self._dropped)
 
     # ------------------------------------------------------------- publishing
@@ -151,6 +159,7 @@ class EventBus:
             except asyncio.QueueFull:
                 subscription.dropped += 1
                 self._dropped += 1
+                metrics.events_dropped.labels(target="subscriber").inc()
                 # Logged at debug: a busy dashboard dropping stats frames is
                 # expected and must not itself become a log flood.
                 log.debug("event_dropped", subscriber=subscription.name, type=event_type.value)
@@ -160,6 +169,7 @@ class EventBus:
                 self._handler_queue.put_nowait(event)
             except asyncio.QueueFull:
                 self._dropped += 1
+                metrics.events_dropped.labels(target="handlers").inc()
                 log.warning("event_handler_queue_full", type=event_type.value)
         return event
 
@@ -215,7 +225,10 @@ class EventBus:
     @staticmethod
     async def _iterate(subscription: _Subscription) -> AsyncIterator[Event]:
         while True:
-            yield await subscription.queue.get()
+            event = await subscription.queue.get()
+            if event is _CLOSED:
+                return
+            yield event
 
     def add_handler(
         self,
@@ -237,16 +250,35 @@ class EventBus:
     async def _run_handlers(self) -> None:
         while True:
             event = await self._handler_queue.get()
-            for name, types, handler in list(self._handlers):
-                if types is not None and event.type not in types:
-                    continue
-                try:
-                    await handler(event)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # A broken subscriber must not stop the others or the bus.
-                    log.exception("event_handler_failed", handler=name, type=event.type.value)
+            try:
+                for name, types, handler in list(self._handlers):
+                    if types is not None and event.type not in types:
+                        continue
+                    try:
+                        await handler(event)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # A broken subscriber must not stop the others or the bus.
+                        metrics.event_handler_failures.labels(handler=name).inc()
+                        log.exception("event_handler_failed", handler=name, type=event.type.value)
+            finally:
+                self._handler_queue.task_done()
+
+    async def drain(self, wait_seconds: float = 5.0) -> bool:
+        """Wait until every queued event has been handled. False if the wait ran out.
+
+        Called on shutdown before storage stops, so detections still queued for the
+        persister are written rather than lost.
+        """
+        if self._worker is None or self._worker.done():
+            return self._handler_queue.empty()
+        try:
+            await asyncio.wait_for(self._handler_queue.join(), timeout=wait_seconds)
+        except TimeoutError:
+            log.warning("event_bus_drain_timeout", backlog=self._handler_queue.qsize())
+            return False
+        return True
 
     # ----------------------------------------------------------------- status
 

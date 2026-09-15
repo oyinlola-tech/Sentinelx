@@ -62,20 +62,6 @@
         "title": "BlockRequest",
         "type": "object"
       },
-      "Body_upload_api_v1_replay_upload_post": {
-        "properties": {
-          "file": {
-            "contentMediaType": "application/octet-stream",
-            "title": "File",
-            "type": "string"
-          }
-        },
-        "required": [
-          "file"
-        ],
-        "title": "Body_upload_api_v1_replay_upload_post",
-        "type": "object"
-      },
       "ChangePasswordRequest": {
         "additionalProperties": false,
         "properties": {
@@ -854,6 +840,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 1000000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -904,7 +891,14 @@
           "required": true
         },
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            },
             "description": "Successful Response"
           },
           "422": {
@@ -918,7 +912,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Change Password",
+        "summary": "Change your password; every other session is signed out",
         "tags": [
           "auth"
         ]
@@ -1373,6 +1367,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 1000000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -1644,6 +1639,30 @@
             }
           },
           {
+            "description": "Include one alert per detection",
+            "in": "query",
+            "name": "include_alerts",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Include one alert per detection",
+              "title": "Include Alerts",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Include decisions from replays",
+            "in": "query",
+            "name": "include_replays",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Include decisions from replays",
+              "title": "Include Replays",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "query",
             "name": "limit",
             "required": false,
@@ -1661,6 +1680,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 1000000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -2140,6 +2160,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 1000000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -2581,12 +2602,28 @@
     },
     "/api/v1/replay/upload": {
       "post": {
+        "description": "Stream a pcap or pcapng file to the capture directory.\n\nThe body is the file itself, not a multipart form. Authentication and the size\nlimit are checked before a single body byte is read, so an unauthenticated or\noversized upload never reaches the disk.",
         "operationId": "upload_api_v1_replay_upload_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "filename",
+            "required": false,
+            "schema": {
+              "default": "upload.pcap",
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Filename",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
-            "multipart/form-data": {
+            "application/octet-stream": {
               "schema": {
-                "$ref": "#/components/schemas/Body_upload_api_v1_replay_upload_post"
+                "format": "binary",
+                "type": "string"
               }
             }
           },
@@ -2616,7 +2653,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Upload",
+        "summary": "Upload a capture file as the raw request body",
         "tags": [
           "replay"
         ]
@@ -3251,6 +3288,26 @@
         ]
       }
     },
+    "/api/v1/system/capabilities": {
+      "get": {
+        "operationId": "capabilities_api_v1_system_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Capabilities Api V1 System Capabilities Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What this host can do: live capture, PCAP replay, firewall control, blocking"
+      }
+    },
     "/api/v1/system/health": {
       "get": {
         "operationId": "health_api_v1_system_health_get",
@@ -3434,6 +3491,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -3468,6 +3527,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -3521,6 +3582,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }

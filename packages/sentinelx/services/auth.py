@@ -173,7 +173,7 @@ class AuthService:
             await users.add(
                 User(
                     username=self.settings.bootstrap_admin_username,
-                    password_hash=self.hash_password(password),
+                    password_hash=await self._hash_async(password),
                     role=UserRole.ADMIN.value,
                     # A generated password was shown on a terminal; make the first
                     # login replace it.
@@ -194,12 +194,13 @@ class AuthService:
                 "username must be 3-64 characters of letters, digits, '.', '_' or '-'", status=422
             )
         self.check_password_policy(password, username)
+        password_hash = await self._hash_async(password)
         async with self.database.session() as session:
             users = UserRepository(session)
             if await users.by_username(username) is not None:
                 raise AuthError(f"user {username!r} already exists", status=409)
             return await users.add(
-                User(username=username, password_hash=self.hash_password(password), role=role.value)
+                User(username=username, password_hash=password_hash, role=role.value)
             )
 
     async def change_password(self, principal: Principal, current: str, new: str) -> TokenPair:
@@ -217,7 +218,7 @@ class AuthService:
         if await self._verify_async(password_hash, new):
             raise AuthError("new password must differ from the current one", status=422)
         self.check_password_policy(new, user.username)
-        new_hash = await asyncio.to_thread(self.hash_password, new)
+        new_hash = await self._hash_async(new)
         async with self.database.session() as session:
             users = UserRepository(session)
             stored = await users.get(principal.user_id)
@@ -225,7 +226,8 @@ class AuthService:
                 raise AuthError("account disabled")
             stored.password_hash = new_hash
             stored.must_change_password = False
-            await users.revoke_tokens(stored.id)  # every other session ends
+            await users.end_sessions(stored.id)  # every other session ends
+            await self._end_access_tokens(stored.id)
             pair = await self._issue(
                 users, Principal(stored.id, stored.username, UserRole(stored.role))
             )
@@ -241,7 +243,7 @@ class AuthService:
                 raise AuthError("user not found", status=404)
             username = user.username
         self.check_password_policy(new, username)
-        new_hash = await asyncio.to_thread(self.hash_password, new)
+        new_hash = await self._hash_async(new)
         async with self.database.session() as session:
             users = UserRepository(session)
             user = await users.get(user_id)
@@ -251,7 +253,8 @@ class AuthService:
             user.must_change_password = True
             user.failed_logins = 0
             user.locked_until = None
-            await users.revoke_tokens(user.id)
+            await users.end_sessions(user.id)
+        await self._end_access_tokens(user_id)
 
     # ------------------------------------------------------------------ login
 
@@ -261,6 +264,11 @@ class AuthService:
             return _hasher.verify(password_hash, password)
         except (VerifyMismatchError, VerificationError, InvalidHashError):
             return False
+
+    async def _hash_async(self, password: str) -> str:
+        """Argon2 hashing on a worker thread, sharing the verification limit."""
+        async with self._hash_slots:
+            return await asyncio.to_thread(self.hash_password, password)
 
     async def _verify_async(self, password_hash: str, password: str) -> bool:
         """Argon2 verification on a worker thread, a few at a time.
@@ -447,6 +455,9 @@ class AuthService:
         token_id = str(claims["jti"])
         if await self.state.cache_get(f"revoked-access:{token_id}") is not None:
             raise AuthError("token revoked")
+        ended = await self.state.cache_get(f"sessions-ended:{claims['sub']}")
+        if isinstance(ended, int) and int(claims["iat"]) < ended:
+            raise AuthError("session ended")
         async with self.database.session() as session:
             user = await UserRepository(session).get(int(claims["sub"]))
         if user is None or not user.is_active:
@@ -487,10 +498,25 @@ class AuthService:
         return pair
 
     async def logout(self, principal: Principal) -> None:
+        """Sign the user out everywhere: refresh and access tokens stop working now."""
         async with self.database.session() as session:
-            await UserRepository(session).revoke_tokens(principal.user_id)
+            await UserRepository(session).end_sessions(principal.user_id)
+        await self._end_access_tokens(principal.user_id)
         if principal.token_id:
             await self._revoke_access_token(principal.token_id)
+
+    async def _end_access_tokens(self, user_id: int) -> None:
+        """Deny every access token issued to the user before now.
+
+        Access tokens are self-contained, so without this, sessions signed out by a
+        logout or password change would keep working until their tokens expired.
+        Tokens issued in the same second (the caller's fresh pair) stay valid.
+        """
+        await self.state.cache_set(
+            f"sessions-ended:{user_id}",
+            int(datetime.now(UTC).timestamp()),
+            ttl_seconds=self.settings.access_token_ttl_seconds,
+        )
 
     async def _revoke_access_token(self, token_id: str) -> None:
         """Deny an access token until it would have expired anyway."""

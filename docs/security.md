@@ -2,7 +2,7 @@
 
 SentinelX sits in a sensitive position. It reads network traffic, stores information about hosts, and, in prevention mode, changes firewall rules. This document describes what SentinelX protects, what it assumes, the controls that enforce that, and the residual risks an operator must manage.
 
-To report a vulnerability, follow [SECURITY.md](../SECURITY.md). Do not open a public issue.
+To report a vulnerability, follow [SECURITY.md](../SECURITY.md). Do not include vulnerability details in a public issue.
 
 ## Assets and trust boundaries
 
@@ -10,16 +10,18 @@ To report a vulnerability, follow [SECURITY.md](../SECURITY.md). Do not open a p
 |---|---|
 | Firewall state on the sensor host | A wrong block cuts off legitimate users, or the operator's own access. |
 | Captured traffic metadata | Addresses, DNS names, HTTP hosts and paths, TLS server names. This is personal data in many jurisdictions. |
+| Uploaded capture files | Full packet contents, including any cleartext credentials they happen to contain. |
 | User accounts and sessions | An administrator can enable prevention and block addresses. |
-| Configuration and secrets | `JWT_SECRET`, database and Redis credentials, the metrics token, reputation API keys. |
+| Configuration and secrets | `JWT_SECRET`, database and Redis credentials, the metrics token, the webhook URL (which often embeds a secret), reputation API keys. |
 | Detection integrity | An attacker who can suppress or forge detections can hide or frame activity. |
 
 | Boundary | Untrusted side |
 |---|---|
 | Packets entering the decoder | Anyone who can send traffic past the sensor. Every byte is hostile. |
-| HTTP API and WebSocket | Any network client that can reach the API port. |
-| Uploaded PCAP files and rule definitions | Authenticated users, who may still be wrong or compromised. |
+| HTTP API and WebSocket | Any network client that can reach the API port or the dashboard proxy. |
+| Uploaded PCAP files, rule definitions and scenario parameters | Authenticated analysts, who may still be wrong or compromised. |
 | Threat-intelligence feeds | The feed provider and the network path to it. |
+| Webhook receivers | The receiving service, and DNS for its host name. |
 | The host, database and Redis | Trusted. SentinelX does not defend against a root-level attacker on its own host. |
 
 ## Controls
@@ -27,28 +29,32 @@ To report a vulnerability, follow [SECURITY.md](../SECURITY.md). Do not open a p
 ### Safe defaults
 
 - `RESPONSE_MODE=detect_only` and `DRY_RUN=true` out of the box. SentinelX observes and explains; it does not touch traffic until an administrator changes both.
-- `FIREWALL_BACKEND=null` by default. Settings validation refuses automatic response without dry run unless a real firewall backend is configured, so "prevention on" can never silently mean "prevention not working".
-- Enabling prevention from the dashboard requires typing the confirmation phrase `ENABLE PREVENTION`, and the change is written to the audit log.
+- `FIREWALL_BACKEND=null` by default. Settings validation refuses `automatic` or `manual_approval` mode without dry run unless a real firewall backend is configured, so "prevention on" can never silently mean "prevention not working".
+- Any runtime change that lets SentinelX modify the firewall where it cannot now requires the confirmation phrase `ENABLE PREVENTION`: switching dry run off (manual blocks and approvals become real) as well as turning automatic prevention on. The dashboard asks the operator to type the phrase, the API refuses the change without it, and the change is written to the audit log as `ENABLE_PREVENTION`.
+- The safety banner describes every path that can change the firewall, not only automatic responses. With dry run off in `detect_only` mode it reads `MANUAL BLOCKS ENFORCED - automatic responses are off; administrator blocks are enforced ...`, and it says so when no firewall backend is configured and blocks would be refused.
+- Runtime settings stored in the database are re-applied at startup, but when the environment explicitly sets `RESPONSE_MODE` or `DRY_RUN`, the environment wins and a warning is logged. An operator can always switch prevention off by editing the environment and restarting, whatever was enabled from the dashboard.
 - `ENVIRONMENT=production` turns insecure configuration into a startup error instead of a warning. It refuses a missing or short (fewer than 32 characters) `JWT_SECRET`, disabled authentication, a wildcard CORS origin and SQLite. It also forces `Secure` cookies and disables the interactive API docs.
 
 ### Response safety guard
 
 Every block, whether automatic, manual from the CLI, API or dashboard, or from a replay, passes through `SafetyGuard` in `packages/sentinelx/response/safety.py`. See [response-engine.md](response-engine.md) for each refusal code. In summary:
 
-- Targets are parsed with Python's `ipaddress` module. Strings containing whitespace or control characters are rejected outright, which also prevents log injection.
-- Loopback ranges are always in the allowlist and cannot be removed by configuration.
-- Allowlisted networks, configured management addresses and the sensor's own interface addresses are never blocked, including when a requested prefix merely overlaps them.
+- Targets are parsed with Python's `ipaddress` module. Strings containing whitespace or control characters are rejected outright, which also prevents log injection. A `/0` prefix is refused.
+- Loopback ranges are always in the allowlist and cannot be removed by configuration. Loopback, link-local, multicast, unspecified and reserved addresses are refused.
+- Allowlisted networks and configured management addresses are never blocked, including when a requested prefix merely overlaps them.
+- With `protect_management_addresses` (default `true`), the sensor's own interface addresses are never blocked; if they cannot be listed, the guard refuses rather than guessing. The same setting protects the address of every operator who made an authenticated API request in the last hour, so an administrator cannot block their own workstation or a prefix containing it. These operator addresses are remembered in the API process (at most 1,024).
 - Prefixes larger than `max_block_prefix_hosts` (default 256 addresses, a /24) are refused, so a malformed rule cannot block an entire network.
 - The number of concurrent blocks is capped (`max_blocked_addresses`, default 10,000), so a runaway detector hits a limit instead of exhausting the firewall.
 - Temporary blocks are enforced with kernel-side set timeouts in nftables, so they expire even if SentinelX crashes.
 - Firewall chains use `policy accept`. SentinelX only adds drop entries for specific addresses and never changes the host's default policy.
-- Replays from the PCAP Lab run in an isolated pipeline forced into dry run with an in-memory firewall. A replayed capture cannot change the real firewall.
+- Replays from the PCAP Lab run in an isolated pipeline forced into dry run with the `null` backend and an in-memory firewall. A replayed capture cannot change the real firewall. Its decisions are tagged with the replay id and excluded from the live firewall history.
 
 ### Command execution
 
-- Firewall commands run through `CommandRunner` in `packages/sentinelx/firewall/base.py`. It takes an argument vector, never a shell string, and rejects arguments containing control characters.
+- Firewall commands run through `CommandRunner` in `packages/sentinelx/firewall/base.py`. It takes an argument vector, never a shell string, rejects arguments containing control characters, and kills a command that exceeds its timeout. It is the only place the package starts a subprocess.
 - Table and set names are validated against `^[A-Za-z0-9_]{1,32}$` in settings.
 - Addresses reach the firewall only after the safety guard has normalised them.
+- Capabilities granted to the interpreter with `setcap` apply to the Python process only and are dropped when it executes `nft` or `iptables`. On Linux, before running a firewall command, `CommandRunner` raises `CAP_NET_ADMIN` into the process's ambient capability set (`ensure_ambient_capability` in `packages/sentinelx/system/privileges.py`) so the child process receives it. This only happens when the process already holds the capability in its permitted set; nothing is raised otherwise, and the command then fails with a permission error. Once raised, the ambient capability is inherited by any child process the sensor starts afterwards, which today means only firewall commands.
 
 ### Hostile packet input
 
@@ -59,22 +65,32 @@ Every block, whether automatic, manual from the CLI, API or dashboard, or from a
 - Detector faults are isolated. An exception in one detector is logged and counted, and the other detectors still run.
 - Detection cooldowns stop one attack from producing an unbounded stream of identical alerts. Genuine escalation (a higher severity, or a confidence increase of at least 0.2) is still reported.
 
-### Rules and models
+### Capture files
+
+- Capture files are read by SentinelX's own streaming reader (`packages/sentinelx/capture/pcapfile.py`), not by a third-party library. It reads one record at a time, so a file of any size uses constant memory.
+- Every length field is validated before data is read: a pcap record larger than the file's snapshot length (treated as at least 65,535) or 262,144 bytes, whichever is smaller, a pcapng packet larger than its block or 262,144 bytes, a pcapng block larger than about 1 MiB, a block length that is not a multiple of 4 or does not match its trailer, or a packet for an undeclared interface raises `PcapError`. A corrupt or malicious file cannot make the reader allocate an attacker-chosen amount of memory.
+
+### Rules, scenarios and models
 
 - The rule condition language is parsed by a hand-written tokenizer and recursive-descent parser. There is no `eval`, `exec` or template execution. Rule size, nesting depth and list lengths are bounded. See [rule-engine.md](rule-engine.md).
+- Rule YAML is parsed with a restricted subclass of PyYAML's `SafeLoader` (`load_rule_yaml` in `packages/sentinelx/signatures/rules.py`). It refuses anchors and aliases, and refuses nesting deeper than 32 levels (checked on flow brackets before scanning, and again while composing). Before this change a definition of about 400 bytes using aliases expanded into a response of about 30 MB from `POST /rules/validate`, which any analyst could send. Definitions sent to the API are also limited to 20,000 characters, and rule files to 1 MiB.
+- Scenario parameters, from `POST /replay/scenarios/{name}` and from rules' embedded tests, are validated before anything is generated: unknown parameters, wrong types and booleans are refused, counts are limited to 50,000, rates to 50,000 per second, durations to 3,600 seconds, intervals to 0.001 to 600 seconds, string parameters must be IP addresses, and `dns_rate_spike` is refused above 2,000,000 packets. Previously an analyst could request a scenario large enough to exhaust the server's memory.
 - A rule that triggers a preventive action must have a count threshold on every branch of its condition, so a rule matching a single packet cannot block addresses.
-- Machine-learning model files are loaded with `joblib`, which can execute code embedded in the file. SentinelX therefore refuses to load a model file that is group- or world-writable or not owned by the current user, writes models with mode `0600`, and checks a format version and feature list. **Only load models you trained yourself.**
+- Machine-learning model files are loaded with `joblib`, which can execute code embedded in the file. SentinelX therefore refuses to load a model file that is group- or world-writable or (where the platform reports file owners) not owned by the current user, writes models with mode `0600`, and checks a format version and feature list. **Only load models you trained yourself.**
 
 ### Authentication and sessions
 
 - Passwords are hashed with Argon2id. The policy favours length (minimum 12 characters by default) and rejects passwords that contain the username, are very common, or use very few distinct characters.
+- Password verification runs in worker threads, at most 4 at a time per process, so a flood of login attempts neither stalls the event loop (and with it the packet pipeline) nor exhausts memory (each Argon2 operation uses about 64 MiB). Hashing a new password for a password change or reset also runs in a worker thread, outside that limit.
 - A login with an unknown username is verified against a dummy hash, and every failure returns the same message, so usernames can't be enumerated by response content or timing.
-- Accounts lock after `lockout_threshold` consecutive failures (default 5) for `lockout_seconds` (default 900). Login attempts are also rate-limited per client address (default 8 per 300 seconds).
-- Access tokens are short-lived HS256 JWTs (default 15 minutes) with the accepted algorithms pinned when verifying, so `alg: none` and algorithm-confusion tokens are rejected. Refresh tokens are tracked server-side and rotated on every use; presenting an already-rotated refresh token revokes every refresh token for that user.
+- Lockout has two levels. `lockout_threshold` failures (default 5) for one account from one client address lock that account-and-address pair for `lockout_seconds` (default 900). Failures for an account from any addresses lock the account itself at 4 times the threshold (20 by default). This replaced a single per-account lockout that let anyone lock any user out by guessing their password five times. Login attempts are also rate-limited per client address (default 8 per 300 seconds).
+- Access tokens are short-lived HS256 JWTs (default 15 minutes) with the accepted algorithm pinned when verifying, so `alg: none` and algorithm-confusion tokens are rejected. Every request re-reads the user, so deactivation and role changes apply at the next request.
+- Signing out revokes the access token used immediately, as well as every refresh token of the user. A password change does the same and issues the caller a fresh session. Revoked access tokens are recorded in Redis until they would have expired (in process memory when Redis is unavailable).
+- Refresh tokens are tracked server-side and rotated on every use. Rotation claims the token with a single conditional `UPDATE`, so two concurrent refreshes with the same token cannot both succeed; the loser is treated as reuse. Presenting a token that cannot be claimed (rotated, revoked or raced) revokes every refresh token for that user. Revoked refresh tokens are kept until they expire, so reuse is still detected after revocation; the retention job deletes only expired ones.
 - A generated bootstrap administrator password is printed once to the server's standard error, never logged, and must be changed at first sign-in.
 - The dashboard receives tokens in `HttpOnly`, `SameSite=Strict` cookies, and state-changing requests must carry a double-submit CSRF token in `X-CSRF-Token`. Scripts use bearer tokens instead.
-- The dashboard proxies `/api` to the backend, so the browser talks to one origin and CORS can remain closed.
-- WebSocket connections authenticate with a single-use ticket valid for 30 seconds, so a long-lived token never appears in a URL. The `Origin` header is checked against the configured origins. Invalid tickets close with code 4401; disallowed origins close with 1008.
+- The browser talks to one origin for the dashboard, the API and the event stream (the Next.js rewrite in development, the nginx proxy in Docker Compose), so CORS can remain closed.
+- WebSocket connections authenticate with a single-use ticket valid for 30 seconds, so a long-lived token never appears in a URL. Tickets are redeemed with an atomic read-and-delete (Redis `GETDEL`), so a ticket cannot be used twice even by concurrent connections. The `Origin` header is checked against the configured origins. Refusals are sent as close codes after the handshake: 4401 for an invalid or expired ticket, 1008 for a disallowed origin or unknown event type, and 4429 when a user already holds 10 streams in the process. An idle stream re-checks the account every 25 seconds and closes with 4401 if it was deactivated or 4403 if its role changed.
 
 ### Authorisation
 
@@ -82,46 +98,63 @@ Three roles, checked on the server for every endpoint:
 
 | Role | Can |
 |---|---|
-| `viewer` | Read detections, incidents, statistics and network views. |
-| `analyst` | Everything a viewer can, plus triaging detections and updating incidents, validating and testing rules, uploading and replaying captures, previewing safety-guard decisions, and reading configuration and the audit log. |
+| `viewer` | Read detections, incidents, statistics, host capabilities and network views. |
+| `analyst` | Everything a viewer can, plus triaging detections and updating incidents, validating and testing rules, uploading and replaying captures, generating fixtures, previewing safety-guard decisions, and reading configuration and the audit log. |
 | `admin` | Everything, including blocking, configuration changes, rule changes, sensor control and user management. |
 
 Security decisions live in the service layer (`packages/sentinelx/services/`), not in route handlers, so the CLI and the API enforce the same rules. The full endpoint-to-role table is in [api.md](api.md).
 
-### Transport, headers and rate limits
+### Transport, headers, client addresses and rate limits
 
 - API responses carry `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy`, `Cross-Origin-Opener-Policy: same-origin`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Cache-Control: no-store` on API routes, and `Strict-Transport-Security` when cookies are marked secure.
 - API requests are rate-limited per client (default 300 per 60 seconds), shared across workers through Redis.
-- `X-Forwarded-For` is ignored unless the direct peer is in `trusted_proxies`, so clients cannot spoof their address past the rate limiter or the audit log.
+- `X-Forwarded-For` is ignored unless the direct peer is in `trusted_proxies`. When it is used, it is read right to left, skipping trusted proxies, so the address a client writes at the left of the header is never believed. This address feeds the rate limiter, login lockout, the audit log and operator-address protection.
 - SentinelX does not terminate TLS itself. In production, put it behind a reverse proxy that does, and set `trusted_proxies`. See [deployment.md](deployment.md).
-- The Prometheus endpoint is served only to loopback clients unless `API__METRICS_TOKEN` is set, in which case a bearer token is required.
+- The Prometheus endpoint, without `API__METRICS_TOKEN`, is served only to direct loopback requests that carry no `X-Forwarded-For`, `Forwarded` or `X-Real-IP` header; requests relayed by a local proxy are refused. With the token set, a bearer token is required, compared as bytes in constant time (a non-ASCII header used to cause a 500).
 
 ### Uploads
 
-- PCAP uploads are streamed to disk with a size limit (the smaller of `max_upload_mb` and `max_pcap_size_mb`), their magic number is checked, and they are stored under a generated name.
-- Replay paths are resolved inside the configured PCAP directory, with `.pcap`, `.pcapng` or `.cap` extensions only; path traversal is refused.
+- `POST /replay/upload` takes the capture as the raw request body. Authentication and the role check run before any body byte is read, followed by the `Content-Type` check (415) and the declared `Content-Length` against the size limit (413), so an unauthenticated or oversized upload never reaches the disk.
+- The body is streamed to `PCAP_DIRECTORY/uploads` and the size is enforced again while streaming, against the smaller of `max_upload_mb` and `max_pcap_size_mb` and the space left in the upload quota (`CAPTURE__UPLOAD_QUOTA_MB`, default 2048). A full uploads directory refuses further uploads with 422.
+- The first four bytes must be a pcap or pcapng signature, and the whole file must parse with the validating reader. Rejected files are deleted.
+- Files are stored under a generated name (timestamp, random hex, sanitised stem) with mode `0640`. The response gives the path relative to the capture directory, never the absolute server path. Uploaded files older than `RETENTION_DAYS` are deleted by the retention job, which touches nothing outside `uploads/`.
+- Replay paths are resolved inside the configured PCAP directory (following symbolic links); path traversal is refused. The file listing shows only `.pcap`, `.pcapng` and `.cap` files.
+
+### Outbound webhooks
+
+- `response.webhook_url` must use `https://` and include a host.
+- At delivery time the host is resolved, and delivery is refused if any resolved address is loopback, private, link-local, reserved or multicast. This stops a changed setting from turning SentinelX into a proxy for internal services or cloud metadata endpoints. `RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES=true` (environment only) allows internal receivers. Redirects are not followed.
+- The webhook URL is shown and logged only as `scheme://host[:port]/…`, because chat and incident webhooks carry their secret in the path or query.
 
 ### Secrets and logging
 
 - Secrets come from environment variables or an `.env` file that is git-ignored. No credential is hard-coded; `docker-compose.yml` refuses to start without the required passwords.
-- Every log record passes through a redaction processor that replaces the values of sensitive keys (passwords, tokens, secrets, API keys, cookies, authorisation headers) and inline patterns such as `password=...` and `user:pass@` in URLs. It can't be disabled.
-- Database URLs are shown with the password redacted in `sentinelx config show` and the API.
-- Security-relevant actions are written to the audit log with the acting user, outcome and client address: sign-ins and failed sign-ins, sign-outs, password and user changes, response decisions that were executed or attempted (blocks, unblocks, rate limits, approvals and rejections), configuration changes (enabling prevention is recorded as its own action), rule changes, capture start and stop, PCAP uploads and replays, and detection and incident triage. Account lockouts and refresh-token reuse are recorded as warnings in the structured application log.
+- Every log record passes through a redaction processor (`packages/sentinelx/telemetry/logging.py`) that replaces the values of sensitive keys (passwords, tokens, secrets, API keys, cookies, sessions, authorisation headers), including nested values, and scrubs inline patterns such as `password=...`, `Bearer ...` and `user:pass@` in URLs from strings. It can't be disabled.
+- Redaction also covers exceptions. Tracebacks are rendered to plain text before the redaction processor runs, so secrets inside exception messages (a database URL in a driver error, for example) are scrubbed like any other value, and console logs never print frame local variables. Previously the development console renderer used Rich tracebacks, which print every frame's locals; an exception while a settings object was in scope wrote the JWT secret and bootstrap password to the log, and an unauthenticated request could trigger such an exception. `tests/unit/test_config_and_logging.py` covers both console and JSON formats.
+- `GET /config` removes secrets by field name: any field whose name contains `secret`, `token`, `password`, `api_key`, `apikey` or `credential` is shown as `[redacted]`, so a new secret setting is hidden by default as long as its name says what it is. Database and Redis URLs are shown with the password hidden, and the webhook URL as scheme and host. `sentinelx config show` uses a narrower list: it removes `jwt_secret`, `bootstrap_admin_password` and `metrics_token` and hides URL passwords, but prints the webhook URL in full.
+- Security-relevant actions are written to the audit log with the acting user, outcome and client address: sign-ins and failed sign-ins, sign-outs, password and user changes, response decisions that were executed or attempted (blocks, unblocks, rate limits, approvals and rejections), configuration changes (enabling prevention is recorded as its own action), rule changes, capture start and stop, PCAP uploads, fixture generation and replays, and detection and incident triage. Account lockouts and refresh-token reuse are recorded as warnings in the structured application log.
 
 ### Containers
 
-- API and dashboard images run as non-root users. The API container is read-only with all capabilities dropped, and host ports are bound to loopback by default.
-- Only the optional `capture` profile adds `NET_RAW` and `NET_ADMIN` and uses host networking, because live capture and firewall changes require them.
+- The API image runs as a non-root user (uid 10001). In Docker Compose the `api` and `migrate` containers are read-only (`api` has a `/tmp` tmpfs), drop all capabilities and set `no-new-privileges`. The dashboard and nginx proxy containers are read-only or unprivileged with all capabilities dropped. Host ports are bound to loopback by default.
+- The image contains a copy of the interpreter, `/usr/local/bin/python3-sensor`, which is the only file with capabilities (`cap_net_raw,cap_net_admin+eip`). The shared `python3` has none, so the API and migration containers start with every capability dropped. Only the optional `capture` profile runs `python3-sensor`, adds `NET_RAW` and `NET_ADMIN`, allows privilege gain so the file capabilities apply, and uses host networking. That sensor listens on `0.0.0.0` (port `SENSOR_PORT`, default 8001) on the host's interfaces; restrict that port with a host firewall if the host is reachable from untrusted networks.
+- The nginx proxy is the browser's single origin. It returns 404 for `/api/v1/metrics`, so metrics are never exposed through it, and it appends the real client address to `X-Forwarded-For`. The API trusts that header only from the proxy's network (`API__TRUSTED_PROXIES`, the frontend subnet).
 
 ## Residual risks and operator responsibilities
 
-- **Prevention can lock you out.** Add your management addresses and jump hosts to the allowlist or management list before enabling prevention. Test in `manual_approval` mode first.
+- **Prevention can lock you out.** Operator-address protection only covers addresses that used the API in the last hour. Add your management addresses and jump hosts to the allowlist or management list before enabling prevention. Test in `manual_approval` mode first.
 - **Attackers can spoof sources.** A spoofed-source flood could get a victim address blocked. The safety guard protects configured addresses, not arbitrary third parties. Prefer rate limiting and short temporary blocks for flood detections, and keep `auto_block_threshold` high.
 - **Detection is evadable.** Threshold detectors miss slow attacks by design. See [benchmarking.md](benchmarking.md). Encrypted traffic exposes metadata only.
-- **The sensor is a target.** It processes hostile input in Python and keeps state in memory. Keep it patched, monitor its resource use, and don't run it on a host that holds unrelated secrets.
-- **Stored traffic metadata is sensitive.** Set `RETENTION_DAYS` to the shortest period that meets your needs, restrict database access, and be clear about lawful basis and notice where your jurisdiction requires it.
+- **The sensor is a target, and Python limits its throughput.** It processes hostile input in Python and keeps state in memory. The measured pipeline throughput is a few thousand packets per second on one core ([benchmarking.md](benchmarking.md)), so a sustained flood above that causes capture drops. Keep it patched, monitor its resource use and drop counters, and don't run it on a host that holds unrelated secrets.
+- **Stored traffic metadata and uploaded captures are sensitive.** Set `RETENTION_DAYS` to the shortest period that meets your needs (it also governs uploaded captures), restrict database and capture-directory access, and be clear about lawful basis and notice where your jurisdiction requires it.
 - **Single-factor authentication.** SentinelX does not implement MFA or SSO. Put the dashboard behind your VPN or an authenticating reverse proxy if it must be reachable beyond a trusted network.
-- **HS256 tokens share one secret.** Anyone holding `JWT_SECRET` can mint tokens. Rotating it invalidates all sessions.
+- **HS256 tokens share one secret.** Anyone holding `JWT_SECRET` can mint tokens for any user and role. Rotating it invalidates all sessions.
+- **Other sessions' access tokens outlive sign-out and password changes.** Only the access token used for the request is revoked; tokens held by other sessions remain valid until they expire (15 minutes by default). Lower `API__ACCESS_TOKEN_TTL_SECONDS` if that window is too long. A stale session refreshing after a password change also revokes the new session's refresh token (reuse detection), so the user signs in again.
+- **Busy WebSocket streams are not re-checked.** The account re-check runs only when a stream has been idle for 25 seconds. A stream that keeps receiving events keeps its original role's subscription after deactivation or demotion, until it goes idle or reconnects.
+- **Redis outages weaken shared limits.** Without Redis, rate limits, login throttling, per-address lockout counters, WebSocket tickets and the access-token revocation list fall back to process memory. They then apply per process and are lost on restart. Set `storage.redis_required=true` if that is unacceptable.
+- **DNS rebinding against the webhook check.** The webhook host is resolved for the address check and again by the HTTP client when connecting. A DNS answer that changes between the two is not prevented. Enable `RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES` only for receivers you trust, and prefer a webhook host whose DNS you control.
+- **The CLI prints frame locals on unhandled errors.** The structured-log fix does not cover the `sentinelx` command's own error display. Typer's default exception handler prints a Rich traceback with local variables when a command fails with an unexpected exception, and those locals can include the settings object with `JWT_SECRET` and the database URL. For example, `sentinelx rules test <file> --scenario <unknown name>` does this today. Do not paste CLI tracebacks into issues without removing secrets, and avoid running the CLI where its terminal output is recorded.
+- **pf and Windows Firewall adapters are unverified on real hosts.** Their command construction and output parsing are tested against recorded results (`tests/response/test_platform_firewalls.py`), but enforcement has not been exercised on a real macOS or Windows host. Only the nftables and iptables adapters are tested against a real kernel (`make test-kernel`).
 - **Threat-intelligence feeds are trusted input.** A poisoned denylist raises scores for the listed addresses. The safety guard still applies to any resulting block.
 
 ## Hardening checklist
@@ -133,6 +166,8 @@ Security decisions live in the service layer (`packages/sentinelx/services/`), n
 - [ ] The bootstrap administrator password changed, and personal accounts created with the least role needed.
 - [ ] Management addresses and critical infrastructure added to the allowlist before prevention is enabled.
 - [ ] Prevention trialled in `manual_approval` mode and with `DRY_RUN=true` before automatic mode.
-- [ ] `RETENTION_DAYS` set deliberately.
-- [ ] `API__METRICS_TOKEN` set if Prometheus scrapes from another host.
+- [ ] `RETENTION_DAYS` and `CAPTURE__UPLOAD_QUOTA_MB` set deliberately.
+- [ ] `API__METRICS_TOKEN` (ASCII) set if Prometheus scrapes from another host.
+- [ ] Webhook receivers use public HTTPS endpoints, or `RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES` is enabled only for a trusted internal receiver.
+- [ ] With the Docker `capture` profile, the sensor port (default 8001) is not reachable from untrusted networks.
 - [ ] The audit log reviewed regularly.

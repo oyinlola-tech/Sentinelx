@@ -23,8 +23,8 @@ dependencies = [
   "uvicorn[standard]>=0.29",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
-  "python-dotenv>=1.0",
-  "sqlalchemy>=2.0.29",
+  "python-dotenv>=1.2.2",
+  "sqlalchemy[asyncio]>=2.0.29",
   "alembic>=1.13",
   "asyncpg>=0.29",
   "aiosqlite>=0.20",
@@ -34,8 +34,6 @@ dependencies = [
   "structlog>=24.1",
   "scapy>=2.5",
   "pyyaml>=6.0",
-  "numpy>=1.26",
-  "scikit-learn>=1.4",
   "prometheus-client>=0.20",
   "pyjwt>=2.8",
   "argon2-cffi>=23.1",
@@ -52,7 +50,7 @@ dev = [
   "ruff>=0.4",
   "types-PyYAML",
 ]
-pyshark = ["pyshark>=0.6"]
+ml = ["numpy>=1.26", "scikit-learn>=1.4"]
 
 [project.scripts]
 sentinelx = "sentinelx.cli.main:app"
@@ -127,7 +125,7 @@ plugins = ["pydantic.mypy"]
 exclude = ["packages/sentinelx/storage/migrations/versions/"]
 
 [[tool.mypy.overrides]]
-module = ["scapy.*", "sklearn.*", "pyshark.*", "redis.*", "psutil.*", "joblib.*"]
+module = ["scapy.*", "sklearn.*", "redis.*", "psutil.*", "joblib.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

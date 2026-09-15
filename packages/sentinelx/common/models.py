@@ -360,10 +360,12 @@ class Incident:
     last_seen: datetime = field(default_factory=utcnow)
     correlation_rule: str | None = None
     timeline: list[dict[str, Any]] = field(default_factory=list)
+    detection_total: int = 0
+    """Detections ever folded in. ``detection_ids`` keeps only the most recent ones."""
 
     @property
     def detection_count(self) -> int:
-        return len(self.detection_ids)
+        return max(self.detection_total, len(self.detection_ids))
 
     @property
     def duration_seconds(self) -> float:

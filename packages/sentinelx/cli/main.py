@@ -25,6 +25,9 @@ app = typer.Typer(
     rich_markup_mode="rich",
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
+    # Tracebacks must never print local variables: they include Settings objects,
+    # and with them the JWT secret and database credentials.
+    pretty_exceptions_show_locals=False,
 )
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Machine-readable JSON on stdout.")]
@@ -115,8 +118,9 @@ def start(
         import os
 
         os.environ["SENTINELX_START_CAPTURE"] = interface or settings.capture.interface
+    docs = "   docs /api/docs" if settings.api.docs_enabled else "   (API docs off in production)"
     console.print(
-        f"API    http://{listen_host}:{listen_port}/api/v1   docs /api/docs\n"
+        f"API    http://{listen_host}:{listen_port}/api/v1{docs}\n"
         f"Events ws://{listen_host}:{listen_port}/api/v1/ws/events"
     )
     uvicorn.run(

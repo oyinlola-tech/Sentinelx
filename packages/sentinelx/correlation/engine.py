@@ -32,6 +32,8 @@ log = get_logger(__name__)
 
 #: Detections kept per open incident for risk and timeline purposes.
 MAX_MEMBERS = 1000
+#: Addresses and services recorded per incident.
+MAX_AFFECTED = 1000
 #: How often stale pending (not-yet-incident) groups are swept, in capture seconds.
 PRUNE_INTERVAL_SECONDS = 30.0
 
@@ -223,6 +225,7 @@ class CorrelationEngine:
             last_seen=max(d.timestamp for d in detections),
             correlation_rule=pattern.name,
             timeline=[self._timeline_entry(d, r) for d, r in members],
+            detection_total=len(detections),
         )
         incident.timeline.sort(key=lambda entry: str(entry["timestamp"]))
         self._open[key] = incident
@@ -255,11 +258,16 @@ class CorrelationEngine:
         previous = incident.severity
         previous_risk = incident.risk.score
 
+        incident.detection_total = incident.detection_count + 1
         incident.detection_ids.append(detection.detection_id)
-        incident.affected_sources.add(detection.source_ip)
-        if detection.destination_ip:
+        if len(incident.detection_ids) > MAX_MEMBERS:
+            del incident.detection_ids[: len(incident.detection_ids) - MAX_MEMBERS]
+        # Bounded: a long horizontal sweep would otherwise grow these without limit.
+        if len(incident.affected_sources) < MAX_AFFECTED:
+            incident.affected_sources.add(detection.source_ip)
+        if detection.destination_ip and len(incident.affected_destinations) < MAX_AFFECTED:
             incident.affected_destinations.add(detection.destination_ip)
-        if detection.destination_port:
+        if detection.destination_port and len(incident.affected_services) < MAX_AFFECTED:
             incident.affected_services.add(detection.destination_port)
         incident.categories.add(detection.category)
         incident.last_seen = max(incident.last_seen, detection.timestamp)

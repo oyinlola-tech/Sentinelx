@@ -25,6 +25,8 @@ __all__ = [
     "SentinelXError",
     "StorageError",
     "ThreatIntelError",
+    "UploadQuotaExhaustedError",
+    "UploadTooLargeError",
 ]
 
 
@@ -71,6 +73,14 @@ class BackendUnavailableError(CaptureError):
 
 class PcapError(CaptureError):
     """A PCAP file is missing, unreadable, or not a capture file."""
+
+
+class UploadTooLargeError(PcapError):
+    """An upload is larger than the size limit or the space left in the upload quota."""
+
+
+class UploadQuotaExhaustedError(PcapError):
+    """The upload area is full; nothing more can be stored until uploads are deleted."""
 
 
 # ---------------------------------------------------------------------- parser

@@ -12,10 +12,11 @@ import { ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
 /**
- * Example shown in the hero: the explanation SentinelX produces for the bundled
- * tcp_port_scan fixture with default settings, copied from the engine's output
- * (critical escalation of the scan). Labelled as an example on screen - not live
- * data, and not a performance claim. Regenerate it if detector wording changes.
+ * Example shown in the hero, labelled as an example on screen: not live data and not a
+ * performance claim. It is the engine's output copied verbatim - the highest-scoring
+ * detection when the bundled tcp_port_scan fixture is replayed with default settings
+ * (sentinelx fixtures generate; sentinelx replay tcp_port_scan.pcap). Update it if the
+ * detector's wording changes.
  */
 const EXAMPLE = {
   title: "TCP port scan",
@@ -24,12 +25,13 @@ const EXAMPLE = {
   evidence: [
     "100 distinct destination ports contacted on 192.168.10.50 (threshold 20)",
     "observed over 1.1 seconds",
-    "100% of this source's packets are bare SYNs",
-    "only 2.0% of SYNs were answered with SYN-ACK",
+    "100% of this source's packets are bare SYNs - it opens connections but does not complete them",
+    "only 2.0% of SYNs were answered with SYN-ACK, so most probed ports are closed",
+    "100 connection attempts in the window",
     "97% of attempts were refused with RST",
   ],
-  factors: [["Severity", 45], ["Confidence", 19.6], ["Repetition", 2]] as [string, number][],
-  decision: "Temporary block recommended · not applied (detection-only mode)",
+  factors: [["Severity", 45], ["Detector confidence", 19.6], ["Repetition", 2]] as [string, number][],
+  decision: "Temporary block: not applied: risk 67 is below the automatic response threshold of 85",
 };
 
 function LoginForm() {
@@ -41,7 +43,7 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const next = params.get("next");
-  const destination = next && next.startsWith("/") && !next.startsWith("//") ? next : "/"; // no open redirects
+  const destination = safeDestination(next);
 
   useEffect(() => {
     document.title = "Sign in · SentinelX";
@@ -140,4 +142,18 @@ export default function LoginPage() {
       <ConsoleFooter minimal />
     </div>
   );
+}
+
+/**
+ * Only same-origin paths may follow sign-in. Checking the prefix is not enough:
+ * "/\\evil.example" is normalised by browsers to "//evil.example".
+ */
+function safeDestination(next: string | null): string {
+  if (!next || !next.startsWith("/") || typeof window === "undefined") return "/";
+  try {
+    const url = new URL(next, window.location.origin);
+    return url.origin === window.location.origin ? `${url.pathname}${url.search}${url.hash}` : "/";
+  } catch {
+    return "/";
+  }
 }
