@@ -338,7 +338,7 @@ With capture privileges in place (see [Installation by platform](#installation-b
 | `api` | `sentinelx-api:local` | `sentinelx start`; PCAP files in the `pcaps` volume at `/data/pcaps` | `backend`, `frontend` | `127.0.0.1:${API_PORT:-8000}` (scripts and Prometheus) |
 | `dashboard` | `sentinelx-dashboard:local` (built from `docker/Dockerfile.dashboard`) | Next.js standalone server | `frontend` | none |
 | `proxy` | `nginxinc/nginx-unprivileged:1.27-alpine` | One origin for the dashboard, REST API and event stream | `frontend` | `127.0.0.1:${DASHBOARD_PORT:-3000}` |
-| `sensor` (profile `capture`) | `sentinelx-api:local` | `python3-sensor -m sentinelx start --capture` on the host network | host | host network, port `${SENSOR_PORT:-8001}` |
+| `sensor` (profile `capture`) | `sentinelx-api:local` | `python3-sensor -m sentinelx start --capture` on the host network | host | host network, `${FRONTEND_GATEWAY:-172.31.250.1}:${SENSOR_PORT:-8001}` only |
 
 Start order: `postgres` becomes healthy, `migrate` completes successfully, then `api`
 starts once `redis` is healthy. `proxy` waits for a healthy `dashboard` and a healthy
@@ -382,6 +382,7 @@ Other Compose variables:
 | `API__METRICS_TOKEN` | empty | the same variable in the API containers |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | `CORS_ORIGINS` |
 | `FRONTEND_SUBNET` | `172.31.250.0/24` | the `frontend` network's subnet, and `API__TRUSTED_PROXIES` |
+| `FRONTEND_GATEWAY` | `172.31.250.1` | the `frontend` network's gateway address (set explicitly in its `ipam` configuration), and `API_HOST` of the `sensor` service. Must lie inside `FRONTEND_SUBNET` |
 | `DETECTION_MODE` | `balanced` | `DETECTION_MODE` |
 | `RESPONSE_MODE` | `detect_only` | `RESPONSE_MODE` |
 | `DRY_RUN` | `true` | `DRY_RUN` |
@@ -392,11 +393,12 @@ Other Compose variables:
 | `SENSOR_NAME` | `sentinelx` | `SENSOR_NAME` |
 | `API_PORT`, `DASHBOARD_PORT`, `POSTGRES_HOST_PORT`, `REDIS_HOST_PORT` | `8000`, `3000`, `5433`, `6381` | host port mappings only |
 | `SENSOR_PORT` | `8001` | `API_PORT` of the `sensor` service |
-| `SENTINELX_API_UPSTREAM` | `api:8000` | the proxy's API upstream |
+| `SENTINELX_API_UPSTREAM` | `api:8000` | the proxy's API upstream; `${FRONTEND_GATEWAY}:${SENSOR_PORT}` (by default `172.31.250.1:8001`) with the `capture` profile |
 | `SENTINELX_MAX_UPLOAD_MB` | `200` | the proxy's `client_max_body_size` |
 
 The API image also sets `RULES_DIRECTORY=/app/rules`, `PCAP_DIRECTORY=/data/pcaps`,
-`API_HOST=0.0.0.0`, `API_PORT=8000` and `LOG_FORMAT=json`. Only variables listed in
+`API_HOST=0.0.0.0`, `API_PORT=8000` and `LOG_FORMAT=json` (the `sensor` service
+overrides `API_HOST` and `API_PORT`). Only variables listed in
 `docker-compose.yml` reach the containers; to set any other setting (for example
 `CAPTURE__BACKEND` or `API__MAX_UPLOAD_MB`), add it to the `x-api-env` block. If you
 raise `API__MAX_UPLOAD_MB`, raise `SENTINELX_MAX_UPLOAD_MB` to match. A `.env` copied
@@ -452,7 +454,13 @@ published port do not arrive from a loopback address inside the container, so se
 capabilities dropped; `api`, `dashboard` and `migrate` have a read-only root
 filesystem, and `api`, `dashboard` and `proxy` a tmpfs `/tmp`. The API and dashboard
 images run as the non-root user `sentinelx` (uid 10001) and include a `HEALTHCHECK`
-(`/api/v1/system/health` for the API, `/login` for the dashboard); the proxy's health
+(`/api/v1/system/health` for the API, `/login` for the dashboard). The API image's
+check probes `API_HOST` on `API_PORT`, using `127.0.0.1` when `API_HOST` is `0.0.0.0`
+or `::`, so it also works for the `sensor`, which listens on one address. The API
+image is built by the `migrate` service (`build:` is declared there; `api` and
+`sensor` only reference `sentinelx-api:local`), so rebuild it with
+`docker compose build migrate` or `docker compose up -d --build`;
+`docker compose build api` builds nothing. The proxy's health
 check requests `/api/v1/system/health` through the proxy. The dashboard and proxy are
 attached only to the `frontend` network; PostgreSQL and Redis only to `backend`.
 
@@ -487,24 +495,29 @@ The `sensor` service replaces `api` for live capture on a Linux host:
   start with `Operation not permitted`.
 - It connects to PostgreSQL and Redis through their loopback-published ports
   (`127.0.0.1:5433` and `127.0.0.1:6381` by default).
-- It listens with `API_HOST=0.0.0.0` and `API_PORT=${SENSOR_PORT:-8001}`.
+- It listens with `API_HOST=${FRONTEND_GATEWAY:-172.31.250.1}` and
+  `API_PORT=${SENSOR_PORT:-8001}`: only on the host's address on the `frontend`
+  network (that network's gateway, set explicitly in its `ipam` configuration), not
+  on `0.0.0.0`.
 
 Start it with the proxy pointed at the sensor:
 
 ```sh
-SENTINELX_API_UPSTREAM=host.docker.internal:8001 \
+SENTINELX_API_UPSTREAM=172.31.250.1:8001 \
   docker compose --profile capture up -d --build --scale api=0
 ```
 
 `--scale api=0` stops the bridge-network `api` so only one pipeline writes to the
-database. The proxy reaches the sensor through `host.docker.internal`, which the
-`proxy` service maps to the host gateway. If you change `SENSOR_PORT`, use the same
-port in `SENTINELX_API_UPSTREAM` (both can be set in `.env`).
+database. The proxy, on the `frontend` network, reaches the sensor at that network's
+gateway address. If you change `FRONTEND_GATEWAY` or `SENSOR_PORT`, set
+`SENTINELX_API_UPSTREAM=${FRONTEND_GATEWAY}:${SENSOR_PORT}` with the same values
+(all three can be set in `.env`).
 
 Notes:
 
-- With host networking the sensor's API listens on its port on **all host
-  interfaces**, not just loopback. Restrict it with the host firewall.
+- The sensor's API is reachable by the proxy but not from other hosts, and not on
+  `127.0.0.1` either: use the proxy (`127.0.0.1:${DASHBOARD_PORT:-3000}`) or
+  `http://172.31.250.1:8001` from the host itself.
 - Set `CAPTURE_INTERFACE` in `.env` to the interface that carries the traffic you
   want to monitor (for example a mirror port). The default `any` captures on all
   interfaces.
@@ -1211,8 +1224,9 @@ Network and transport:
       sent.
 - [ ] The reverse proxy preserves `Host` and forwards WebSocket upgrades for
       `/api/v1/ws/`.
-- [ ] With the Compose `capture` profile, the sensor port (`SENSOR_PORT`, 8001)
-      restricted by the host firewall.
+- [ ] With the Compose `capture` profile, `FRONTEND_GATEWAY` left at (or set to) the
+      `frontend` network's gateway, so the sensor listens only there and not on
+      `0.0.0.0`.
 - [ ] PostgreSQL and Redis ports not reachable from untrusted networks.
 
 Accounts:

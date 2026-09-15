@@ -138,7 +138,7 @@ Security decisions live in the service layer (`packages/sentinelx/services/`), n
 ### Containers
 
 - The API image runs as a non-root user (uid 10001). In Docker Compose the `api` and `migrate` containers are read-only (`api` has a `/tmp` tmpfs), drop all capabilities and set `no-new-privileges`. The dashboard and nginx proxy containers are read-only or unprivileged with all capabilities dropped. Host ports are bound to loopback by default.
-- The image contains a copy of the interpreter, `/usr/local/bin/python3-sensor`, which is the only file with capabilities (`cap_net_raw,cap_net_admin+eip`). The shared `python3` has none, so the API and migration containers start with every capability dropped. Only the optional `capture` profile runs `python3-sensor`, adds `NET_RAW` and `NET_ADMIN`, allows privilege gain so the file capabilities apply, and uses host networking. That sensor listens on `0.0.0.0` (port `SENSOR_PORT`, default 8001) on the host's interfaces; restrict that port with a host firewall if the host is reachable from untrusted networks.
+- The image contains a copy of the interpreter, `/usr/local/bin/python3-sensor`, which is the only file with capabilities (`cap_net_raw,cap_net_admin+eip`). The shared `python3` has none, so the API and migration containers start with every capability dropped. Only the optional `capture` profile runs `python3-sensor`, adds `NET_RAW` and `NET_ADMIN`, allows privilege gain so the file capabilities apply, and uses host networking. That sensor does not listen on `0.0.0.0`: it binds only the `frontend` network's gateway address (`API_HOST=${FRONTEND_GATEWAY:-172.31.250.1}`, port `SENSOR_PORT`, default 8001), where the proxy reaches it, so it is not reachable from other hosts or on `127.0.0.1`.
 - The nginx proxy is the browser's single origin. It returns 404 for `/api/v1/metrics`, so metrics are never exposed through it, and it appends the real client address to `X-Forwarded-For`. The API trusts that header only from the proxy's network (`API__TRUSTED_PROXIES`, the frontend subnet).
 
 ## Residual risks and operator responsibilities
@@ -167,5 +167,5 @@ Security decisions live in the service layer (`packages/sentinelx/services/`), n
 - [ ] `RETENTION_DAYS` and `CAPTURE__UPLOAD_QUOTA_MB` set deliberately.
 - [ ] `API__METRICS_TOKEN` set if Prometheus scrapes from another host.
 - [ ] Webhook receivers use public HTTPS endpoints, or `RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES` is enabled only for a trusted internal receiver.
-- [ ] With the Docker `capture` profile, the sensor port (default 8001) is not reachable from untrusted networks.
+- [ ] With the Docker `capture` profile, the sensor listens only on `FRONTEND_GATEWAY` (the default), not on `0.0.0.0`.
 - [ ] The audit log reviewed regularly.

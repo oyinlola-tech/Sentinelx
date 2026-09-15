@@ -100,7 +100,7 @@ $env:SENTINELX_API_URL = "http://127.0.0.1:8000"; npm run --prefix apps/dashboar
 | `apps/api/main.py`, `apps/cli/main.py` | Thin entry points for uvicorn and for running the CLI from a checkout |
 | `rules/` | YAML detection rules (`authentication.yml`, `dns-and-web.yml`, `network-recon.yml`) and threat intelligence lists (`rules/intel/allowlist.txt`, `rules/intel/denylist.txt`) |
 | `tests/` | Test suite (see [Tests](#tests)) |
-| `scripts/` | `benchmark.py` (detection experiments), `benchmark_platform.py` (API, WebSocket, storage and pipeline load), `export_openapi.py`, `seed_demo.py` |
+| `scripts/` | `benchmark.py` (detection experiments), `benchmark_platform.py` (API, WebSocket, storage and pipeline load), `export_openapi.py`, `generate_test_pcaps.py` (the committed PCAP suite in `tests/pcaps/`), `seed_demo.py` |
 | `benchmarks/results/` | Benchmark reports cited by [benchmarking.md](benchmarking.md). Committed |
 | `pcaps/` | Capture files and generated fixtures. Ignored by git except `.gitkeep` |
 | `docker/` | `Dockerfile.api`, `Dockerfile.dashboard`, and `proxy/default.conf.template` (the nginx front proxy); `docker-compose.yml` is at the root |
@@ -153,15 +153,15 @@ unshare -rn sh -c 'ip link set lo up && ip link add sx0 type dummy && \
 - `tests/kernel/test_live_capture.py` captures from `lo` and `any` with the AF_PACKET and libpcap backends and with `auto`, checks that every frame decodes, that a BPF filter is applied in the kernel, and that an invalid BPF filter is refused rather than ignored.
 - `tests/kernel/test_firewall.py` runs the nftables and iptables adapters through the response engine and verifies with real UDP traffic: block, unblock, expiry, re-block, rate limiting and teardown.
 
-`tests/kernel/conftest.py` marks every kernel test `root` and skips it unless the process has both capabilities and the two test addresses are assigned locally, so `make test`, CI and other operating systems skip them. The target needs unprivileged user namespaces to be enabled (some distributions disable them) and the `ip`, `nft` and `iptables` commands.
+`tests/kernel/conftest.py` marks every kernel test `root` and skips it unless the process has both capabilities and the two test addresses are assigned locally, so `make test`, the CI backend and portability jobs, and other operating systems skip them. The CI kernel job runs them and fails if any is skipped. The target needs unprivileged user namespaces to be enabled (some distributions disable them) and the `ip`, `nft` and `iptables` commands.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `main` and on every pull request. A newer run for the same ref cancels one in progress. It has three jobs:
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request. A newer run for the same ref cancels one in progress. It has five jobs:
 
 **Backend (lint, types, tests)** on `ubuntu-latest` with Python 3.12, and `postgres:17-alpine` and `redis:7-alpine` service containers:
 
-1. Installs `libpcap0.8` and `pip install -e ".[dev]"`. The `ml` extra is not installed, so tests that need scikit-learn or joblib are skipped.
+1. Installs `libpcap0.8` and `pip install -e ".[dev,ml]"`, so the machine-learning tests run too.
 2. `ruff check` and `ruff format --check` on `packages apps tests scripts`.
 3. `mypy`.
 4. `python -m pytest --cov --cov-report=term-missing` with `SENTINELX_TEST_POSTGRES_URL` and `SENTINELX_TEST_REDIS_URL` set, so the SQLite, PostgreSQL and Redis tests all run. Kernel tests are skipped.
@@ -174,9 +174,13 @@ unshare -rn sh -c 'ip link set lo up && ip link add sx0 type dummy && \
 2. Regenerates the OpenAPI document and the TypeScript schema (`scripts/export_openapi.py`, `npm run generate:api`) and fails if `apps/dashboard/src/lib/openapi.json` or `apps/dashboard/src/lib/api-schema.d.ts` differ from the committed files.
 3. ESLint, `tsc` type check and `next build`.
 
-**Container images build**, after both jobs pass: `docker build` of `docker/Dockerfile.api` and `docker/Dockerfile.dashboard`. The images are not pushed.
+**Kernel (real capture and firewall, network namespace)** on `ubuntu-latest` with Python 3.12: installs `libpcap0.8`, `nftables`, `iptables` and `iproute2` and a `.venv` with `.[dev]`, allows unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=0`), then runs `make test-kernel` (see [Kernel tests](#kernel-tests)). The job fails if pytest reports any skipped test, so kernel tests cannot pass by skipping.
 
-CI therefore covers more than `make check` (PostgreSQL and Redis tests, the migration check, the API contract and the images) but does not run the kernel tests, the machine-learning tests or either benchmark. Run `make test-kernel` yourself when you change capture or firewall code.
+**Portability** on `windows-latest` and `macos-latest` with Python 3.12 (`fail-fast: false`): `pip install -e ".[dev]"`, `sentinelx capabilities` and `sentinelx doctor` as a report (`continue-on-error`, so a doctor FAIL does not fail the job), the test suite (`python -m pytest -p no:cacheprovider`), and `sentinelx fixtures generate tcp_port_scan` followed by `sentinelx replay` of that file. Live capture and firewall control are not exercised there. At the time of writing this job is defined but has not yet run, so no macOS or Windows result is known.
+
+**Container images build**, after the backend, kernel and dashboard jobs pass: `docker build` of `docker/Dockerfile.api` and `docker/Dockerfile.dashboard`. The images are not pushed.
+
+CI therefore covers more than `make check` (PostgreSQL and Redis tests, the machine-learning tests, the migration check, the kernel tests, the API contract and the images) but does not run either benchmark.
 
 ## Coding standards
 
@@ -235,7 +239,7 @@ Read [detection-engine.md](detection-engine.md) first.
 3. **Implement `inspect(context)`.** Return `None` in the common case. When the criteria are met, return `self.build(context=..., title=..., description=..., evidence=[...], confidence=...)`, with optional `severity`, `recommended_action`, `observation_window`, `packet_count` and `tags`. Use `Detector.scaled_confidence(observed, threshold)` so confidence grows with how far past the threshold the value is. Do not set timestamps yourself: the engine stamps each detection with the capture time of the triggering packet.
 4. **Add thresholds to `DetectionSettings`** in `config/settings.py`, with bounds and a `description`. They become settable as `DETECTION__<FIELD>` and are editable at runtime through the configuration service. If you add a window length, check `WINDOW_FIELDS` in `services/config.py` and `max_rule_window()` in `services/rules.py`.
 5. **Register it** in `BUILTIN_DETECTORS` in `detection/engine.py`. Order matters: cheap, precise detectors run first. Add the name to `_SIGNATURE_DETECTORS` only if it matches facts rather than rates and should run in `signature_only` mode. A detector that is attached separately (like the anomaly detectors) must be attached in `assembly.py`, so live capture, replays and benchmarks all get it.
-6. **Add a scenario** to `packages/sentinelx/testing/scenarios.py` and to the `SCENARIOS` dict, with `expected_detectors` and `expected_source`. Draw all randomness from the scenario's seeded generator so the fixture stays reproducible, and add bounds for any new parameter to `validate_scenario_params`. If the scenario is a known evasion, say so in its description.
+6. **Add a scenario** to `packages/sentinelx/testing/scenarios.py` and to the `SCENARIOS` dict, with `expected_detectors` and `expected_source`. Draw all randomness from the scenario's seeded generator so the fixture stays reproducible (header fields such as IP identifiers, TCP sequence numbers and DNS ids come from a header generator that `get_scenario` reseeds per scenario, so do not use the global `random` module), and add bounds for any new parameter to `validate_scenario_params`. If the scenario is a known evasion, say so in its description.
 7. **Test it** in `tests/detection/test_detectors.py`: a positive case on the scenario, negative cases on traffic that shares a surface feature with the attack but not its shape, and edge cases. Assert that every detection has evidence with descriptions.
 8. **Document it** in the detector catalogue in [detection-engine.md](detection-engine.md). If it should be benchmarked, add an `Experiment` in `packages/sentinelx/bench/experiments.py` and re-run the benchmark.
 
@@ -385,13 +389,26 @@ Tests live under `tests/` and run with `.venv/bin/python -m pytest` (`make test`
 | Path | Covers |
 |---|---|
 | `tests/unit/` | CLI commands and exit codes, configuration and logging (including secret redaction in tracebacks), capability detection, network utilities and models, scoring and correlation, sliding windows |
-| `tests/capture/` | Packet decoding and application parsers, capture sources, and the capture-file reader (`test_pcapfile.py`: pcap and pcapng formats, timestamp resolutions, per-interface link types, hostile files, reproducible fixtures) |
+| `tests/capture/` | Packet decoding and application parsers, capture sources, the capture-file reader (`test_pcapfile.py`: pcap and pcapng formats, timestamp resolutions, per-interface link types, hostile files, reproducible fixtures), and the committed PCAP suite (`test_pcap_suite.py`, see [PCAP test suite](#pcap-test-suite)) |
 | `tests/detection/` | Built-in detectors (including `TestDocumentedEvasions`), rules (including every file in `rules/`), anomaly detection |
 | `tests/response/` | Response engine and safety guard; pf and Windows Firewall adapters against recorded command results (`test_platform_firewalls.py`) |
 | `tests/api/test_api.py` | The HTTP API and WebSocket, with the fixtures in `tests/api/conftest.py` |
 | `tests/api/test_security_hardening.py` | Regression tests from the security review: concurrent refresh-token and WebSocket-ticket reuse, access-token revocation on sign-out, two-level lockout, forged `X-Forwarded-For`, metrics behind a proxy and non-ASCII metrics tokens, YAML alias expansion, oversized scenario parameters, prevention confirmation and environment precedence, replay and live detector parity, and operator-address protection |
 | `tests/integration/` | The full pipeline, storage on SQLite and optionally PostgreSQL and Redis, and schema checks at startup (`test_schema.py`) |
 | `tests/kernel/` | Real capture and firewall tests, run only by `make test-kernel` (see [Kernel tests](#kernel-tests)) |
+
+### PCAP test suite
+
+`tests/pcaps/` holds small synthetic captures that are committed to the repository (source, licence and layout in `tests/pcaps/README.md`). `scripts/generate_test_pcaps.py` generates them and writes `tests/pcaps/MANIFEST.json`, which records each file's SHA-256, packet count, and the exact `detector@source` pairs and incident count a replay through the full detection pipeline (built-in detectors, anomaly detection, local threat intelligence and the rules in `rules/`) produces. `tests/capture/test_pcap_suite.py` checks that every file is in the manifest, that committed files are unchanged, that the generator still produces the committed bytes, and that each replay matches the manifest:
+
+| Directory | Expectation |
+|---|---|
+| `benign/` | No detections. |
+| `attacks/` | The intended detectors fire, and only against the attacking address. |
+| `evasion/` | `slow_port_scan` and `low_rate_brute_force` stay below the default thresholds, and the test asserts that the intended detector does **not** fire. This is a known limitation, kept in the suite so a change in behaviour shows up. |
+| `malformed/` | The reader rejects each file with `PcapError`. |
+
+After an intended change to the scenarios or to detection, run `python scripts/generate_test_pcaps.py` and review the diff of `tests/pcaps/MANIFEST.json` before committing.
 
 Configuration (`[tool.pytest.ini_options]` in `pyproject.toml`):
 

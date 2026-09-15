@@ -48,7 +48,16 @@ make fixtures                                             # same as the first ge
 
 An unknown scenario name prints `unknown scenario(s): <names>` and exits with code 2; `sentinelx fixtures list` shows the valid names.
 
-Every scenario is fully determined by its parameters, including its `seed`. Packet counts, addresses, ports, timing, IP identification fields, TCP sequence numbers and DNS transaction IDs all come from a seeded generator, and every scenario starts at the same base timestamp (UNIX time 1,700,000,000). Generating the same scenario twice writes byte-identical files (`tests/capture/test_pcapfile.py` checks this); a different `seed` gives different traffic.
+Every scenario is fully determined by its parameters, including its `seed`. Packet counts, addresses, ports, timing, IP identification fields, TCP sequence numbers and DNS transaction IDs all come from a seeded generator, and every scenario starts at the same base timestamp (UNIX time 1,700,000,000). Generating the same scenario twice writes byte-identical files (`tests/capture/test_pcapfile.py` checks this); a different `seed` gives different traffic. The header fields (IP identification, TCP sequence numbers, DNS transaction IDs) come from a generator that `get_scenario` reseeds from the scenario name and parameters, so `sentinelx fixtures generate` writes the same bytes on every run and on every architecture (all 14 default fixtures were compared between x86_64 and ARM64).
+
+A small set of these scenarios, plus hand-built malformed files, is committed as a regression suite in `tests/pcaps/` (see `tests/pcaps/README.md`). `scripts/generate_test_pcaps.py` regenerates the files and `tests/pcaps/MANIFEST.json`, which records each file's SHA-256 and the exact detections and incident count a replay produces. `tests/capture/test_pcap_suite.py` replays each file through the full detection pipeline and compares the result with the manifest:
+
+| Directory | Files | Expected result |
+|---|---|---|
+| `benign/` | `normal_traffic.pcap` | No detections |
+| `attacks/` | `tcp_port_scan`, `horizontal_scan`, `udp_scan`, `ssh_brute_force`, `dns_tunneling`, `mixed_intrusion` | The intended detectors fire, only against the attacking address |
+| `evasion/` | `slow_port_scan`, `low_rate_brute_force` | Not detected at the default thresholds. The test asserts this as a known limitation |
+| `malformed/` | `truncated_record.pcap`, `oversized_record.pcap`, `empty.pcap`, `not_a_capture.pcap`, `bad_block_length.pcapng` | Rejected by the reader with `PcapError` |
 
 `pcaps/` is ignored by git apart from `pcaps/.gitkeep`. Regenerate fixtures rather than committing them.
 

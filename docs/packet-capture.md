@@ -155,14 +155,14 @@ Be aware of what this grants. A virtual environment's `python` is usually a syml
 
 Containers on a Docker bridge network see only their own traffic, never the host's. The default Compose stack therefore runs detection on PCAP replay and on traffic sent to the stack itself, and its `api` container (`cap_drop: [ALL]`) cannot capture: `sentinelx capabilities` inside it reports live capture as unavailable.
 
-For live capture of host traffic on a Linux host, the `sensor` service in the `capture` profile replaces `api`. It uses host networking, runs `python3-sensor -m sentinelx start --capture` (a separate interpreter copy, `/usr/local/bin/python3-sensor`, that carries the `cap_net_raw,cap_net_admin` file capabilities), is granted `NET_RAW` and `NET_ADMIN`, and listens on `${SENSOR_PORT:-8001}`. Start it with the front proxy pointed at it:
+For live capture of host traffic on a Linux host, the `sensor` service in the `capture` profile replaces `api`. It uses host networking, runs `python3-sensor -m sentinelx start --capture` (a separate interpreter copy, `/usr/local/bin/python3-sensor`, that carries the `cap_net_raw,cap_net_admin` file capabilities), is granted `NET_RAW` and `NET_ADMIN`, and listens only on `${FRONTEND_GATEWAY:-172.31.250.1}:${SENSOR_PORT:-8001}`, the `frontend` network's gateway. Start it with the front proxy pointed at it (use `${FRONTEND_GATEWAY}:${SENSOR_PORT}` if you change either):
 
 ```bash
-SENTINELX_API_UPSTREAM=host.docker.internal:8001 \
+SENTINELX_API_UPSTREAM=172.31.250.1:8001 \
   docker compose --profile capture up -d --build --scale api=0
 ```
 
-`CAPTURE_INTERFACE` (default `any`, which captures and decodes every interface) selects the interface. Docker Desktop on macOS and Windows runs containers in a virtual machine, so host networking there captures the VM's traffic. The sensor's API listens on all host interfaces. Service details, required capabilities and exposure guidance are in [deployment.md](deployment.md#the-capture-profile).
+`CAPTURE_INTERFACE` (default `any`, which captures and decodes every interface) selects the interface. Docker Desktop on macOS and Windows runs containers in a virtual machine, so host networking there captures the VM's traffic. The sensor's API is reachable by the proxy but not from other hosts or on `127.0.0.1`. Service details, required capabilities and exposure guidance are in [deployment.md](deployment.md#the-capture-profile).
 
 ## Interface selection
 

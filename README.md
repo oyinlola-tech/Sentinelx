@@ -447,9 +447,11 @@ The stack defaults to `ENVIRONMENT=production`: cookies are `Secure`, so use the
 **A container on a Docker bridge network sees only its own traffic.** The default stack is suitable for PCAP analysis, the API and the dashboard, but not for monitoring your network. On a Linux host, the `capture` profile runs the sensor on the host network with `NET_RAW` and `NET_ADMIN`, and points the proxy at it:
 
 ```bash
-SENTINELX_API_UPSTREAM=host.docker.internal:8001 \
+SENTINELX_API_UPSTREAM=172.31.250.1:8001 \
   docker compose --profile capture up -d --build --scale api=0
 ```
+
+The sensor listens only on the `frontend` network's gateway (`FRONTEND_GATEWAY`, default `172.31.250.1`, port `SENSOR_PORT`, default 8001), where the proxy reaches it. If you change either, set `SENTINELX_API_UPSTREAM=${FRONTEND_GATEWAY}:${SENSOR_PORT}`.
 
 On Docker Desktop (macOS and Windows) host networking reaches Docker's virtual machine, not your computer; install SentinelX natively for live capture there.
 
