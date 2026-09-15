@@ -329,15 +329,15 @@ Synthetic traffic with known ground truth, 5 runs each:
 
 | Check | Result |
 |---|---|
-| Backend test suite with real PostgreSQL 17 and Redis 7, including the `docker pause` partition test (final code) | 1,863 passed, 15 skipped, 0 failed. The skips are the kernel tests, which run separately |
+| Backend test suite with real PostgreSQL 17 and Redis 7, including the `docker pause` partition test (final code) | 1,878 passed, 15 skipped, 0 failed (JUnit report behind the README card). The skips are the kernel tests, which run separately |
 | Coverage | 88% (was 78.8% at the start of the first pass) |
 | Kernel tests (network namespace, real AF_PACKET, libpcap, nftables, iptables) | 14 passed, 0 skipped |
 | Clean `python:3.12-slim` container on the pinned `constraints.txt` versions (FastAPI 0.141.1, Typer 0.27.2, Starlette 1.6.0, SQLAlchemy 2.0.53) | `pip check`, ruff and mypy pass; 1,840 passed, 27 skipped, 0 failed (skips: kernel tests, tests that cannot run as root, and one needing Wireshark's `editcap`); the HTTPS webhook tests run |
 | Windows and macOS test failures reported by CI | Reproduced and fixed locally: the parser tests fail on the old code and pass on the new with Scapy's host lookups made to raise; the full capture, detection and unit suites pass under that condition |
 | First-run administrator password (CodeQL finding) | Real server and fresh Compose stack: never in console output or any container log; file `0600` on tmpfs; browser first-run flow passes and the file is deleted |
 | New tests this pass | 1,322 (1,834 collected against 498 at the start of the pass, excluding kernel tests), in the endpoint, auth, parser, feature, detector, rule, risk, correlation, response, storage, CLI and event bus matrices |
-| ruff check, ruff format | Pass (176 files) |
-| mypy (strict) | Pass (117 source files) |
+| ruff check, ruff format | Pass (178 files) |
+| mypy (strict) | Pass (118 source files) |
 | Dashboard lint, typecheck, production build | Pass |
 | OpenAPI contract | Regenerated from the final code; no drift |
 | Rules | 7 valid; embedded rule tests pass |
