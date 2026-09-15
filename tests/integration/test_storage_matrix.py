@@ -790,7 +790,14 @@ async def test_pool_limits_hold_and_connections_return_to_idle(tmp_path: Path) -
         await sampler
         assert 0 < peak <= pool_size + max_overflow
         assert pool.checkedout() == 0
+        # The pool closes overflow connections at once, but PostgreSQL removes a backend
+        # from pg_stat_activity only when that process exits, a moment later under load.
+        # A leaked connection never leaves, so it still fails after the wait.
+        deadline = time.monotonic() + 5.0
         total, busy = await connections()
+        while (total > pool_size or busy) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+            total, busy = await connections()
         print(f"\npool: peak={peak} after: total={total} busy={busy}")
         assert total <= pool_size and busy == 0  # overflow closed, the rest idle
         await observer.dispose()
