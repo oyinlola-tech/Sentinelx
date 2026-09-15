@@ -184,20 +184,37 @@ prevention() {
   call PATCH /config/response '{"changes":{"mode":"automatic","dry_run":false},"confirmation":"ENABLE PREVENTION"}' >/dev/null
   call GET /firewall | json 's = d["status"]; print("  mode:", s["mode"], "| dry run:", s["dry_run"], "| prevention active:", s["prevention_active"])'
 
-  say "Attacker 172.22.0.204: reachable first, then a port scan and SYN flood"
+  say "Attacker 172.22.0.204: reachable first, then a port scan"
   docker rm -f sentinelx-demo-d >/dev/null 2>&1 || true
   docker run -d --name sentinelx-demo-d --network "$NET" --ip 172.22.0.204 "$ATTACKER_IMAGE" sleep 900 >/dev/null
   reach "before the attack"
-  docker exec sentinelx-demo-d sh -c "
-    nmap -sS -Pn -n -p 1-1000 --max-rate 1500 $target | tail -1
-    hping3 -S -p 8000 -i u200 -c 3000 -q $target 2>&1 | grep 'packets transmitted'"
-  sleep 8
-  call GET /firewall | json '
-print("  active blocks:", [(b["network"], "rate limit" if b["rate_limited"] else "block") for b in d["active"]])
-print("  latest decision:", [(a["action"], a["target"], a["outcome"]) for a in d["actions"][:1]])'
+  docker exec sentinelx-demo-d nmap -sS -Pn -n -p 1-1000 --max-rate 1500 "$target" | tail -1
+  say "Wait for SentinelX to act on 172.22.0.204"
+  local waited=0 active=""
+  while [ $waited -lt 45 ]; do
+    active=$(call GET /firewall | json '
+hits = [b for b in d["active"] if b["network"].startswith("172.22.0.204")]
+print(("rate limit" if hits[0]["rate_limited"] else "block") if hits else "")')
+    [ -n "$active" ] && break
+    sleep 1; waited=$((waited + 1))
+  done
+  echo "  after ${waited}s: ${active:-no action}"
+  # The firewall applies the block at once; its decision record reaches the database
+  # a moment later, through the event persister's buffer.
+  local decision="" tries=0
+  while [ -z "$decision" ] && [ $tries -lt 10 ]; do
+    decision=$(call GET /firewall | json '
+hits = [a for a in d["actions"] if a["target"] == "172.22.0.204" and a["action"] != "unblock_ip"]
+print("%s %s - %s" % (hits[0]["action"], hits[0]["outcome"], hits[0]["reason"]) if hits else "")')
+    [ -z "$decision" ] && sleep 1
+    tries=$((tries + 1))
+  done
+  echo "  decision: ${decision:-not recorded yet}"
+  say "The same attacker now floods the API port"
+  docker exec sentinelx-demo-d hping3 -S -p 8000 -i u200 -c 3000 -q "$target" 2>&1 | grep 'packets transmitted' || true
+  reach "after the block"
   say "The block in the kernel (nftables inside the API container)"
   compose exec -T -u root api nft list table inet sentinelx | tee "$STATE/nftables-blocked.txt" | sed -n '1,6p;/chain input/,/}/p' | sed 's/^/  /'
-  reach "after the block"
 }
 
 unblock() {
