@@ -43,12 +43,13 @@ The pass found and fixed **more than 70 defects**, each with a regression test; 
   - With the database stopped, the API answered 500 instead of 503.
   - Prevention could be enabled, and the banner showed "PREVENTION ACTIVE", while the firewall could not be changed at all.
 
+A follow-up pass closed every open issue from the first version of this report (section 4, "Resolved after the first report"). It also fixed a finding from CodeQL: the generated first-administrator password was printed to the console, which `docker logs` and the systemd journal keep.
+
 **Verdict: BETA READY** for Linux x86_64 and Docker on a Linux host. It is not a release candidate, for these reasons:
 
-- Windows, macOS and WSL2 have never been run.
-- A silent network partition to PostgreSQL can still stall requests.
+- Windows and macOS have only run the automated test suite in CI, not live capture or firewall control, and the fixes for the failures CI found have not yet been re-run there. WSL2 has never been run.
 - Throughput is single-process, about 5,000 packets per second on the test machine.
-- A handful of low-severity issues remain (section 9).
+- It has had no long-running operation on a real network.
 
 ## 2. Feature matrix
 
@@ -108,7 +109,7 @@ Notes:
   - Capture goes through libpcap (Npcap on Windows, `/dev/bpf*` on macOS), and firewall adapters exist for Windows Firewall and pf.
   - The static audit found no platform assumptions in the core packages. All OS-specific code is behind adapters or platform checks.
   - A Windows-only defect (ML models could never load) was found and fixed statically.
-  - The CI jobs for Windows and macOS are defined but have not run.
+  - The Windows and macOS CI jobs have run the test suite (no capture or firewall privileges). Windows had 16 failing tests and macOS 1, all caused by test code, not product code (section 4). They were fixed and verified locally by simulating the runners' conditions; the jobs have not yet been re-run.
 - **WSL2 (supported by design, not tested):** capture and firewall changes apply to the WSL virtual machine, not the Windows host. SentinelX detects WSL and says so. PCAP replay has no platform dependency.
 - **Docker:** the stock API container is deliberately unprivileged. It reports capture and firewall control as unavailable, with remedies. It refuses capture (409) and refuses to enable prevention (422). Host network capture needs the `capture` profile.
 
@@ -189,6 +190,30 @@ A fresh install resolved Typer 0.27, Click 8.5, FastAPI 0.141 and Starlette 1.6,
 | Test | `tests/unit/test_cli_matrix.py`, `tests/api/test_endpoint_matrix.py` | Command tree and route table introspection found nothing | The same vendoring, and FastAPI 0.141 keeping included routers as lazy entries | Version-independent walking | Pass on both environments |
 | Test | `tests/detection/test_rule_matrix.py` | The unreadable-file assertion failed as root | Root can read mode-000 files | Root-aware assertion | Passes as root and as a user |
 
+### Resolved after the first report
+
+| Severity | Location | Problem | Fix | Verification |
+|---|---|---|---|---|
+| High | `api/app.py` | The generated first-administrator password was printed to standard error at start-up. The code comment said "never logged", but `docker logs`, the systemd journal and log shippers keep console output (CodeQL `py/clear-text-logging-sensitive-data`) | New `services/bootstrap.py`: the password goes to a `0600` file in a `0700` directory owned by the service account (`API__BOOTSTRAP_PASSWORD_FILE`; Compose uses the API container's tmpfs). Symlinked, foreign-owned or shared directories are refused, and a planted symlink is replaced, not followed. Only the path is printed. The file is deleted when the password is changed or reset. If it cannot be written, the console gives the `sentinelx users reset-password` command. The platform no longer keeps the password in memory | `tests/api/test_bootstrap_password.py` (11 tests). Real server on an empty database: password absent from console output, file `0600`, login forces a change, file deleted afterwards. Fresh Compose stack: file on tmpfs, owned by `sentinelx`; the password appears 0 times in the logs of every service; the browser first-run flow (sign in, forced change, overview) passes and the file is gone |
+| Medium | `storage/database.py`, `storage/persister.py` | A silent network partition to PostgreSQL could stall API requests on open connections | One deadline over a whole unit of work (`STORAGE__SESSION_TIMEOUT_SECONDS`, waiting for a connection included); past it the connection is discarded without waiting on the server. Event batches and retention purges have their own longer limits, so slow batches are not abandoned | `test_paused_database_answers_503_within_the_deadline_and_loses_nothing` (`docker pause` on a real PostgreSQL 17), `test_session_deadline_bounds_the_whole_unit_of_work`, `test_a_slow_batch_is_not_cut_off_by_the_request_deadline` |
+| Medium (process) | `pyproject.toml`, `constraints.txt`, CI | Open-ended dependency ranges; no lock or constraints file | Tested upper bounds on every dependency; `constraints.txt` pins a clean resolution; CI installs with it; a weekly `latest-allowed` job installs the newest releases the bounds permit | Clean `python:3.12-slim` container with the pins: `pip check`, ruff, mypy and the full suite pass (1,840 passed, 0 failed) |
+| Low | `firewall/iptables.py` | Replacing a rule: if the delete of the old rule failed, the new rule stayed in the kernel, missing from the registry | The new rule is withdrawn and the decision reported failed | `TestIptablesReplacement` |
+| Low | `system/capabilities.py`, `firewall/__init__.py` | A firewall counted as available when the tool was installed and privileges were held, without a functional probe | A cached functional probe | `tests/unit/test_capabilities.py` |
+| Low | `services/auth.py` | About 20 source addresses could tell real usernames from unknown ones through account lockout | Failures are counted per username whether or not the account exists | Auth matrix tests |
+| Low | `api/routes/auth.py` | `/auth/refresh` through the cookie did not require the dashboard client header | Header required | Auth matrix tests |
+| Low | `api/routes/system.py` | `/system/status` showed viewers the database location | Location for administrators only | Endpoint matrix tests |
+| Low | `services/queries.py`, `storage/repositories.py` | The threats view ranked only the 500 highest-risk detections, cutting off per-source counts | Aggregated in SQL | Storage matrix tests |
+| Low | `services/diagnostics.py` | `doctor` created an empty SQLite file | The check reports a missing file without creating it | Test, and `sentinelx doctor` on a missing path leaves no file |
+| Low | `cli/admin.py` | `config set` with an unknown section exited 1 | Exits 2 | Test, and the real command exits 2 |
+| Low | `api/security.py` | An unauthenticated request with malformed JSON got 422 before 401 | `AuthenticationGateMiddleware` authenticates before the body is parsed | `tests/api/test_security_hardening.py` |
+| Low | `config/settings.py`, `threat_intel/` | Unused settings and an unwired `HttpReputationProvider` | Removed; obsolete stored values are skipped with a warning | Config tests; `docs/deployment.md` notes the removal |
+| Test | `tests/capture/test_parser.py` | 4 failures on Windows, 1 on macOS | Frames left addresses empty, so Scapy looked up this host's routes, interface and neighbours while building them: no usable interface on the Windows runner, no root access to `/dev/bpf` on macOS. Every frame now names its addresses | The old tests fail and the new ones pass with Scapy's route, interface and neighbour lookups made to raise |
+| Test | `tests/response/test_response_matrix.py` | 10 failures on Windows | The fake `nft` and `iptables` binaries are shell scripts, which Windows cannot run; both tools are Linux-only | Skipped on Windows only, with that reason |
+| Test | `tests/detection/test_rule_matrix.py` | 1 failure on Windows | `chmod 0` only sets the read-only attribute on Windows, so the file stays readable | Assertion accounts for Windows |
+| Test | `tests/unit/test_cli_matrix.py` | 1 failure on Windows | `doctor` reports the normalised architecture (`AMD64` is `x86_64`; Linux `aarch64` is `arm64`, so ARM64 Linux would also have failed), while the test compared the raw `platform.machine()` | Compares against `detect_environment().label()` |
+| Test | `tests/integration/test_storage_matrix.py` | The pool test failed once under load (5 server connections counted where 4 are allowed) | PostgreSQL removes a closed overflow connection from `pg_stat_activity` only when its backend exits, a moment later; the test read the view immediately | Bounded wait (5 s) for the view to settle; a leaked connection still fails. Passes alone and three at once |
+| Test | `pyproject.toml` | The HTTPS webhook tests (payload delivered without leaking the secret, certificate checks) were silently skipped on clean installs and in CI | `cryptography` was not a dev dependency | Added (`cryptography>=42,<50`, pinned 49.0.0); the 7 tests run in the clean pinned container |
+
 ### Test infrastructure
 
 - Log-capture tests failed depending on test order, because structlog caches module loggers on first use; `tests/conftest.py` now uncaches them.
@@ -209,6 +234,7 @@ None found.
 5. One-time WebSocket tickets written to server logs.
 6. Unintended live capture from an inherited environment variable.
 7. Binding an unexpected random port.
+8. The generated first-administrator password printed to console output that container and service logs keep (found by CodeQL after the first report; fixed).
 
 ### Medium (all fixed)
 
@@ -223,12 +249,8 @@ None found.
 
 ### Low
 
-- **Open:**
-  - With about 20 source addresses, account lockout can tell real usernames from unknown ones.
-  - `/auth/refresh` through the cookie does not require the client header; SameSite=Strict mitigates this.
-  - `/system/status` shows viewers the database location (SQLite path, or PostgreSQL host and user; never the password).
-  - An unauthenticated request with malformed JSON gets 422 before 401, because FastAPI parses the body before authentication.
-- **Fixed:** the other Low items in section 4.
+- **Open:** none.
+- **Fixed:** username discovery through lockout, the refresh cookie without the client header, the database location shown to viewers, and 422 before 401 for unauthenticated malformed requests (section 4, "Resolved after the first report"), plus the other Low items in section 4.
 
 ### Informational
 
@@ -328,7 +350,7 @@ The 14 skips in the main run are the kernel tests, which run separately, plus te
 - **Throughput:** a single Python process handles about 5,000 packets per second on the test CPU. That suits hosts, labs and small segments, not high-speed links.
 - **Evasion:** threshold detectors can be evaded by slow or distributed attacks, as asserted in `tests/pcaps/evasion`.
 - **Memory:** plan about 16 KB per tracked source (default cap 50,000 sources).
-- **Silent database partitions:** a stopped or unreachable PostgreSQL server is reported immediately and events are buffered. A server that accepts connections but stops responding (packets dropped) can hold requests on open connections until the operating system gives up, because closing such a connection waits for the peer.
+- **Database outages:** a stopped, unreachable or silently partitioned PostgreSQL server answers 503 within `STORAGE__SESSION_TIMEOUT_SECONDS` (10 s by default), and security events stay buffered and are written when it returns.
 - **Redis:** without Redis, rate limits, WebSocket tickets and single-token revocations are per process. Session cut-offs are in the database.
 - **Docker:** the stock container is unprivileged. Firewall control and capture there need explicit capabilities or the host-network capture profile.
 - **Alert decisions:** they are not stored; the detection is the alert (`GET /alerts`, webhooks).
@@ -337,24 +359,13 @@ The 14 skips in the main run are the kernel tests, which run separately, plus te
 
 ## 9. Remaining issues
 
-Only genuine unresolved problems are listed.
+Every product and test defect found so far is fixed (section 4). What remains is verification that needs machines or settings this pass did not have:
 
-1. **Medium:** a silent network partition to PostgreSQL can stall API requests on already-open connections (above). This needs a request-level deadline or a different connection-close strategy.
-2. **Low:** in `firewall/iptables.py`, if inserting the new rule succeeds but deleting the old rule fails, the decision is reported failed while the rule stays in the kernel, missing from the registry.
-3. **Low:** capability detection treats a firewall as available when the tool is installed and privileges are held, without a functional probe. Enabling prevention now performs a real probe.
-4. **Low:** account lockout lets roughly 20 source addresses tell real usernames from unknown ones.
-5. **Low:** `/auth/refresh` through the cookie does not require the dashboard client header; SameSite=Strict mitigates this.
-6. **Low:** `/system/status` shows viewers the database location, without the password.
-7. **Low:** the threats view ranks only the 500 highest-risk detections in its window, so per-source counts can be cut off on busy windows.
-8. **Low:** `doctor`'s database check creates an empty SQLite file when none exists.
-9. **Low:** `config set` with an unknown section exits 1 instead of 2.
-10. **Medium (process):** dependency ranges are open-ended (for example `fastapi>=0.110`, `typer>=0.12`). This pass showed that new upstream releases change behaviour: Typer vendoring Click, FastAPI's router layout. There is no lock or constraints file, and no CI job against the newest releases. Add tested upper bounds or a constraints file, plus a scheduled job against the latest versions.
-11. **Low:** unused settings (`scoring.incident_threshold`, `anomaly.ml_contamination`, `telemetry.metrics_enabled`, `metrics_path`, `profile_pipeline`); `HttpReputationProvider` is not wired in.
-12. **Process:**
-    - Run the Windows and macOS CI jobs and fix what they find.
-    - Test capture and firewall control on real Windows, macOS and WSL2 hosts.
-    - Re-run ARM64 on native hardware.
-    - Turn on GitHub private vulnerability reporting.
+1. **Re-run the Windows and macOS CI jobs** on the fixes in section 4. They were verified locally by reproducing the runners' conditions, not on the runners themselves.
+2. **Test capture and firewall control on real Windows, macOS and WSL2 hosts.** CI runs the test suite there without privileges; Npcap, BPF, pf and Windows Firewall have not been exercised.
+3. **Re-run ARM64 on native hardware.** It last ran under QEMU emulation, before this pass's fixes.
+4. **Turn on GitHub private vulnerability reporting.** `SECURITY.md` refers to it, but it is disabled on the repository.
+5. **Run for a long period on a real network.** Only controlled traffic and fixtures have been used.
 
 ## 10. Final verdict
 
@@ -365,12 +376,12 @@ On Linux x86_64 and in Docker on a Linux host, every required subsystem was run 
 - Capture and replay, detection, risk and correlation.
 - WebSocket, dashboard, CLI and doctor.
 - Real prevention and restoration.
-- Failure handling, security controls and the full end-to-end chain.
+- Failure handling (including a silently partitioned database), security controls and the full end-to-end chain.
 
-The defects found were fixed and regression-tested, and the full regression suite passes.
+Every defect found, including those listed as open in the first version of this report and the CodeQL finding, is fixed and regression-tested. The full suite passes on the development environment and in a clean container on the pinned dependency versions.
 
 It is not a release candidate:
 
-- Three platforms the project targets (Windows, macOS, WSL2) have never been run, and their CI jobs have not run.
-- One medium issue remains (silent database partitions).
+- Windows and macOS have run only the unprivileged test suite in CI, and the fixes for what it found have not been re-run there. WSL2 has never been run.
+- Throughput is a single process, about 5,000 packets per second on the test machine.
 - It has had no long-running operation on a real network.
