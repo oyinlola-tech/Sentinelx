@@ -871,6 +871,148 @@ class TestFirewallFailures:
         assert harness.outcome(second, ActionType.TEMPORARY_BLOCK).outcome == "executed"
 
 
+class ChainRunner:
+    """Stands in for ``iptables``: keeps the SENTINELX chain as a real rule list.
+
+    ``fail_deletes`` makes that many rule deletions fail; ``vanish`` makes the rule
+    disappear just before its deletion runs (someone else removed it), so the delete
+    fails with iptables' "Bad rule" error.
+    """
+
+    def __init__(self, *, fail_deletes: int = 0, vanish: bool = False) -> None:
+        self.rules: list[tuple[str, ...]] = []
+        self.fail_deletes = fail_deletes
+        self.vanish = vanish
+
+    async def run(self, *args: str, check: bool = True) -> CommandResult:
+        import shlex
+
+        argv = args[1:] if args[:1] == ("-w",) else args
+        code, stdout, stderr = 0, "", ""
+        if argv[:2] == ("-S", "SENTINELX"):
+            stdout = "-N SENTINELX\n" + "".join(
+                shlex.join(("-A", "SENTINELX", *rule)) + "\n" for rule in self.rules
+            )
+        elif argv[:3] == ("-I", "SENTINELX", "1"):
+            self.rules.insert(0, tuple(argv[3:]))
+        elif argv[:2] == ("-A", "SENTINELX"):
+            self.rules.append(tuple(argv[2:]))
+        elif argv[:2] == ("-D", "SENTINELX"):
+            rule = tuple(argv[2:])
+            if self.vanish and rule in self.rules:
+                self.vanish = False
+                self.rules.remove(rule)  # gone before our delete reaches the kernel
+                code, stderr = 1, "iptables: Bad rule (does a matching rule exist in that chain?)."
+            elif self.fail_deletes:
+                self.fail_deletes -= 1
+                code, stderr = 4, "iptables: Resource temporarily unavailable."
+            elif rule in self.rules:
+                self.rules.remove(rule)
+            else:
+                code, stderr = 1, "iptables: Bad rule (does a matching rule exist in that chain?)."
+        if check and code:
+            raise FirewallError(stderr, command=shlex.join(args), stderr=stderr)
+        return CommandResult(argv=args, returncode=code, stdout=stdout, stderr=stderr, duration=0.0)
+
+    def kinds(self) -> list[str]:
+        return ["rate_limit" if "hashlimit" in rule else "block" for rule in self.rules]
+
+
+async def iptables_harness(**runner: Any) -> tuple[Harness, ChainRunner]:
+    chain = ChainRunner(**runner)
+    harness = build(
+        mode=ResponseMode.DETECT_ONLY,
+        firewall=IptablesAdapter(runner_v4=chain, runner_v6=chain),  # type: ignore[arg-type]
+    )
+    return harness, chain
+
+
+async def registry_matches_kernel(harness: Harness) -> None:
+    registry = {e.network: e.rate_limited for e in await harness.engine.blocked()}
+    kernel = {e.network: e.rate_limited for e in await harness.firewall.list_blocked()}
+    assert registry == kernel
+
+
+class TestIptablesReplacement:
+    """Replacing a rule inserts the new one before deleting the old one. When that delete
+    failed, the decision was reported failed while the new rule stayed in the kernel,
+    missing from the registry."""
+
+    async def test_failed_delete_withdraws_the_new_rule_and_reports_failure(self) -> None:
+        harness, chain = await iptables_harness()
+        act = harness.engine.manual_action
+        limited = await act(ActionType.RATE_LIMIT, ATTACKER, actor="a", reason="r", duration=600)
+        assert limited.outcome == "executed" and chain.kinds() == ["rate_limit"]
+
+        chain.fail_deletes = 1
+        block = await act(ActionType.BLOCK_IP, ATTACKER, actor="a", reason="escalate")
+        assert block.outcome == "failed" and not block.executed
+        assert "Resource temporarily unavailable" in (block.error or "")
+        assert "existing rule stays in force" in (block.error or "")
+        assert chain.kinds() == ["rate_limit"]  # exactly the state before the attempt
+        await registry_matches_kernel(harness)
+        assert (await harness.engine.blocked())[0].rate_limited
+
+        chain.fail_deletes = 1
+        renewed = await act(ActionType.RATE_LIMIT, ATTACKER, actor="a", reason="r", duration=60)
+        assert renewed.outcome == "failed" and chain.kinds() == ["rate_limit"]
+        await registry_matches_kernel(harness)
+
+    async def test_rule_already_removed_by_someone_else_counts_as_replaced(self) -> None:
+        harness, chain = await iptables_harness()
+        act = harness.engine.manual_action
+        await act(ActionType.RATE_LIMIT, ATTACKER, actor="a", reason="r", duration=600)
+        chain.vanish = True
+        block = await act(ActionType.BLOCK_IP, ATTACKER, actor="a", reason="escalate")
+        assert block.outcome == "executed" and chain.kinds() == ["block"]
+        await registry_matches_kernel(harness)
+        assert not (await harness.engine.blocked())[0].rate_limited
+
+    async def test_new_rule_that_cannot_be_withdrawn_is_reported_applied(self) -> None:
+        import logging
+
+        import structlog
+        from structlog.testing import capture_logs
+
+        harness, chain = await iptables_harness()
+        act = harness.engine.manual_action
+        await act(ActionType.RATE_LIMIT, ATTACKER, actor="a", reason="r", duration=600)
+        chain.fail_deletes = 2  # the old rule's delete and the new rule's withdrawal
+        structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG))
+        try:
+            with capture_logs() as logs:
+                block = await act(ActionType.BLOCK_IP, ATTACKER, actor="a", reason="escalate")
+        finally:
+            structlog.configure(
+                wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL)
+            )
+        # The block is in force (first in the chain), so it is reported and recorded as
+        # applied; the leftover rate limit is reported separately.
+        assert block.outcome == "executed" and chain.kinds() == ["block", "rate_limit"]
+        await registry_matches_kernel(harness)
+        assert not (await harness.engine.blocked())[0].rate_limited
+        leftover = [log for log in logs if log["event"] == "iptables_replaced_rule_left_in_place"]
+        assert (
+            leftover
+            and leftover[0]["log_level"] == "error"
+            and "hashlimit" in leftover[0]["leftover"][0]
+        )
+        # Unblocking removes the leftover too.
+        unblock = await act(ActionType.UNBLOCK_IP, ATTACKER, actor="a", reason="r")
+        assert unblock.outcome == "executed" and chain.rules == []
+        await registry_matches_kernel(harness)
+
+    async def test_reblocking_with_an_identical_rule_is_not_mistaken_for_a_leftover(self) -> None:
+        harness, chain = await iptables_harness()
+        act = harness.engine.manual_action
+        await act(ActionType.BLOCK_IP, ATTACKER, actor="a", reason="r")
+        adapter = harness.firewall
+        assert isinstance(adapter, IptablesAdapter)
+        chain.vanish = True  # the delete removes one copy, then reports failure
+        await adapter.block(ipaddress.ip_network(ATTACKER))
+        assert chain.kinds() == ["block"]
+
+
 # =============================================================== safety guard
 
 REFUSED: list[tuple[str, str]] = [

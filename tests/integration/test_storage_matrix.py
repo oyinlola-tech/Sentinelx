@@ -523,8 +523,6 @@ async def test_repository_crud_round_trip(backend: str, tmp_path: Path) -> None:
         async with database.session() as session:
             users = UserRepository(session)
             user = await users.add(User(username="Dana", password_hash="h", role="analyst"))
-            assert await users.record_failed_login(user.id) == 1
-            assert await users.record_failed_login(user.id) == 2
             await users.store_refresh_token("r1", user.id, NOW + timedelta(days=1))
             await users.store_refresh_token("r2", user.id, NOW + timedelta(days=1))
             user_id = user.id

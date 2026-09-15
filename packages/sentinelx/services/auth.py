@@ -8,7 +8,9 @@
   theft and revokes every refresh token for that user.
 * Lockout: ``lockout_threshold`` failures for one account from one address lock that
   pair for ``lockout_seconds``; failures from many addresses lock the account itself at
-  ``ACCOUNT_LOCK_MULTIPLIER`` times the threshold. Per-IP throttling applies as well.
+  ``ACCOUNT_LOCK_MULTIPLIER`` times the threshold. Both are counted per username in the
+  shared state whether or not the account exists, so lockout cannot tell real
+  usernames from unknown ones. Per-IP throttling applies as well.
 * WebSocket tickets: single-use, 30-second, random tokens, so a long-lived access
   token never appears in a URL (where proxies and browser history record it).
 
@@ -255,8 +257,47 @@ class AuthService:
             user.failed_logins = 0
             user.locked_until = None
             await users.end_sessions(user.id)
+        await self.state.cache_pop(f"login-lock:{username.lower()}")
+        await self.state.reset("login-fail-account", username.lower())
 
     # ------------------------------------------------------------------ login
+
+    async def _record_failure(
+        self, name: str, pair_key: str, user_id: int | None, now: datetime, client_ip: str
+    ) -> None:
+        """Count a failed login for the address pair and the account, locking as due.
+
+        Unknown usernames go through exactly the same counters, thresholds and lock as
+        real accounts (bounded like every shared-state window), so neither the status,
+        the body, the headers nor the number of attempts before a 423 reveal whether an
+        account exists.
+        """
+        await self.state.hit(
+            "login-fail",
+            pair_key,
+            limit=self.settings.lockout_threshold,
+            window_seconds=self.settings.lockout_seconds,
+        )
+        account_key = name.lower()
+        _, remaining, _ = await self.state.hit(
+            "login-fail-account",
+            account_key,
+            limit=self.settings.lockout_threshold * ACCOUNT_LOCK_MULTIPLIER,
+            window_seconds=self.settings.lockout_seconds,
+        )
+        if remaining > 0:
+            return
+        until = now + timedelta(seconds=self.settings.lockout_seconds)
+        await self.state.cache_set(
+            f"login-lock:{account_key}", until.timestamp(), self.settings.lockout_seconds
+        )
+        await self.state.reset("login-fail-account", account_key)
+        if user_id is not None:
+            async with self.database.session() as session:
+                stored = await UserRepository(session).get(user_id)
+                if stored is not None:
+                    stored.locked_until = until
+        log.warning("account_locked", username=name, client_ip=client_ip)
 
     @staticmethod
     def _verify(password_hash: str, password: str) -> bool:
@@ -286,8 +327,9 @@ class AuthService:
         Lockout has two levels. Repeated failures for one account *from one address*
         lock that pair for ``lockout_seconds``, which stops guessing without letting
         anyone lock another person out from elsewhere. Failures for an account from
-        any addresses lock the account itself only at ``ACCOUNT_LOCK_MULTIPLIER`` times
-        the threshold, against guessing distributed across many addresses.
+        any addresses within ``lockout_seconds`` lock the account itself only at
+        ``ACCOUNT_LOCK_MULTIPLIER`` times the threshold, against guessing distributed
+        across many addresses. Both levels treat unknown usernames like real ones.
 
         Raises:
             AuthError: 429 when the client IP is throttled, 423 when locked, 401 for any
@@ -305,7 +347,8 @@ class AuthService:
             )
 
         name = username.strip()[:64]
-        pair_key = f"{name.lower()}|{client_ip}"
+        account_key = name.lower()
+        pair_key = f"{account_key}|{client_ip}"
         now = datetime.now(UTC)
         async with self.database.session() as session:
             user = await UserRepository(session).by_username(name)
@@ -318,9 +361,16 @@ class AuthService:
         pair_failures, pair_retry = await self.state.count(
             "login-fail", pair_key, window_seconds=self.settings.lockout_seconds
         )
+        # The account lock lives in the shared state for every username, real or not, so
+        # a 423 never tells a real account from an unknown one. A real account's lock is
+        # also kept in the database, which survives a restart.
         locked_until = snapshot[3] if snapshot else None
         if locked_until is not None and locked_until.tzinfo is None:
             locked_until = locked_until.replace(tzinfo=UTC)
+        shared_lock = await self.state.cache_get(f"login-lock:{account_key}")
+        if isinstance(shared_lock, int | float):
+            shared_until = datetime.fromtimestamp(shared_lock, UTC)
+            locked_until = max(locked_until, shared_until) if locked_until else shared_until
         if pair_failures >= self.settings.lockout_threshold or (
             locked_until is not None and locked_until > now
         ):
@@ -336,33 +386,14 @@ class AuthService:
 
         if snapshot is None:
             await self._verify_async(_DUMMY_HASH, password)
+            await self._record_failure(name, pair_key, None, now, client_ip)
             log.info("login_failed", username=name, reason="unknown_user", client_ip=client_ip)
-            await self.state.hit(
-                "login-fail",
-                pair_key,
-                limit=self.settings.lockout_threshold,
-                window_seconds=self.settings.lockout_seconds,
-            )
             raise AuthError(_GENERIC_FAILURE)
 
         user_id, password_hash, is_active, _ = snapshot
         verified = is_active and await self._verify_async(password_hash, password)
         if not verified:
-            await self.state.hit(
-                "login-fail",
-                pair_key,
-                limit=self.settings.lockout_threshold,
-                window_seconds=self.settings.lockout_seconds,
-            )
-            async with self.database.session() as session:
-                users = UserRepository(session)
-                failures = await users.record_failed_login(user_id)
-                if failures >= self.settings.lockout_threshold * ACCOUNT_LOCK_MULTIPLIER:
-                    stored = await users.get(user_id)
-                    if stored is not None:
-                        stored.locked_until = now + timedelta(seconds=self.settings.lockout_seconds)
-                        stored.failed_logins = 0
-                    log.warning("account_locked", username=name, client_ip=client_ip)
+            await self._record_failure(name, pair_key, user_id, now, client_ip)
             log.info("login_failed", username=name, reason="bad_credentials", client_ip=client_ip)
             raise AuthError(_GENERIC_FAILURE)
 
@@ -388,6 +419,7 @@ class AuthService:
             pair = await self._issue(users, principal)
         await self.state.reset("login", client_ip)
         await self.state.reset("login-fail", pair_key)
+        await self.state.reset("login-fail-account", account_key)
         log.info(
             "login_succeeded",
             username=principal.username,

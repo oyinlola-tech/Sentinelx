@@ -121,16 +121,6 @@ class UserRepository:
         )
         return bool(getattr(result, "rowcount", 0))
 
-    async def record_failed_login(self, user_id: int) -> int:
-        """Increment the failure counter in the database and return the new value."""
-        result = await self.session.execute(
-            update(User)
-            .where(User.id == user_id)
-            .values(failed_logins=User.failed_logins + 1)
-            .returning(User.failed_logins)
-        )
-        return int(result.scalar_one())
-
     async def end_sessions(self, user_id: int) -> None:
         """Delete the user's unused refresh tokens (logout, password change or reset).
 

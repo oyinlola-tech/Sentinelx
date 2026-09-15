@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import shutil
 import sys
+import threading
+import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -74,6 +76,50 @@ class FirewallCapabilities:
         return asdict(self)
 
 
+#: Read-only commands that exercise each backend's kernel interface without changing
+#: anything. Windows Firewall has none here (its adapter is not verified on a real host).
+FUNCTIONAL_PROBES: dict[str, tuple[str, ...]] = {
+    "nftables": ("list", "tables"),
+    "iptables": ("-w", "-S", "INPUT"),
+    "pf": ("-s", "info"),
+}
+PROBE_TIMEOUT_SECONDS = 5.0
+#: Probe results are reused for this long, like the platform's capability report.
+PROBE_CACHE_SECONDS = 30.0
+_probe_cache: dict[tuple[str, str], tuple[float, str | None]] = {}
+_probe_lock = threading.Lock()
+
+
+def _functional_probe(backend: str, tool: str) -> str | None:
+    """Run the backend's read-only probe; ``None`` when it works, else the real error."""
+    args = FUNCTIONAL_PROBES.get(backend)
+    if args is None:
+        return None
+    key = (backend, tool)
+    now = time.monotonic()
+    with _probe_lock:
+        cached = _probe_cache.get(key)
+        if cached is not None and now - cached[0] < PROBE_CACHE_SECONDS:
+            return cached[1]
+        try:
+            result = CommandRunner(tool, timeout=PROBE_TIMEOUT_SECONDS).run_sync(*args, check=False)
+            error = (
+                None
+                if result.ok
+                else (
+                    (
+                        result.stderr.strip()
+                        or result.stdout.strip()
+                        or f"exit status {result.returncode}"
+                    ).splitlines()[0][:300]
+                )
+            )
+        except FirewallError as exc:
+            error = str(exc)
+        _probe_cache[key] = (now, error)
+        return error
+
+
 def platform_family() -> str:
     """``linux``, ``darwin``, ``win32``... the key into :data:`BACKENDS_BY_PLATFORM`."""
     for family in BACKENDS_BY_PLATFORM:
@@ -117,6 +163,21 @@ def firewall_capabilities(backend: str) -> FirewallCapabilities:
             backend, False, f"{tool_name} is not installed", f"install {tool_name}", **traits
         )
     privilege = firewall_privilege()
+    if not privilege.granted:
+        return FirewallCapabilities(backend, False, privilege.detail, privilege.remedy, **traits)
+    # The tool and the privileges are there; check that the kernel side answers too (a
+    # kernel without nf_tables, or a sandbox that refuses netlink, fails only here).
+    error = _functional_probe(backend, tool)
+    if error is not None:
+        command = " ".join((tool_name, *FUNCTIONAL_PROBES[backend]))
+        return FirewallCapabilities(
+            backend,
+            False,
+            f"{tool_name} is installed but '{command}' failed: {error}",
+            f"check that the kernel and this environment allow {backend} (for a container, "
+            "the NET_ADMIN capability in the host's network namespace)",
+            **traits,
+        )
     return FirewallCapabilities(
         backend, privilege.granted, privilege.detail, privilege.remedy, **traits
     )

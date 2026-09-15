@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import shlex
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from sentinelx.common.errors import FirewallError
@@ -117,16 +118,10 @@ class IptablesAdapter(FirewallAdapter):
     ) -> BlockEntry:
         runner = self._runner(network)
         tag, expires = _comment_for(duration)
-        previous = await self._rules_for(runner, network)
-        try:
-            await runner.run("-w", "-I", CHAIN, "1", *self._drop_rule(network, tag))
-        except FirewallError:
-            self._record("block", self.backend, False)
-            raise
-        # Only now remove the rules it replaces, so the address is never unblocked in
-        # between and a failed insert leaves the old block in force.
-        await self._delete(runner, previous)
-        self._record("block", self.backend, True)
+        # Blocks go first in the chain, so a block always wins over a rate limit.
+        await self._replace(
+            runner, network, "block", ("-I", CHAIN, "1"), self._drop_rule(network, tag)
+        )
         entry = BlockEntry(network=str(network), expires_at=expires, comment=comment)
         self._meta[str(network)] = entry
         return entry
@@ -136,14 +131,9 @@ class IptablesAdapter(FirewallAdapter):
     ) -> BlockEntry:
         runner = self._runner(network)
         tag, expires = _comment_for(duration)
-        previous = await self._rules_for(runner, network)
-        try:
-            await runner.run("-w", "-A", CHAIN, *self._limit_rule(network, tag))
-        except FirewallError:
-            self._record("rate_limit", self.backend, False)
-            raise
-        await self._delete(runner, previous)
-        self._record("rate_limit", self.backend, True)
+        await self._replace(
+            runner, network, "rate_limit", ("-A", CHAIN), self._limit_rule(network, tag)
+        )
         entry = BlockEntry(
             network=str(network),
             expires_at=expires,
@@ -152,6 +142,76 @@ class IptablesAdapter(FirewallAdapter):
         )
         self._meta[str(network)] = entry
         return entry
+
+    async def _replace(
+        self,
+        runner: CommandRunner,
+        network: IPNetworkT,
+        operation: str,
+        position: tuple[str, ...],
+        rule: tuple[str, ...],
+    ) -> None:
+        """Add ``rule`` for ``network``, then delete the rules it replaces.
+
+        The new rule goes in first, so the address is never unguarded in between and a
+        failed insert leaves the old rule in force. When the old rules then cannot be
+        deleted, the kernel must still match what the caller is told:
+
+        * old rules already gone (removed concurrently): the replacement succeeded;
+        * otherwise the new rule is withdrawn and :class:`FirewallError` raised, so the
+          kernel keeps exactly the previous state that the caller still records;
+        * if even the withdrawal fails, the new rule is in force: the operation is
+          reported as applied, and the leftover rule is logged at error level
+          (``unblock`` removes every rule for the network, leftovers included).
+        """
+        previous = await self._rules_for(runner, network)
+        try:
+            await runner.run("-w", *position, *rule)
+        except FirewallError:
+            self._record(operation, self.backend, False)
+            raise
+        try:
+            await self._delete(runner, previous)
+        except FirewallError as cleanup:
+            leftovers = await self._leftovers(runner, network, previous, rule)
+            if leftovers:
+                try:
+                    await runner.run("-w", "-D", CHAIN, *rule)
+                except FirewallError as withdrawal:
+                    log.error(
+                        "iptables_replaced_rule_left_in_place",
+                        network=str(network),
+                        operation=operation,
+                        leftover=[shlex.join(parts) for parts in leftovers],
+                        error=str(cleanup),
+                        withdrawal_error=str(withdrawal),
+                    )
+                else:
+                    self._record(operation, self.backend, False)
+                    raise FirewallError(
+                        f"iptables could not remove the existing rule for {network}: {cleanup}; "
+                        "the new rule was withdrawn and the existing rule stays in force",
+                        command=cleanup.command,
+                        stderr=cleanup.stderr,
+                    ) from cleanup
+        self._record(operation, self.backend, True)
+
+    async def _leftovers(
+        self,
+        runner: CommandRunner,
+        network: IPNetworkT,
+        previous: list[list[str]],
+        rule: tuple[str, ...],
+    ) -> list[list[str]]:
+        """Rules from ``previous`` that are still in the chain after a failed delete."""
+        try:
+            current = Counter(tuple(parts) for parts in await self._rules_for(runner, network))
+        except FirewallError:
+            return previous  # cannot tell: assume nothing was removed
+        added = ("-A", CHAIN, *rule)
+        if current[added]:
+            current[added] -= 1  # the rule just added, identical to an old one
+        return [parts for parts in previous if current[tuple(parts)] > 0]
 
     async def unblock(self, network: IPNetworkT) -> bool:
         removed = await self._delete_rules(self._runner(network), network)
@@ -205,6 +265,8 @@ class IptablesAdapter(FirewallAdapter):
         for runner in (r for r in (self._v4, self._v6) if r is not None):
             for parts in await self._rules(runner):
                 network = parts[parts.index("-s") + 1]
+                if network in entries:
+                    continue  # iptables applies the first matching rule; so do we
                 comment = parts[parts.index("--comment") + 1] if "--comment" in parts else ""
                 known = self._meta.get(network)
                 entries[network] = BlockEntry(

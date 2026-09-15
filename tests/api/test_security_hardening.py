@@ -124,6 +124,90 @@ class TestLockout:
             )
             assert response.status_code == 423
 
+    async def test_account_lockout_does_not_reveal_whether_a_username_exists(
+        self, platform: Platform
+    ) -> None:
+        """Regression: only real accounts had an account-wide lock, so about 20
+        addresses could tell real usernames from unknown ones by the 423."""
+        from sentinelx.services.auth import ACCOUNT_LOCK_MULTIPLIER
+
+        attempts = platform.settings.api.lockout_threshold * ACCOUNT_LOCK_MULTIPLIER
+        observed: dict[str, list[tuple[int, object, dict[str, str]]]] = {}
+        for subnet, username in ((1, "admin"), (2, "ghost-user")):
+            responses = []
+            for index in range(attempts):
+                async with client_from(platform, f"10.{subnet}.0.{index + 1}") as guesser:
+                    responses.append(
+                        await guesser.post(
+                            "/auth/login",
+                            json={"username": username, "password": "wrong-password-xx"},
+                        )
+                    )
+            async with client_from(platform, f"10.{subnet}.1.1") as fresh:
+                responses.append(
+                    await fresh.post(
+                        "/auth/login", json={"username": username, "password": ADMIN_PASSWORD}
+                    )
+                )
+            observed[username] = [
+                (r.status_code, r.json(), {k: v for k, v in r.headers.items() if k != "date"})
+                for r in responses
+            ]
+        real, unknown = observed["admin"], observed["ghost-user"]
+        assert [status for status, _, _ in real] == [401] * attempts + [423]
+        assert [status for status, _, _ in unknown] == [status for status, _, _ in real]
+        assert [body for _, body, _ in unknown] == [body for _, body, _ in real]
+        for (_, _, real_headers), (_, _, unknown_headers) in zip(real, unknown, strict=True):
+            assert set(real_headers) == set(unknown_headers)
+            real_wait = int(real_headers.get("retry-after", 0))
+            assert abs(int(unknown_headers.get("retry-after", 0)) - real_wait) <= 1
+        assert int(real[-1][2]["retry-after"]) > platform.settings.api.lockout_seconds - 60
+
+    async def test_failures_older_than_the_lockout_window_do_not_lock_the_account(
+        self, platform: Platform
+    ) -> None:
+        from sentinelx.services.auth import ACCOUNT_LOCK_MULTIPLIER
+
+        attempts = platform.settings.api.lockout_threshold * ACCOUNT_LOCK_MULTIPLIER
+        for index in range(attempts - 1):
+            async with client_from(platform, f"10.3.0.{index + 1}") as guesser:
+                await guesser.post(
+                    "/auth/login", json={"username": "admin", "password": "wrong-password-xx"}
+                )
+        real_clock = platform.state._clock
+        platform.state._clock = lambda: real_clock() + platform.settings.api.lockout_seconds + 1
+        try:
+            async with client_from(platform, "10.3.1.1") as guesser:
+                late = await guesser.post(
+                    "/auth/login", json={"username": "admin", "password": "wrong-password-xx"}
+                )
+                assert late.status_code == 401
+            async with client_from(platform, "192.0.2.10") as owner:
+                assert (await login(owner))["Authorization"].startswith("Bearer ")
+        finally:
+            platform.state._clock = real_clock
+
+    async def test_administrative_password_reset_lifts_the_account_lock(
+        self, platform: Platform
+    ) -> None:
+        from sentinelx.services.auth import ACCOUNT_LOCK_MULTIPLIER
+
+        for index in range(platform.settings.api.lockout_threshold * ACCOUNT_LOCK_MULTIPLIER):
+            async with client_from(platform, f"10.4.0.{index + 1}") as guesser:
+                await guesser.post(
+                    "/auth/login", json={"username": "admin", "password": "wrong-password-xx"}
+                )
+        async with client_from(platform, "192.0.2.10") as owner:
+            locked = await owner.post(
+                "/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+            )
+            assert locked.status_code == 423
+            await platform.auth.set_password(1, "A-reset-passphrase-2026")
+            reset = await owner.post(
+                "/auth/login", json={"username": "admin", "password": "A-reset-passphrase-2026"}
+            )
+            assert reset.status_code == 200, reset.text
+
 
 class TestProxyAddresses:
     async def test_forged_leftmost_forwarded_address_is_not_believed(

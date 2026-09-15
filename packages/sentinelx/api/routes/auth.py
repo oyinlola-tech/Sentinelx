@@ -101,8 +101,18 @@ async def login(
 
 @router.post("/auth/refresh", response_model=TokenResponse, summary="Rotate a refresh token")
 async def refresh(request: Request, response: Response, platform: PlatformDep) -> TokenResponse:
-    token = request.cookies.get(REFRESH_COOKIE)
-    if not token:
+    """Rotate the refresh token from the JSON body (API clients) or the session cookie.
+
+    The cookie is honoured only with ``X-SentinelX-Client: dashboard``, the header the
+    dashboard sends on every call. A page on another site cannot add that header to a
+    cross-site request without a CORS preflight, so the cookie alone never rotates a
+    session (SameSite=Strict already keeps the cookie off such requests).
+    """
+    cookie = request.cookies.get(REFRESH_COOKIE)
+    token: object = None
+    if cookie and request.headers.get("x-sentinelx-client") == "dashboard":
+        token = cookie
+    else:
         body: dict[str, Any] = {}
         if request.headers.get("content-type", "").startswith("application/json"):
             try:
@@ -112,6 +122,11 @@ async def refresh(request: Request, response: Response, platform: PlatformDep) -
                     status_code=422, detail="request body is not valid JSON"
                 ) from exc
         token = body.get("refresh_token") if isinstance(body, dict) else None
+        if not token and cookie:
+            raise HTTPException(
+                status_code=403,
+                detail="refreshing from the session cookie requires the dashboard client header",
+            )
     if not token or not isinstance(token, str):
         raise HTTPException(status_code=401, detail="refresh token required")
     try:

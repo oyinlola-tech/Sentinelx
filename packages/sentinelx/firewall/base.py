@@ -114,6 +114,24 @@ class CommandRunner:
             self._prefix = (sudo, "-n")
 
     async def run(self, *args: str, check: bool = True) -> CommandResult:
+        argv = self._argv(args)
+        started = time.perf_counter()
+        if PLATFORM == "win32":
+            # asyncio subprocesses need the Proactor event loop on Windows, and uvicorn
+            # uses the selector loop in some modes; a worker thread works with both.
+            returncode, stdout, stderr = await self._run_in_thread(argv)
+        else:
+            returncode, stdout, stderr = await self._run_async(argv)
+        return self._result(argv, returncode, stdout, stderr, started, check)
+
+    def run_sync(self, *args: str, check: bool = True) -> CommandResult:
+        """:meth:`run` for synchronous callers (capability detection), same rules."""
+        argv = self._argv(args)
+        started = time.perf_counter()
+        returncode, stdout, stderr = self._run_blocking(argv)
+        return self._result(argv, returncode, stdout, stderr, started, check)
+
+    def _argv(self, args: tuple[str, ...]) -> tuple[str, ...]:
         for arg in args:
             if not isinstance(arg, str):  # defensive: catches programming errors early
                 raise TypeError(f"firewall argument must be str, got {type(arg).__name__}")
@@ -124,15 +142,17 @@ class CommandRunner:
             from sentinelx.system.privileges import CAP_NET_ADMIN, ensure_ambient_capability
 
             ensure_ambient_capability(CAP_NET_ADMIN)
-        argv = (*self._prefix, self.binary, *args)
-        started = time.perf_counter()
-        if PLATFORM == "win32":
-            # asyncio subprocesses need the Proactor event loop on Windows, and uvicorn
-            # uses the selector loop in some modes; a worker thread works with both.
-            returncode, stdout, stderr = await self._run_in_thread(argv)
-        else:
-            returncode, stdout, stderr = await self._run_async(argv)
+        return (*self._prefix, self.binary, *args)
 
+    @staticmethod
+    def _result(
+        argv: tuple[str, ...],
+        returncode: int,
+        stdout: bytes,
+        stderr: bytes,
+        started: float,
+        check: bool,
+    ) -> CommandResult:
         result = CommandResult(
             argv=argv,
             returncode=returncode,
@@ -178,19 +198,18 @@ class CommandRunner:
         return (process.returncode if process.returncode is not None else -1), stdout, stderr
 
     async def _run_in_thread(self, argv: tuple[str, ...]) -> tuple[int, bytes, bytes]:
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return await asyncio.to_thread(self._run_blocking, argv)
 
-        def run() -> subprocess.CompletedProcess[bytes]:
-            return subprocess.run(
+    def _run_blocking(self, argv: tuple[str, ...]) -> tuple[int, bytes, bytes]:
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            completed = subprocess.run(
                 argv,
                 capture_output=True,
                 timeout=self.timeout,
                 check=False,
                 creationflags=creation_flags,
             )
-
-        try:
-            completed = await asyncio.to_thread(run)
         except subprocess.TimeoutExpired:
             raise FirewallError(
                 f"firewall command timed out after {self.timeout}s", command=" ".join(argv)
