@@ -117,7 +117,7 @@ Run `make help` for the full list. The quality targets:
 | Target | What it runs |
 |---|---|
 | `make test` | `.venv/bin/python -m pytest`. Uses SQLite and needs no external services. PostgreSQL, Redis and kernel tests are skipped |
-| `make test-integration` | Starts `postgres:17-alpine` on `127.0.0.1:55432` and `redis:7-alpine` on `127.0.0.1:56379` in throwaway containers, waits for PostgreSQL, runs the full suite with `SENTINELX_TEST_POSTGRES_URL` and `SENTINELX_TEST_REDIS_URL` set, and removes the containers on exit |
+| `make test-integration` | Starts `postgres:17-alpine` on `127.0.0.1:55432` and `redis:7-alpine` on `127.0.0.1:56379` in throwaway containers, waits for PostgreSQL, runs the full suite with `SENTINELX_TEST_POSTGRES_URL`, `SENTINELX_TEST_REDIS_URL` and `SENTINELX_TEST_DOCKER_PG_CONTAINER` set, and removes the containers on exit |
 | `make test-kernel` | Real packet capture and real firewall tests (`tests/kernel`), inside a private network namespace. See [Kernel tests](#kernel-tests) |
 | `make coverage` | `.venv/bin/python -m pytest --cov --cov-report=term-missing` (coverage source `packages/sentinelx`) |
 | `make lint` | `ruff check` and `ruff format --check` on `packages apps tests scripts`, then `npm run -s lint` (ESLint) in the dashboard |
@@ -135,6 +135,8 @@ SENTINELX_TEST_POSTGRES_URL=postgresql://user:password@127.0.0.1:5432/sentinelx_
 SENTINELX_TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
 .venv/bin/python -m pytest
 ```
+
+Set `SENTINELX_TEST_DOCKER_PG_CONTAINER` to the name of the Docker container serving that database to also run the silent-partition test, which `docker pause`s the container for a few seconds to check that requests answer 503 within `STORAGE__SESSION_TIMEOUT_SECONDS`, that no events are lost, and that everything recovers after `docker unpause`. Without it that test is skipped.
 
 Point the PostgreSQL variable at a disposable database. The storage tests drop and recreate its `public` schema, and `tests/integration/test_schema.py` creates and drops a separate database named `sx_schema_test`, so the user needs permission to create databases.
 

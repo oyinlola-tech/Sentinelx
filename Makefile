@@ -63,6 +63,7 @@ test-integration: ## Run tests against real PostgreSQL and Redis in throwaway co
 	@trap 'docker rm -f sx-it-pg sx-it-redis >/dev/null' EXIT; \
 	for i in $$(seq 1 30); do docker exec sx-it-pg pg_isready -U sentinelx >/dev/null 2>&1 && break; sleep 1; done; \
 	SENTINELX_TEST_POSTGRES_URL=postgresql://sentinelx:sentinelx-test@127.0.0.1:55432/sentinelx_test \
+	SENTINELX_TEST_DOCKER_PG_CONTAINER=sx-it-pg \
 	SENTINELX_TEST_REDIS_URL=redis://127.0.0.1:56379/0 $(BIN)/python -m pytest
 
 .PHONY: test-kernel

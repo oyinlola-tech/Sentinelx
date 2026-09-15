@@ -849,6 +849,7 @@ resolves to no usable backend; actions then fail with the reason.)
 | `STORAGE__CONNECT_TIMEOUT_SECONDS` | | `10` | no | PostgreSQL: seconds to establish a connection (0 < value ≤ 300). |
 | `STORAGE__STATEMENT_TIMEOUT_SECONDS` | | `60` | no | PostgreSQL: seconds a single statement may run before it is abandoned (0 < value ≤ 3600). |
 | `STORAGE__POOL_TIMEOUT_SECONDS` | | `10` | no | PostgreSQL: seconds to wait for a free pooled connection (0 < value ≤ 300). |
+| `STORAGE__SESSION_TIMEOUT_SECONDS` | | `10` | no | Seconds one unit of database work may take in total: an API request's database session (waiting for a connection, its statements and the commit) or one batch of events. Past it the connection is discarded without waiting on the server and the API answers 503; events stay buffered and are retried. Retention purges use ten times the statement timeout instead (0 < value ≤ 3600). |
 | `STORAGE__MAX_OVERFLOW` | | `20` | no | Extra connections beyond the pool for PostgreSQL (at least 0). |
 | `STORAGE__REDIS_URL` | `REDIS_URL` | `redis://localhost:6379/0` | no | Redis URL. |
 | `STORAGE__REDIS_REQUIRED` | | `false` | no | When false, Redis failures degrade to in-process state instead of failing. |
