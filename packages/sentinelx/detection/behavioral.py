@@ -70,7 +70,7 @@ class BruteForceDetector(Detector):
         span = max(profile.short_sessions.span(), 0.001)
         service = service_name(port) or f"port {port}"
         rate_per_minute = count / span * 60 if span > 1 else float(count)
-        refused = len(profile.refused_connections)
+        refused = profile.refusals_by_port.count_of(port)
         detector_name = "ssh_brute_force" if port == 22 else "auth_brute_force"
 
         evidence = [
@@ -169,24 +169,33 @@ class SynFloodDetector(Detector):
         if syns < self.settings.syn_flood_threshold:
             return None
 
+        threshold = self.settings.syn_flood_threshold
         unique_ports = profile.dst_ports.unique_count(profile.source_ip, context.now)
-        # Many SYNs to many ports is a scan (reported elsewhere); a flood hammers
-        # few ports.
-        if unique_ports > 5:
+        port = context.packet.dst_port
+        port_syns = profile.syn_ports.count_of(port) if port is not None else 0
+        # Many SYNs spread over many ports is a scan (reported elsewhere); a flood
+        # hammers few ports. A source that scans and then floods one port has touched
+        # many ports, so a single port past the threshold also counts.
+        concentrated = unique_ports <= 5
+        if not (concentrated or port_syns >= threshold):
+            return None
+        counted = syns if concentrated else port_syns
+        completion = profile.handshake_completion_ratio()
+        if completion > 0.5:
+            # The source finishes most of the connections it starts: a busy client. The
+            # server answering is not the test - against an open port a flood gets a
+            # SYN-ACK for every SYN and simply never sends the final ACK.
             return None
         syn_ack_ratio = profile.syn_ack_ratio()
-        if syn_ack_ratio > 0.5:
-            # The server is answering most of them: a busy client, not a flood.
-            return None
 
         span = max(profile.syn_packets.span(), 0.001)
-        rate = syns / span
+        rate = counted / span
         evidence = [
             Evidence(
                 key="syn_count",
-                value=syns,
-                threshold=self.settings.syn_flood_threshold,
-                description=f"{syns} SYN packets to {context.packet.dst_ip}:{context.packet.dst_port}",
+                value=counted,
+                threshold=threshold,
+                description=f"{counted} SYN packets to {context.packet.dst_ip}:{context.packet.dst_port}",
                 weight=1.0,
             ),
             Evidence(
@@ -196,24 +205,39 @@ class SynFloodDetector(Detector):
                 weight=0.8,
             ),
             Evidence(
+                key="handshake_completion",
+                value=round(completion, 3),
+                description=(
+                    f"only {completion:.1%} of these connections completed a handshake - "
+                    f"they are left half-open"
+                ),
+                weight=0.7,
+            ),
+            Evidence(
                 key="syn_ack_ratio",
                 value=round(syn_ack_ratio, 3),
-                description=f"only {syn_ack_ratio:.1%} answered - connections are left half-open",
-                weight=0.7,
+                description=(
+                    f"the server answered {syn_ack_ratio:.0%} with a SYN-ACK"
+                    + (
+                        ", so the port is open and each SYN holds a half-open slot"
+                        if syn_ack_ratio > 0.5
+                        else ""
+                    )
+                ),
+                weight=0.3,
             ),
         ]
         self.hits += 1
         return self.build(
             context=context,
             title="SYN flood",
-            description=f"{context.packet.src_ip} sent {syns} SYNs in {span:.1f}s without completing handshakes.",
-            evidence=evidence,
-            confidence=self.scaled_confidence(
-                syns, self.settings.syn_flood_threshold, floor=0.65, ceiling=0.96
+            description=(
+                f"{context.packet.src_ip} sent {counted} SYNs to port {port} in {span:.1f}s "
+                "without completing handshakes."
             ),
-            severity=Severity.CRITICAL
-            if syns >= self.settings.syn_flood_threshold * 4
-            else Severity.HIGH,
+            evidence=evidence,
+            confidence=self.scaled_confidence(counted, threshold, floor=0.65, ceiling=0.96),
+            severity=Severity.CRITICAL if counted >= threshold * 4 else Severity.HIGH,
             recommended_action=ActionType.RATE_LIMIT,
             observation_window=round(span, 3),
             packet_count=len(profile.packets),

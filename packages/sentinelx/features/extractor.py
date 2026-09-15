@@ -32,6 +32,9 @@ _SWEEP_INTERVAL = 2048
 #: Flows with no packets for this long are considered finished.
 _FLOW_IDLE_SECONDS = 120.0
 
+#: ICMP echo reply types: 0 for ICMP, 129 for ICMPv6.
+_ECHO_REPLY_TYPES: dict[Protocol, tuple[int, ...]] = {Protocol.ICMP: (0,), Protocol.ICMPV6: (129,)}
+
 
 @dataclass(slots=True)
 class GlobalStats:
@@ -104,6 +107,9 @@ class FeatureContext:
     profiles: dict[str, SourceProfile]
     """Every tracked profile. Needed when the packet's sender is not the party a
     detector cares about - e.g. a server's RST closing an attacker's session."""
+    solicited_reply: bool = False
+    """The packet answers a request its destination sent (an ICMP echo reply to an
+    echo request), so it says nothing about what its sender set out to do."""
 
     #: Populated lazily by :meth:`features` - built at most once per packet even
     #: when several detectors ask for it.
@@ -195,17 +201,34 @@ class FeatureExtractor:
             self._clock_stepped_back(now)
         self.stats.observe(packet)
 
-        profile = self._profile_for(packet.src_ip, now)
-        profile.observe(packet)
-
         flow = self._flow_for(packet, now)
         self._update_flow(flow, packet)
+        solicited = self._solicited_echo_reply(flow, packet)
 
-        # A reply teaches us about the *original* source, not the sender.
-        if packet.tcp_flags is not None and (packet.tcp_flags.is_syn_ack or packet.tcp_flags.rst):
+        profile = self._profile_for(packet.src_ip, now)
+        profile.observe(packet, solicited_reply=solicited)
+
+        # A reply teaches us about the *original* source, not the sender - and only
+        # when it goes to the side that opened the connection. A SYN flooder's own
+        # kernel resets every SYN-ACK it receives; those resets are not refusals of
+        # connections the server tried to make.
+        if (
+            packet.tcp_flags is not None
+            and (packet.tcp_flags.is_syn_ack or packet.tcp_flags.rst)
+            and packet.dst_ip == flow.initiator_ip
+        ):
             peer = self.profiles.get(packet.dst_ip)
             if peer is not None:
                 peer.observe_reply(packet)
+
+        # The initiator finished the handshake: a busy client, not a flood.
+        if (
+            flow.handshake_complete
+            and not flow.handshake_credited
+            and packet.src_ip == flow.initiator_ip
+        ):
+            flow.handshake_credited = True
+            profile.handshakes_completed.add(now)
 
         # A completed-then-quickly-reset session is the brute-force signal; it can
         # only be recognised at teardown, which is here.
@@ -234,6 +257,31 @@ class FeatureExtractor:
             stats=self.stats,
             now=now,
             profiles=self.profiles,
+            solicited_reply=solicited,
+        )
+
+    def _solicited_echo_reply(self, flow: FlowState, packet: PacketEvent) -> bool:
+        """Remember echo requests; report whether this packet is an echo reply to one.
+
+        Request and reply share a flow (the key is direction-independent), so the flow
+        records who asked and when. A reply counts as solicited only when it goes back
+        to that requester within the ICMP flood window. Unsolicited replies, such as a
+        reflection attack aimed at a victim that never pinged anyone, still count.
+        """
+        if packet.protocol not in (Protocol.ICMP, Protocol.ICMPV6):
+            return False
+        icmp = packet.metadata.get("icmp")
+        if not isinstance(icmp, dict):
+            return False
+        if icmp.get("is_echo_request"):
+            flow.echo_requester = packet.src_ip
+            flow.echo_requested_at = packet.timestamp
+            return False
+        if icmp.get("type") not in _ECHO_REPLY_TYPES.get(packet.protocol, ()):
+            return False
+        return (
+            flow.echo_requester == packet.dst_ip
+            and packet.timestamp - flow.echo_requested_at <= self.settings.icmp_flood_window_seconds
         )
 
     def _clock_stepped_back(self, now: float) -> None:

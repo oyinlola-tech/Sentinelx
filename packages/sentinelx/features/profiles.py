@@ -86,6 +86,12 @@ class FlowState:
     rst_seen: bool = False
     short_session_recorded: bool = False
     """Guards against counting one teardown twice (FIN followed by RST)."""
+    handshake_credited: bool = False
+    """The initiator has been credited with completing this handshake (once per flow)."""
+    echo_requester: str = ""
+    """Who last sent an ICMP echo request in this conversation, and when: an echo
+    reply to that address is an answer, not traffic the replier chose to send."""
+    echo_requested_at: float = 0.0
 
     @property
     def duration(self) -> float:
@@ -149,6 +155,8 @@ class SourceProfile:
     icmp_packets: TimeSeriesCounter = field(init=False)
     connections_started: TimeSeriesCounter = field(init=False)
     refused_connections: TimeSeriesCounter = field(init=False)
+    handshakes_completed: TimeSeriesCounter = field(init=False)
+    """Connections this source opened and finished (SYN, SYN-ACK, ACK)."""
     dns_times: TimeSeriesCounter = field(init=False)
     http_times: TimeSeriesCounter = field(init=False)
     dns_queries: DistinctWindow[str] = field(init=False)
@@ -157,6 +165,12 @@ class SourceProfile:
     http_requests: DistinctWindow[str] = field(init=False)
     short_sessions: DistinctWindow[int] = field(init=False)
     """Service port of each completed-but-brief session."""
+    syn_ports: DistinctWindow[int] = field(init=False)
+    """Destination port of each bare SYN, so a flood on one port is visible even when
+    the same source also scanned many others."""
+    refusals_by_port: DistinctWindow[int] = field(init=False)
+    """Service port of each reset this source received, so evidence about one service
+    counts only that service's resets."""
 
     total_packets: int = 0
     total_bytes: int = 0
@@ -182,17 +196,27 @@ class SourceProfile:
         self.icmp_packets = TimeSeriesCounter(durations)
         self.connections_started = TimeSeriesCounter(durations)
         self.refused_connections = TimeSeriesCounter(durations)
+        self.handshakes_completed = TimeSeriesCounter(durations)
         self.dns_times = TimeSeriesCounter(durations)
         self.http_times = TimeSeriesCounter(durations)
         self.dns_queries = DistinctWindow(window)
         self.dns_suspicious = DistinctWindow(window)
         self.http_requests = DistinctWindow(window)
         self.short_sessions = DistinctWindow(window)
+        self.syn_ports = DistinctWindow(window)
+        self.refusals_by_port = DistinctWindow(window)
 
     # ------------------------------------------------------------------ update
 
-    def observe(self, packet: PacketEvent) -> None:
-        """Fold one packet sent *by* this source into the profile."""
+    def observe(self, packet: PacketEvent, *, solicited_reply: bool = False) -> None:
+        """Fold one packet sent *by* this source into the profile.
+
+        Args:
+            solicited_reply: the packet answers a request the destination sent (an ICMP
+                echo reply to an echo request). It is still traffic, but it is not
+                counted as ICMP this source chose to send: a host answering a ping
+                flood is the flood's target, not its source.
+        """
         timestamp = packet.timestamp
         self.last_seen = timestamp
         self.total_packets += 1
@@ -212,6 +236,7 @@ class SourceProfile:
             flags = packet.tcp_flags
             if flags is not None and flags.is_syn_only:
                 self.syn_packets.add(timestamp)
+                self.syn_ports.add(timestamp, packet.dst_port)
                 self.connections_started.add(timestamp)
         elif packet.protocol is Protocol.UDP and packet.dst_port is not None:
             if not _is_service_reply(packet.src_port, packet.dst_port):
@@ -221,7 +246,7 @@ class SourceProfile:
                 name = dns.get("query_name")
                 if name:
                     self._observe_dns(timestamp, str(name), dns)
-        elif packet.protocol in (Protocol.ICMP, Protocol.ICMPV6):
+        elif packet.protocol in (Protocol.ICMP, Protocol.ICMPV6) and not solicited_reply:
             self.icmp_packets.add(timestamp)
 
         http = packet.metadata.get("http")
@@ -262,6 +287,8 @@ class SourceProfile:
         elif flags.rst:
             self.rst_received.add(packet.timestamp)
             self.refused_connections.add(packet.timestamp)
+            if packet.src_port is not None:
+                self.refusals_by_port.add(packet.timestamp, packet.src_port)
 
     def record_short_session(self, timestamp: float, port: int) -> None:
         """Record a completed-but-brief session, the signal for credential guessing."""
@@ -284,6 +311,8 @@ class SourceProfile:
         self.dns_suspicious.expire(now)
         self.http_requests.expire(now)
         self.short_sessions.expire(now)
+        self.syn_ports.expire(now)
+        self.refusals_by_port.expire(now)
         for series in (
             self.packet_times,
             self.syn_packets,
@@ -292,6 +321,7 @@ class SourceProfile:
             self.icmp_packets,
             self.connections_started,
             self.refused_connections,
+            self.handshakes_completed,
             self.dns_times,
             self.http_times,
         ):
@@ -322,6 +352,16 @@ class SourceProfile:
         """
         syns = len(self.syn_packets)
         return len(self.syn_ack_received) / syns if syns else 0.0
+
+    def handshake_completion_ratio(self) -> float:
+        """Completed handshakes per SYN sent.
+
+        A busy client completes nearly every connection it starts. A SYN flood does
+        not, whether or not the server answers: against an open port every SYN gets a
+        SYN-ACK, but the flooder never sends the final ACK.
+        """
+        syns = len(self.syn_packets)
+        return min(1.0, len(self.handshakes_completed) / syns) if syns else 0.0
 
     def refusal_ratio(self) -> float:
         """Fraction of connection attempts answered with RST."""

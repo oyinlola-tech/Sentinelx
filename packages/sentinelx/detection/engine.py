@@ -22,7 +22,7 @@ with identical results.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -110,6 +110,10 @@ def default_detectors(settings: DetectionSettings) -> list[Detector]:
     return detectors
 
 
+#: ``(source_ip, destination_ip, destination_port) -> bool``: the flow is SentinelX's own.
+OwnTrafficCheck = Callable[[str | None, str | None, int | None], bool]
+
+
 class DetectionEngine:
     """Runs detectors and applies allowlist, cooldown and evidence policy.
 
@@ -123,8 +127,12 @@ class DetectionEngine:
         self,
         settings: DetectionSettings | None = None,
         detectors: Iterable[Detector] | None = None,
+        *,
+        own_traffic: OwnTrafficCheck | None = None,
     ) -> None:
         self.settings = settings or DetectionSettings()
+        #: (source, destination, port) -> True for this process's own storage traffic.
+        self._own_traffic = own_traffic
         self.detectors: list[Detector] = (
             list(detectors) if detectors is not None else default_detectors(self.settings)
         )
@@ -135,6 +143,7 @@ class DetectionEngine:
         self.detections_emitted = 0
         self.suppressed_cooldown = 0
         self.suppressed_allowlist = 0
+        self.suppressed_own_traffic = 0
         self.detector_errors = 0
         # Detectors are also looked up by name for enable/disable at runtime.
         self._by_name: dict[str, Detector] = {d.name: d for d in self.detectors}
@@ -184,6 +193,15 @@ class DetectionEngine:
                 detector=detection.detector,
                 source=detection.source_ip,
             )
+            return None
+
+        if self._own_traffic is not None and self._own_traffic(
+            detection.source_ip, detection.destination_ip, detection.destination_port
+        ):
+            # SentinelX's own connections to its database or Redis (connection pools
+            # look like credential guessing). See sentinelx.system.self_traffic.
+            self.suppressed_own_traffic += 1
+            metrics.detections_suppressed.labels(reason="own_traffic").inc()
             return None
 
         if self._is_allowlisted(detection.source_ip):
@@ -297,6 +315,7 @@ class DetectionEngine:
         self.detections_emitted = 0
         self.suppressed_cooldown = 0
         self.suppressed_allowlist = 0
+        self.suppressed_own_traffic = 0
         self.detector_errors = 0
         self.escalations = 0
         for detector in self.detectors:
@@ -311,6 +330,7 @@ class DetectionEngine:
             "suppressed_cooldown": self.suppressed_cooldown,
             "escalations": self.escalations,
             "suppressed_allowlist": self.suppressed_allowlist,
+            "suppressed_own_traffic": self.suppressed_own_traffic,
             "detector_errors": self.detector_errors,
             "per_detector": [d.stats() for d in self.detectors],
         }

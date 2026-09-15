@@ -41,6 +41,7 @@ from sentinelx.firewall import FirewallAdapter, MemoryFirewall
 from sentinelx.parser.decoder import PacketDecoder
 from sentinelx.response.engine import AuditSink, ResponseEngine
 from sentinelx.scoring.engine import RiskContext, RiskEngine
+from sentinelx.system.self_traffic import OwnServiceTraffic
 from sentinelx.telemetry.logging import get_logger
 from sentinelx.telemetry.metrics import ProcessSampler, metrics
 from sentinelx.threat_intel.providers import ThreatIntelService
@@ -187,7 +188,12 @@ class Pipeline:
         self.bus = bus or EventBus()
         self.decoder = PacketDecoder(parse_networks(settings.capture.home_networks))
         self.extractor = FeatureExtractor(settings.detection)
-        self.detection = DetectionEngine(settings.detection)
+        self.detection = DetectionEngine(
+            settings.detection,
+            own_traffic=OwnServiceTraffic(
+                [settings.storage.database_url, settings.storage.redis_url]
+            ).matches,
+        )
         for detector in extra_detectors or []:
             self.detection.add_detector(detector)
         self.risk = RiskEngine(settings.scoring)

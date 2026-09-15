@@ -66,7 +66,7 @@ class IntervalSample:
     dns_sources: Counter[str] = field(default_factory=Counter)
     icmp_sources: Counter[str] = field(default_factory=Counter)
 
-    def observe(self, packet: PacketEvent) -> None:
+    def observe(self, packet: PacketEvent, *, solicited_reply: bool = False) -> None:
         self.packets += 1
         self.bytes_total += packet.length
         self.sources[packet.src_ip] += 1
@@ -75,7 +75,10 @@ class IntervalSample:
             self.syn_sources[packet.src_ip] += 1
         elif packet.protocol in (Protocol.ICMP, Protocol.ICMPV6):
             self.icmp += 1
-            self.icmp_sources[packet.src_ip] += 1
+            # The rate counts every ICMP packet, but a host answering pings is not a
+            # contributor to blame: attribution goes to whoever sent the requests.
+            if not solicited_reply:
+                self.icmp_sources[packet.src_ip] += 1
         dns = packet.metadata.get("dns")
         if isinstance(dns, dict) and not dns.get("is_response"):
             self.dns_queries += 1
@@ -149,7 +152,7 @@ class StatisticalAnomalyDetector(Detector):
         if now - self._current.start >= self.interval:  # very long gap: resynchronise
             self._current = IntervalSample(start=now)
 
-        self._current.observe(packet)
+        self._current.observe(packet, solicited_reply=context.solicited_reply)
         self.evaluations += 1
         return self._pending.pop(0) if self._pending else None
 

@@ -245,13 +245,17 @@ class TestFloods:
         ]
         assert detections[0].recommended_action is ActionType.RATE_LIMIT
 
-    def test_answered_syns_are_not_a_flood(self, run_detection: Run) -> None:
+    def test_busy_client_completing_handshakes_is_not_a_flood(self, run_detection: Run) -> None:
+        # A busy client finishes every connection it opens. (SYNs that are merely
+        # answered, with no final ACK, are a flood against an open port: see
+        # tests/detection/test_live_run_regressions.py.)
         packets: list[tuple[bytes, float]] = []
         for i in range(700):
             ts = BASE_TIME + i * 0.01
             packets += [
                 (build_tcp("10.0.0.8", "10.0.0.80", 20000 + i, 80, flags="S"), ts),
                 (build_tcp("10.0.0.80", "10.0.0.8", 80, 20000 + i, flags="SA"), ts + 0.001),
+                (build_tcp("10.0.0.8", "10.0.0.80", 20000 + i, 80, flags="A"), ts + 0.002),
             ]
         assert "syn_flood" not in detectors_fired(run_detection(frames_from(packets)))
 
