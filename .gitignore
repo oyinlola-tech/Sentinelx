@@ -13,6 +13,7 @@ htmlcov/
 
 # Secrets and local state
 .env
+.demo/
 .env.*
 !.env.example
 *.db
