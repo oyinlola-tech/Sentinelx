@@ -53,9 +53,10 @@ make openapi
 which runs `scripts/export_openapi.py` (writes the committed file) and
 `npm run generate:api` in `apps/dashboard`. The script takes an optional output path
 as its only argument; it has no `--help` flag. CI fails if the committed files
-differ from a fresh export. At the time of writing the committed document matches
-the code (56 paths). `GET /system/capabilities` is declared without a tag, so Swagger
-UI lists it under "default".
+differ from a fresh export. The document has 56 paths. `GET /system/capabilities`
+carries the `system` tag. At the time of writing the committed `openapi.json` predates
+that tag (it has no `tags` for this path), so it differs from a fresh export until
+`make openapi` is run.
 
 The WebSocket endpoint does not appear in the OpenAPI document; it is documented
 [below](#websocket-event-stream).
@@ -110,10 +111,17 @@ WebSocket on one origin.
 - Every authenticated request re-reads the user from the database, so a deactivated
   user or a changed role takes effect on the next request rather than at token
   expiry.
-- Revoked access tokens (after sign-out or a password change) are rejected with
-  `401 {"detail": "token revoked"}`. Each revocation is kept in Redis for one full
-  access-token lifetime, which outlasts the token. When Redis is unavailable it is kept in process memory,
-  so it applies only to that process and is lost on restart.
+- The access token used to sign out or change a password is rejected afterwards with
+  `401 {"detail": "token revoked"}`. Sign-out, a password change and an administrative
+  password reset also record a per-user cut-off (cache key `sessions-ended:{user_id}`,
+  kept for one access-token lifetime): every access token for that user issued before
+  that second is rejected with `401 {"detail": "session ended"}`, in every session. The
+  cut-off has one-second resolution, so a token issued in the same second stays valid;
+  this is what lets the caller of a password change keep the new session it receives.
+  Revocations and cut-offs are kept in Redis. When Redis is unavailable they are kept in
+  process memory, so they apply only to that process (a `sentinelx users
+  reset-password` run in another process then does not end the server's access tokens)
+  and are lost on restart.
 - The JWT secret must be at least 32 characters. Outside production an unset secret is
   replaced by a random per-process value, so tokens do not survive a restart.
 
@@ -126,20 +134,24 @@ returns `401 {"detail": "refresh token required"}`.
 - Each refresh token id is stored server-side. A refresh claims the presented token
   with a single conditional `UPDATE` (only a token that is not yet revoked can be
   claimed) and issues a new access and refresh token pair.
-- A token that cannot be claimed (already rotated, revoked by sign-out or a password
-  change, or claimed by a concurrent request) is treated as reuse: every refresh
+- A token that cannot be claimed (already rotated, revoked by reuse detection or
+  deactivation, or claimed by a concurrent request) is treated as reuse: every refresh
   token for that user is revoked and the call returns `401 {"detail": "invalid token"}`.
   Because the claim is atomic, concurrent refreshes with one token produce at most one
-  new session. Revoked refresh tokens are kept until they expire so that later reuse
-  is still detected.
+  new session. Used and revoked refresh tokens are kept until they expire so that later
+  reuse is still detected.
+- Sign-out, a password change and an administrative reset delete the user's unused
+  refresh tokens instead of marking them revoked. A session presenting one of those
+  afterwards gets `401 {"detail": "invalid token"}` without triggering reuse detection,
+  so it cannot end the new session a password change started.
 - A failed refresh clears the auth cookies.
 
 ### Sign-out
 
-`POST /api/v1/auth/logout` (204) revokes all of the user's refresh tokens, revokes the
-access token used for the request immediately, and clears the cookies. Access tokens
-held by the user's other sessions are not revoked: they keep working until they expire,
-and those sessions cannot refresh them.
+`POST /api/v1/auth/logout` (204) signs the user out on all devices: it deletes the
+user's unused refresh tokens, revokes the access token used for the request, sets the
+per-user cut-off so every access token issued before that second stops working
+immediately (see [Tokens](#tokens)), and clears the cookies.
 
 ### Login throttling and account lockout
 
@@ -163,8 +175,12 @@ and unknown usernames are verified against a dummy hash so timing does not revea
 valid names. An administrator's password reset clears the account lock; it does not
 clear a per-address lock, which ends with its window.
 
-Argon2 verification runs in worker threads, at most 4 at a time per process, so a
-login flood neither blocks the event loop nor exhausts memory.
+Argon2 hashing and verification run in worker threads, sharing one limit of 4
+concurrent operations per process (login verification, user creation, the bootstrap
+administrator, password changes and resets), so a login flood neither blocks the
+event loop nor exhausts memory. The one exception is re-hashing a password at login
+when the stored hash uses outdated Argon2 parameters, which runs in a worker thread
+outside that limit.
 
 ### Forced password change
 
@@ -186,16 +202,18 @@ new password.
 returns **200 with a `TokenResponse`**, the same shape as login. A successful change:
 
 - stores the new hash and clears `must_change_password`;
-- revokes every refresh token of the user, which signs out every other session once
-  its access token expires;
+- deletes the user's unused refresh tokens and sets the per-user cut-off, so every
+  other session's access token stops working immediately and those sessions cannot
+  refresh;
 - revokes the access token used for the request;
 - issues a fresh token pair for the caller (as cookies too, for a dashboard client),
-  which the client must use from then on.
+  which the client must use from then on. The new session keeps working.
 
-Another session that tries to refresh with its now-revoked refresh token triggers
-reuse detection, which also revokes the caller's new refresh token. The caller's new
-access token keeps working until it expires; after that the caller has to sign in
-again.
+Another session that tries to refresh with its old refresh token is refused with
+`401 {"detail": "invalid token"}`; this does not revoke the caller's new session.
+An administrative reset (`POST /users/{user_id}/reset-password` or
+`sentinelx users reset-password`) ends sessions the same way, without issuing new
+tokens.
 
 ### Password policy
 
@@ -258,14 +276,14 @@ route modules in `packages/sentinelx/api/routes/`.
 |---|---|---|---|
 | POST | `/auth/login` | Public | Exchange `{"username", "password"}` for tokens. |
 | POST | `/auth/refresh` | Public (refresh token) | Rotate a refresh token; returns a new token pair. |
-| POST | `/auth/logout` | Any | Revoke all refresh tokens for the user and the access token used, clear cookies. 204. |
+| POST | `/auth/logout` | Any | Sign out on all devices: delete the user's unused refresh tokens, end every access token issued before now, clear cookies. 204. |
 | GET | `/auth/me` | Any | The current user. |
 | POST | `/auth/change-password` | Any | `{"current_password", "new_password"}`. Returns a new `TokenResponse`; see [Changing a password](#changing-a-password). |
 | POST | `/auth/ws-ticket` | Any | Issue a single-use, 30-second WebSocket ticket. |
 | GET | `/users` | admin | List users. |
 | POST | `/users` | admin | Create a user: `{"username", "password", "role"}` (`role` defaults to `viewer`). 201. |
 | PATCH | `/users/{user_id}` | admin | Change `role` and/or `is_active`. Deactivation revokes the user's refresh tokens. You cannot demote or deactivate yourself, or demote the last active administrator. |
-| POST | `/users/{user_id}/reset-password` | admin | `{"new_password"}`. Forces a change at next login, clears the account lock, revokes refresh tokens. 204. |
+| POST | `/users/{user_id}/reset-password` | admin | `{"new_password"}`. Forces a change at next login, clears the account lock, deletes unused refresh tokens and ends every access token issued before now. 204. |
 | DELETE | `/users/{user_id}` | admin | Delete a user. Not yourself, not the last active administrator. 204. |
 
 `user_id` must be an integer from 1 to 2,147,483,647; anything else is a 422.
@@ -436,12 +454,14 @@ The body of `POST /replay/upload` is the capture file itself, not a multipart fo
    `413 {"detail": "upload exceeds the 200 MB limit"}` before the body is read. A
    non-numeric `Content-Length` is a 400.
 4. The body is then streamed to `PCAP_DIRECTORY/uploads/`. The service refuses the
-   upload with 422 when the uploads directory already holds `capture.upload_quota_mb`
-   (`CAPTURE__UPLOAD_QUOTA_MB`, default 2048) or more, stops with 422 as soon as the
-   streamed size exceeds the limit or the remaining quota (this is how a chunked upload
-   without `Content-Length` is bounded), and rejects with 422 a file whose first four
-   bytes are not a pcap or pcapng signature or that does not parse as a capture. A
-   rejected upload leaves nothing on disk.
+   upload with `507 {"detail": "the upload area is full (...); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB"}`
+   when the uploads directory already holds `capture.upload_quota_mb`
+   (`CAPTURE__UPLOAD_QUOTA_MB`, default 2048) or more, stops with
+   `413 {"detail": "upload exceeds the <N> MB that can be accepted"}` as soon as the
+   streamed size exceeds the limit or the space left in the quota (this is how a
+   chunked upload without `Content-Length` is bounded), and rejects with 422 a file
+   whose first four bytes are not a pcap or pcapng signature or that does not parse as
+   a capture. A rejected upload leaves nothing on disk.
 
 The response contains the capture metadata with a `path` relative to `PCAP_DIRECTORY`
 (`uploads/<stored name>`), never an absolute server path; pass it unchanged to
@@ -463,20 +483,21 @@ Error bodies are JSON with a `detail` field. Handlers are installed in
 | Status | Cause | Body |
 |---|---|---|
 | 400 | Invalid `Content-Length` on an upload | `{"detail": "invalid Content-Length"}` |
-| 401 | Missing, invalid, expired or revoked token; bad credentials; refresh failure | `{"detail": "authentication required"}`, `"token expired"`, `"invalid token"`, `"token revoked"`, `"refresh token required"`, `"invalid username or password"`, `"account disabled"`. Token failures on protected endpoints include `WWW-Authenticate: Bearer`. |
+| 401 | Missing, invalid, expired or revoked token; bad credentials; refresh failure | `{"detail": "authentication required"}`, `"token expired"`, `"invalid token"`, `"token revoked"`, `"session ended"`, `"refresh token required"`, `"invalid username or password"`, `"account disabled"`. Token failures on protected endpoints include `WWW-Authenticate: Bearer`. |
 | 403 | Insufficient role; CSRF failure; forced password change; wrong current password; metrics requested from a non-loopback or proxied client without a token | `{"detail": "requires the admin role"}` and similar |
 | 404 | Unknown resource or scenario | `{"detail": "detection not found"}` and similar |
 | 404 | Capture interface does not exist | `{"detail": "...", "available": [...]}` |
 | 409 | Operation conflicts with current state (capture errors, missing OS permission, replay not running, duplicate username) | `{"detail": "..."}` |
-| 413 | Upload `Content-Length` over the limit | `{"detail": "upload exceeds the <N> MB limit"}` |
+| 413 | Upload `Content-Length` over the limit, or a streamed upload body that exceeds the limit or the space left in the upload quota | `{"detail": "upload exceeds the <N> MB limit"}` or `{"detail": "upload exceeds the <N> MB that can be accepted"}` |
 | 415 | Upload with an unsupported `Content-Type` | `{"detail": "send the capture as application/octet-stream"}` |
 | 422 | Request validation (FastAPI) | `{"detail": [{"type", "loc", "msg", "input", ...}]}` |
 | 422 | Invalid rule | `{"detail": "rule is invalid", "problems": [...]}` |
 | 422 | Safety guard refusal raised by a service | `{"detail": "refused by safety guard: <reason>", "target": "..."}` |
-| 422 | Configuration or PCAP error (including a rejected upload, an exhausted upload quota or invalid scenario parameters), password policy, business rule | `{"detail": "..."}` |
+| 422 | Configuration or PCAP error (including an upload that is not a pcap or pcapng capture, and invalid scenario parameters), password policy, business rule | `{"detail": "..."}` |
 | 423 | Account or address locked | `{"detail": "account temporarily locked after repeated failures"}` + `Retry-After` |
 | 429 | API or login rate limit | `{"detail": "rate limit exceeded"}` or `{"detail": "too many login attempts; try again later"}` + `Retry-After` |
 | 502 | Firewall command failed | `{"detail": "firewall operation failed: ..."}` |
+| 507 | Upload refused because the upload area already holds `CAPTURE__UPLOAD_QUOTA_MB` or more | `{"detail": "the upload area is full (...); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB"}` |
 | 503 | Database unavailable | `{"detail": "storage unavailable", "error_id": "<12 hex chars>"}` |
 | 500 | Unexpected error | `{"detail": "internal error", "error_id": "<12 hex chars>"}` |
 
@@ -621,8 +642,8 @@ see the code instead of a bare HTTP 403. Nothing but the close frame is sent.
 
 | Code | When | Client action |
 |---|---|---|
-| 4401 | Ticket missing, invalid, expired or already used; or, at an idle check, the account was deactivated or deleted | Request a new ticket and reconnect (a deactivated account will be refused). |
-| 4403 | At an idle check, the user's role differs from the role the stream was opened with | Request a new ticket and reconnect; the subscription is recomputed for the new role. |
+| 4401 | Ticket missing, invalid, expired or already used; or, at a periodic account check, the account was deactivated or deleted | Request a new ticket and reconnect (a deactivated account will be refused). |
+| 4403 | At a periodic account check, the user's role differs from the role the stream was opened with | Request a new ticket and reconnect; the subscription is recomputed for the new role. |
 | 1008 | Origin not allowed (`origin not allowed`), or an unknown event type in `types` (`unknown event type`) | Fix the configuration or request; do not retry blindly. |
 | 4429 | The user already holds 10 open streams in this API process | Close unused streams, then back off before retrying. |
 | 1000 | Normal close | |
@@ -667,12 +688,12 @@ Every event after that uses the envelope:
 The envelope `timestamp` is when the event was published. A detection's own
 `payload.timestamp` is the capture time of the packet that triggered it.
 
-When no event has been delivered for 25 seconds, the server re-checks the account and
-then sends `{"type": "ping"}`. The re-check closes the stream with 4401 if the account
-is deactivated or deleted, and with 4403 if its role changed. The check runs only at
-those idle moments: a stream that receives at least one event every 25 seconds is not
-re-checked, so a deactivated or demoted user can keep receiving events on a busy stream
-until it goes idle or disconnects. REST requests are always checked.
+When no event has been delivered for 25 seconds, the server sends `{"type": "ping"}`.
+The server re-checks the account at least once per ping interval (25 seconds), whether
+the stream is idle or busy with events: the check runs on the first wake-up (an event
+or a ping) after 25 seconds have passed since the previous check. It closes the stream
+with 4401 if the account is deactivated or deleted, and with 4403 if its role changed.
+REST requests are checked on every request.
 
 A stream stays open across any number of idle pings. (An earlier implementation
 cancelled the pending read at each ping interval, which ended the stream after the
@@ -727,9 +748,11 @@ Access depends on `api.metrics_token` (`API__METRICS_TOKEN`):
 | set | Requests must send `Authorization: Bearer <token>`; otherwise `401 {"detail": "metrics token required"}`. The loopback exception no longer applies. |
 
 The supplied and configured tokens are compared as bytes in constant time, so a
-header with non-ASCII characters is a 401 rather than a server error. Use an ASCII
-token: HTTP header values are decoded as Latin-1 before the comparison, so a token
-containing non-ASCII characters never matches, even when sent correctly.
+header with non-ASCII characters is a 401 rather than a server error. The header is
+compared as the bytes the client sent (the server decodes header values as Latin-1,
+and they are re-encoded as Latin-1 before the comparison) against the UTF-8 encoding
+of the configured token, so a non-ASCII token matches when the client sends it as
+UTF-8.
 
 The endpoint does not use user accounts, and it counts against the API rate limit. The
 Docker Compose nginx proxy returns 404 for `/api/v1/metrics`; Prometheus should scrape
@@ -832,7 +855,9 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/auth/change-password \
 ```
 
 The token used for the request is revoked at once; a further request with it returns
-`401 {"detail": "token revoked"}`. Replace `TOKEN` with the new `access_token`.
+`401 {"detail": "token revoked"}`. Access tokens of the user's other sessions are
+refused with `401 {"detail": "session ended"}`. Replace `TOKEN` with the new
+`access_token`.
 
 ### List detections
 

@@ -215,7 +215,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   http://127.0.0.1:8000/api/v1/replay
 ```
 
-Capture errors (a path outside the directory, a missing file, a rejected upload, an exhausted upload quota, invalid scenario parameters, too many concurrent replays, an unreadable capture) are returned as `422` with a `detail` message. Upload-specific status codes are described below.
+Capture errors (a path outside the directory, a missing file, an upload that is not a capture, invalid scenario parameters, too many concurrent replays, an unreadable capture) are returned as `422` with a `detail` message. Upload-specific status codes (`413`, `415`, `507`) are described below.
 
 ### Uploads
 
@@ -224,8 +224,8 @@ Capture errors (a path outside the directory, a missing file, a rejected upload,
 1. **Authentication and role.** Checked before any of the body is read: an anonymous request gets `401`, a viewer `403`, and nothing is written.
 2. **Content type.** `Content-Type` must be `application/octet-stream`, `application/vnd.tcpdump.pcap` or `application/x-pcapng`. Anything else, including `multipart/form-data`, gets `415`.
 3. **Declared size.** The limit is the smaller of `api.max_upload_mb` (default 200, env `API__MAX_UPLOAD_MB`) and `capture.max_pcap_size_mb` (default 512, env `CAPTURE__MAX_PCAP_SIZE_MB`). A `Content-Length` above it gets `413` before the body is read; a non-numeric one gets `400`.
-4. **Quota.** If the files in `PCAP_DIRECTORY/uploads` already total `capture.upload_quota_mb` (default 2048, env `CAPTURE__UPLOAD_QUOTA_MB`) or more, the upload is refused with `422` (`the upload area is full (...); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB`). Otherwise the effective limit is also capped at the remaining quota.
-5. **Streamed size.** The body is written to disk as it arrives. As soon as the bytes written exceed the effective limit, writing stops, the partial file is deleted and the upload fails with `422`. This also bounds uploads sent without `Content-Length`.
+4. **Quota.** If the files in `PCAP_DIRECTORY/uploads` already total `capture.upload_quota_mb` (default 2048, env `CAPTURE__UPLOAD_QUOTA_MB`) or more, the upload is refused with `507` (`the upload area is full (...); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB`). Otherwise the effective limit is also capped at the remaining quota.
+5. **Streamed size.** The body is written to disk as it arrives. As soon as the bytes written exceed the effective limit, writing stops, the partial file is deleted and the upload fails with `413` (`upload exceeds the <N> MB that can be accepted`). This also bounds uploads sent without `Content-Length`.
 6. **Format.** The first four bytes must be a pcap header in either byte order, with microsecond or nanosecond timestamps (`d4c3b2a1`, `a1b2c3d4`, `4d3cb2a1`, `a1b23c4d`), or a pcapng section header block (`0a0d0d0a`). The whole file must then parse with the validating reader. Otherwise it is deleted and the upload fails with `422` (`file is not a pcap or pcapng capture`, or the reader's corruption message).
 
 What is stored and returned:

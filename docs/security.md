@@ -110,12 +110,12 @@ Security decisions live in the service layer (`packages/sentinelx/services/`), n
 - API requests are rate-limited per client (default 300 per 60 seconds), shared across workers through Redis.
 - `X-Forwarded-For` is ignored unless the direct peer is in `trusted_proxies`. When it is used, it is read right to left, skipping trusted proxies, so the address a client writes at the left of the header is never believed. This address feeds the rate limiter, login lockout, the audit log and operator-address protection.
 - SentinelX does not terminate TLS itself. In production, put it behind a reverse proxy that does, and set `trusted_proxies`. See [deployment.md](deployment.md).
-- The Prometheus endpoint, without `API__METRICS_TOKEN`, is served only to direct loopback requests that carry no `X-Forwarded-For`, `Forwarded` or `X-Real-IP` header; requests relayed by a local proxy are refused. With the token set, a bearer token is required, compared as bytes in constant time (a non-ASCII header used to cause a 500).
+- The Prometheus endpoint, without `API__METRICS_TOKEN`, is served only to direct loopback requests that carry no `X-Forwarded-For`, `Forwarded` or `X-Real-IP` header; requests relayed by a local proxy are refused. With the token set, a bearer token is required, compared as bytes in constant time: the header bytes as sent against the UTF-8 token, so a non-ASCII token sent as UTF-8 matches (a non-ASCII header used to cause a 500).
 
 ### Uploads
 
 - `POST /replay/upload` takes the capture as the raw request body. Authentication and the role check run before any body byte is read, followed by the `Content-Type` check (415) and the declared `Content-Length` against the size limit (413), so an unauthenticated or oversized upload never reaches the disk.
-- The body is streamed to `PCAP_DIRECTORY/uploads` and the size is enforced again while streaming, against the smaller of `max_upload_mb` and `max_pcap_size_mb` and the space left in the upload quota (`CAPTURE__UPLOAD_QUOTA_MB`, default 2048). A full uploads directory refuses further uploads with 422.
+- The body is streamed to `PCAP_DIRECTORY/uploads` and the size is enforced again while streaming, against the smaller of `max_upload_mb` and `max_pcap_size_mb` and the space left in the upload quota (`CAPTURE__UPLOAD_QUOTA_MB`, default 2048). A streamed body over that limit is refused with 413, and a full uploads directory refuses further uploads with 507.
 - The first four bytes must be a pcap or pcapng signature, and the whole file must parse with the validating reader. Rejected files are deleted.
 - Files are stored under a generated name (timestamp, random hex, sanitised stem) with mode `0640`. The response gives the path relative to the capture directory, never the absolute server path. Uploaded files older than `RETENTION_DAYS` are deleted by the retention job, which touches nothing outside `uploads/`.
 - Replay paths are resolved inside the configured PCAP directory (following symbolic links); path traversal is refused. The file listing shows only `.pcap`, `.pcapng` and `.cap` files.
@@ -167,7 +167,7 @@ Security decisions live in the service layer (`packages/sentinelx/services/`), n
 - [ ] Management addresses and critical infrastructure added to the allowlist before prevention is enabled.
 - [ ] Prevention trialled in `manual_approval` mode and with `DRY_RUN=true` before automatic mode.
 - [ ] `RETENTION_DAYS` and `CAPTURE__UPLOAD_QUOTA_MB` set deliberately.
-- [ ] `API__METRICS_TOKEN` (ASCII) set if Prometheus scrapes from another host.
+- [ ] `API__METRICS_TOKEN` set if Prometheus scrapes from another host.
 - [ ] Webhook receivers use public HTTPS endpoints, or `RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES` is enabled only for a trusted internal receiver.
 - [ ] With the Docker `capture` profile, the sensor port (default 8001) is not reachable from untrusted networks.
 - [ ] The audit log reviewed regularly.
