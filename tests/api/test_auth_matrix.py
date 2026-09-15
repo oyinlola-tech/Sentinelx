@@ -346,6 +346,44 @@ class TestTokens:
 
 
 class TestCookieSessions:
+    async def test_cookie_refresh_requires_the_dashboard_client_header(
+        self, platform: Platform
+    ) -> None:
+        """Regression: the refresh cookie alone rotated a session; only SameSite=Strict
+        kept it off cross-site requests."""
+        dashboard = {"X-SentinelX-Client": "dashboard"}
+        async with client_from(platform) as browser:
+            login = await browser.post(
+                "/auth/login",
+                json={"username": "admin", "password": ADMIN_PASSWORD},
+                headers=dashboard,
+            )
+            assert login.status_code == 200 and browser.cookies.get("sx_refresh")
+            for headers in ({}, {"X-SentinelX-Client": "someone-else"}):
+                refused = await browser.post("/auth/refresh", headers=headers)
+                assert refused.status_code == 403, headers
+                assert refused.json() == {
+                    "detail": "refreshing from the session cookie requires the dashboard client header"
+                }
+                assert not refused.headers.get_list("set-cookie")  # the session is untouched
+            # The refused attempts did not consume the token: the dashboard still refreshes.
+            rotated = await browser.post("/auth/refresh", headers=dashboard)
+            assert rotated.status_code == 200 and rotated.json()["csrf_token"]
+
+    async def test_refresh_token_in_the_body_works_without_the_header(
+        self, platform: Platform, http: httpx.AsyncClient
+    ) -> None:
+        pair = await login_pair(http, "admin", ADMIN_PASSWORD)
+        rotated = await http.post("/auth/refresh", json={"refresh_token": pair["refresh_token"]})
+        assert rotated.status_code == 200 and rotated.json()["refresh_token"]
+        # A body token is used even when a (stale) cookie is also present.
+        async with client_from(platform) as mixed:
+            mixed.cookies.set("sx_refresh", "stale-cookie-value", path="/api/v1/auth")
+            body = await mixed.post(
+                "/auth/refresh", json={"refresh_token": rotated.json()["refresh_token"]}
+            )
+            assert body.status_code == 200, body.text
+
     async def test_cookie_login_refresh_csrf_and_logout(self, platform: Platform) -> None:
         dashboard = {"X-SentinelX-Client": "dashboard"}
         async with client_from(platform) as browser:

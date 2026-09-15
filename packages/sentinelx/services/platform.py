@@ -39,9 +39,14 @@ from sentinelx.telemetry.logging import get_logger
 from sentinelx.telemetry.metrics import ProcessSampler, metrics
 from sentinelx.threat_intel import ThreatIntelService
 
-__all__ = ["Platform"]
+__all__ = ["Platform", "without_location"]
 
 log = get_logger(__name__)
+
+
+def without_location(database: dict[str, Any]) -> dict[str, Any]:
+    """A database health entry without ``url`` (SQLite path, or PostgreSQL host and user)."""
+    return {key: value for key, value in database.items() if key != "url"}
 
 
 class Platform:
@@ -198,7 +203,15 @@ class Platform:
         while True:
             await asyncio.sleep(5)
             try:
-                await self.bus.publish(EventType.SYSTEM_HEALTH, await self.health())
+                # Every signed-in role receives this event: leave out the database location.
+                report = await self.health()
+                components = {
+                    **report["components"],
+                    "database": without_location(report["components"]["database"]),
+                }
+                await self.bus.publish(
+                    EventType.SYSTEM_HEALTH, {**report, "components": components}
+                )
             except Exception:
                 log.exception("health_publish_failed")
 

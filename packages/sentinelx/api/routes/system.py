@@ -11,7 +11,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sentinelx import __version__
 from sentinelx.api.schemas import SensorStartRequest
 from sentinelx.api.security import Admin, Analyst, PlatformDep, Viewer, client_ip
+from sentinelx.common.enums import UserRole
 from sentinelx.common.netutils import parse_ip
+from sentinelx.services.platform import without_location
 from sentinelx.telemetry.metrics import render_metrics
 
 router = APIRouter()
@@ -26,7 +28,13 @@ async def health(platform: PlatformDep) -> dict[str, Any]:
 
 @router.get("/system/status", tags=["system"])
 async def status(principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
-    report = await platform.health()
+    report = dict(await platform.health())  # the report is cached and shared: copy it
+    if not principal.can(UserRole.ADMIN):
+        # Where the database lives (a file path, or host and user) is for administrators.
+        report["components"] = {
+            **report["components"],
+            "database": without_location(report["components"]["database"]),
+        }
     pipeline, _, _, _ = platform.require()
     report["pipeline"] = pipeline.status()
     report["bootstrap_admin_pending"] = platform.bootstrap_password is not None

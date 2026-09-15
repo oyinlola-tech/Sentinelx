@@ -69,7 +69,10 @@ PATH_DISCLOSURE_ALLOWED = {
     ("GET", "/rules/{rule_id}"): "rule source_path",
     ("GET", "/config"): "effective settings (analyst): pcap_directory, rules_directory",
     ("PATCH", "/config/{section}"): "echoes the effective settings after an admin change",
-    ("GET", "/system/status"): "database URL with the password hidden (SQLite file path)",
+    (
+        "GET",
+        "/system/status",
+    ): "database URL with the password hidden (SQLite file path), admins only",
 }
 
 

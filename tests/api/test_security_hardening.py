@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
+import pytest
 
 from sentinelx.api.app import create_app
 from sentinelx.services.platform import Platform
@@ -439,6 +440,47 @@ class TestPersisterHealth:
         persister = status["components"]["persister"]
         assert persister["ok"] is False and persister["retrying"] is True
         platform.persister._backoff = 0.0
+
+
+class TestDatabaseLocationIsForAdministrators:
+    """Regression: ``/system/status`` showed every viewer the database location (the
+    SQLite path, or the PostgreSQL host and user)."""
+
+    async def test_status_shows_the_database_url_to_admins_only(
+        self, platform: Platform, client: httpx.AsyncClient, roles: dict[str, dict[str, str]]
+    ) -> None:
+        location = platform.database.safe_url
+        for role, headers in roles.items():
+            response = await client.get("/system/status", headers=headers)
+            assert response.status_code == 200
+            database = response.json()["components"]["database"]
+            assert database["ok"] is True and database["dialect"] == "sqlite", role
+            if role == "admin":
+                assert database["url"] == location
+            else:
+                assert "url" not in database and location not in response.text, role
+        # Hiding it from a viewer did not change the cached report an admin reads.
+        admin = await client.get("/system/status", headers=roles["admin"])
+        assert admin.json()["components"]["database"]["url"] == location
+
+    async def test_health_events_sent_to_every_role_omit_the_database_url(
+        self, platform: Platform, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sentinelx.services.platform as platform_module
+        from sentinelx.events.bus import EventType
+
+        real_sleep = asyncio.sleep
+        monkeypatch.setattr(platform_module.asyncio, "sleep", lambda _: real_sleep(0))
+        async with platform.bus.subscribe("t", {EventType.SYSTEM_HEALTH}) as stream:
+            loop = asyncio.create_task(platform._health_loop())
+            try:
+                event = await asyncio.wait_for(anext(aiter(stream)), 10)
+            finally:
+                loop.cancel()
+                await asyncio.gather(loop, return_exceptions=True)
+        database = event.payload["components"]["database"]
+        assert database["ok"] is True and "url" not in database
+        assert platform.database.safe_url not in str(event.payload)
 
 
 class TestSessionCutOffSurvivesCacheLoss:
