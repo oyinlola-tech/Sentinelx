@@ -268,8 +268,8 @@ remedy where one applies. It exits with status 1 if any check is `FAIL`.
 | `rules` | FAIL if the rules directory is missing or any rule file is invalid; WARN if no rules load. |
 | `pcap directory` | FAIL if `PCAP_DIRECTORY` cannot be created or written. |
 | `jwt secret` | FAIL if shorter than 32 characters. If not set in the environment or `.env`: WARN in development, FAIL in production. |
-| `database` | FAIL if the database cannot be reached, or if its schema is not at the latest revision (the detail then ends with `run: sentinelx db upgrade`). This includes a new SQLite file before the first `sentinelx start`. |
-| `migrations` | PASS when the schema is at the latest revision. |
+| `database` | FAIL if the database cannot be reached (remedy `check DATABASE_URL`). `doctor` connects without preparing the schema, so it never migrates the database it inspects. |
+| `migrations` | PASS when the schema is at the latest revision. Behind the latest revision: WARN for SQLite ("SQLite databases are migrated automatically when SentinelX starts"; this includes a new SQLite file before the first `sentinelx start`), FAIL for PostgreSQL (remedy `run: sentinelx db upgrade`). |
 | `redis` | WARN when unreachable; FAIL if `STORAGE__REDIS_REQUIRED=true`. |
 | `api` | Probes `/api/v1/system/health` at `--api-url` (default `http://API_HOST:API_PORT`, with `0.0.0.0` read as `127.0.0.1`). |
 | `dashboard` | Probes `/runtime-config` at `--dashboard-url` (default `SENTINELX_DASHBOARD_URL`, else `http://127.0.0.1:3000`). |
@@ -921,7 +921,9 @@ What happens at startup depends on the database:
   `database schema is at revision <applied> but this version of SentinelX needs <head>; run: sentinelx db upgrade`.
   Run `sentinelx db upgrade` before the first start and after every upgrade. The
   Compose `migrate` service and the example `ExecStartPre` do this. `sentinelx doctor`
-  reports the database as FAIL when the schema is behind.
+  reports the migrations check as FAIL when a PostgreSQL schema is behind, and as WARN
+  for a SQLite file that is behind (it is migrated at the next start). `doctor` does not
+  migrate either database.
 
 Revisions:
 

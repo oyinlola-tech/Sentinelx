@@ -156,7 +156,7 @@ Then check what this host can do, and whether the configuration is sound:
 .venv/bin/sentinelx doctor         # PASS, WARN, FAIL or INFO per check; exit status 1 on any FAIL
 ```
 
-On a new install, `doctor` reports the SQLite database as FAIL until the first `sentinelx start` (or `sentinelx db upgrade`) creates the schema, and warns that the API and dashboard are not running.
+On a new install, `doctor` reports the SQLite database as PASS and the migrations check as WARN (SQLite databases are migrated automatically when SentinelX starts; `sentinelx db upgrade` migrates now), and warns that the API and dashboard are not running. `doctor` only inspects the database; it never migrates it.
 
 ### Linux
 
