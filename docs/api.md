@@ -131,7 +131,11 @@ WebSocket on one origin.
 ### Refresh rotation and reuse detection
 
 `POST /api/v1/auth/refresh` accepts the refresh token from the `sx_refresh` cookie
-or, if there is no cookie, from a JSON body `{"refresh_token": "..."}`. With neither it
+only when the request also carries `X-SentinelX-Client: dashboard` (the dashboard sends
+it on every call). Otherwise it reads a JSON body `{"refresh_token": "..."}`, whether or
+not a cookie is present. A request with the cookie but neither the header nor a body
+token returns `403 {"detail": "refreshing from the session cookie requires the dashboard
+client header"}` and leaves the session untouched; a request with no token at all
 returns `401 {"detail": "refresh token required"}`. A body sent as `application/json`
 that is not valid JSON returns `422 {"detail": "request body is not valid JSON"}`.
 
@@ -499,7 +503,7 @@ Error bodies are JSON with a `detail` field. Handlers are installed in
 |---|---|---|
 | 400 | Invalid `Content-Length` on an upload | `{"detail": "invalid Content-Length"}` |
 | 401 | Missing, invalid, expired or revoked token; bad credentials; refresh failure | `{"detail": "authentication required"}`, `"token expired"`, `"invalid token"`, `"token revoked"`, `"session ended"`, `"refresh token required"`, `"invalid username or password"`, `"account disabled"`. Token failures on protected endpoints include `WWW-Authenticate: Bearer`. |
-| 403 | Insufficient role; CSRF failure; forced password change; wrong current password; metrics requested from a non-loopback or proxied client without a token | `{"detail": "requires the admin role"}` and similar |
+| 403 | Insufficient role; CSRF failure; forced password change; wrong current password; metrics requested from a non-loopback or proxied client without a token; `POST /auth/refresh` with only the session cookie and no `X-SentinelX-Client: dashboard` header | `{"detail": "requires the admin role"}` and similar |
 | 404 | Unknown resource or scenario | `{"detail": "detection not found"}` and similar |
 | 404 | Capture interface does not exist | `{"detail": "...", "available": [...]}` |
 | 409 | Operation conflicts with current state (capture errors, missing OS permission, replay not running, duplicate username) | `{"detail": "..."}` |
