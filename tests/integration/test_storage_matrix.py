@@ -17,6 +17,8 @@ import asyncio
 import contextlib
 import logging
 import os
+import shutil
+import subprocess
 import time
 import uuid
 import warnings
@@ -80,6 +82,13 @@ requires_postgres = pytest.mark.skipif(
     not POSTGRES_URL, reason="SENTINELX_TEST_POSTGRES_URL not set"
 )
 requires_redis = pytest.mark.skipif(not REDIS_URL, reason="SENTINELX_TEST_REDIS_URL not set")
+#: Name of the Docker container serving SENTINELX_TEST_POSTGRES_URL. When set, tests may
+#: ``docker pause`` it to simulate a server that accepts TCP but never answers.
+DOCKER_PG_CONTAINER = os.environ.get("SENTINELX_TEST_DOCKER_PG_CONTAINER")
+requires_pausable_postgres = pytest.mark.skipif(
+    not (POSTGRES_URL and DOCKER_PG_CONTAINER and shutil.which("docker")),
+    reason="needs SENTINELX_TEST_POSTGRES_URL, SENTINELX_TEST_DOCKER_PG_CONTAINER and docker",
+)
 
 NOW = datetime.now(UTC)
 
@@ -639,6 +648,74 @@ async def test_exception_inside_session_rolls_back(backend: str, tmp_path: Path)
             assert await DetectionRepository(session).get("rolled-back") is None
 
 
+async def test_session_deadline_bounds_the_whole_unit_of_work(tmp_path: Path) -> None:
+    # A server that accepts connections but stops answering held sessions for minutes.
+    async with migrated_database("sqlite", tmp_path, session_timeout_seconds=0.3) as database:
+        started = time.monotonic()
+        with pytest.raises(StorageError, match=r"did not complete the work within 0\.3s"):
+            async with database.session() as session:
+                session.add(detection("abandoned"))
+                await session.flush()
+                await asyncio.sleep(3)  # stands in for a statement the server never answers
+        assert time.monotonic() - started < 2
+        with pytest.raises(StorageError, match=r"within 0\.1s"):
+            async with database.session(timeout_seconds=0.1):
+                await asyncio.sleep(3)
+        # The abandoned work is not committed, and the database is usable afterwards.
+        async with database.session() as session:
+            assert await DetectionRepository(session).get("abandoned") is None
+
+
+async def test_timeout_raised_by_application_code_is_not_a_storage_outage(tmp_path: Path) -> None:
+    async with migrated_database("sqlite", tmp_path) as database:
+        with pytest.raises(TimeoutError) as raised:
+            async with database.session():
+                raise TimeoutError("an upstream HTTP call timed out")
+        assert not isinstance(raised.value, StorageError)
+
+
+async def test_rollback_that_never_returns_does_not_hold_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After a statement is cancelled the driver waits, without a time limit, for the
+    # server to acknowledge the cancellation before it runs anything else - a rollback
+    # included. The rollback is bounded and the connection discarded instead.
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from sentinelx.storage import database as database_module
+
+    async def hang(self: AsyncSession) -> None:
+        await asyncio.Event().wait()
+
+    async with migrated_database("sqlite", tmp_path) as database:
+        monkeypatch.setattr(database_module, "_ROLLBACK_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(AsyncSession, "rollback", hang)
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="boom"):
+            async with asyncio.timeout(10), database.session() as session:
+                await session.execute(text("SELECT 1"))
+                raise RuntimeError("boom")
+        assert time.monotonic() - started < 5
+
+
+def test_invalidated_postgresql_connections_are_aborted_without_waiting() -> None:
+    from sentinelx.storage.database import _abort_invalidated_connection
+
+    class Driver:
+        terminated = 0
+
+        def terminate(self) -> None:  # asyncpg: synchronous, never waits on the server
+            self.terminated += 1
+
+    driver = Driver()
+    _abort_invalidated_connection(SimpleNamespace(driver_connection=driver), None, None)
+    assert driver.terminated == 1
+    # Connections that are already gone, or not asyncpg's, are left to SQLAlchemy.
+    _abort_invalidated_connection(SimpleNamespace(driver_connection=None), None, None)
+    broken = SimpleNamespace(terminate=lambda: (_ for _ in ()).throw(RuntimeError("closed")))
+    _abort_invalidated_connection(SimpleNamespace(driver_connection=broken), None, None)
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_concurrent_sessions_do_not_deadlock(backend: str, tmp_path: Path) -> None:
     async with migrated_database(backend, tmp_path) as database:
@@ -878,6 +955,106 @@ async def test_detections_survive_a_database_outage(tmp_path: Path) -> None:
             "incidents": 10,
             "actions": 10,
         }
+        assert persister.rejected == 0 and persister.dropped == 0
+
+
+def docker_pg(action: str) -> None:
+    assert DOCKER_PG_CONTAINER
+    subprocess.run(  # noqa: S603 - fixed argv, container name from the test environment
+        ["docker", action, DOCKER_PG_CONTAINER],  # noqa: S607
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+
+@requires_pausable_postgres
+@pytest.mark.integration
+async def test_paused_database_answers_503_within_the_deadline_and_loses_nothing(
+    tmp_path: Path,
+) -> None:
+    """A server that accepts TCP but never answers (``docker pause``) - the silent
+    partition that used to hold API requests until the operating system gave up."""
+    import httpx
+
+    from sentinelx.api.app import create_app
+    from sentinelx.firewall import MemoryFirewall
+    from sentinelx.services.platform import Platform
+
+    password = "Correct-Horse-Battery-2026"
+    async with empty_database("postgresql", tmp_path) as url:
+        await migrate.upgrade(url)
+        settings = Settings(
+            storage={
+                "database_url": url,
+                "redis_url": "redis://127.0.0.1:1/0",
+                "session_timeout_seconds": 3,
+                "statement_timeout_seconds": 60,
+                "batch_size": 50,
+                "flush_interval_seconds": 0.1,
+            },
+            api={
+                "bootstrap_admin_password": password,
+                "jwt_secret": "x" * 48,
+                "rate_limit_requests": 10_000,
+            },
+            capture={"pcap_directory": tmp_path / "pcaps"},
+            anomaly={"enabled": False},
+        )
+        platform = Platform(settings, firewall=MemoryFirewall())
+        await platform.start(background=False)
+        assert platform.persister is not None
+        platform.persister.max_backoff_seconds = 0.5
+        persister = platform.persister
+        app = create_app(settings, platform=platform)
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+        try:
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver/api/v1"
+            ) as client:
+                login = await client.post(
+                    "/auth/login", json={"username": "admin", "password": password}
+                )
+                headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+                assert (await client.get("/detections", headers=headers)).status_code == 200
+                await publish_paced(platform.bus, burst(100))
+                await wait_until(lambda: persister.pending == 0)
+
+                docker_pg("pause")
+                try:
+                    started = time.monotonic()
+                    responses = await asyncio.gather(
+                        *(client.get("/detections", headers=headers) for _ in range(15))
+                    )
+                    elapsed = time.monotonic() - started
+                    assert {r.status_code for r in responses} == {503}
+                    assert responses[0].json()["detail"] == "storage unavailable"
+                    assert elapsed < 3 + 5, elapsed
+
+                    await publish_paced(platform.bus, burst(200, start=100))
+                    await platform.bus.drain(wait_seconds=30)
+                    await wait_until(lambda: persister.failed_batches > 0 and persister.retrying)
+                    assert persister.pending >= 204 and persister.dropped == 0
+
+                    started = time.monotonic()
+                    later = await client.get("/detections", headers=headers)
+                    assert later.status_code == 503 and time.monotonic() - started < 3 + 5
+                finally:
+                    docker_pg("unpause")
+
+                await wait_until(lambda: persister.pending == 0 and not persister.retrying, 60)
+                recovered = await asyncio.gather(
+                    *(client.get("/detections", headers=headers) for _ in range(40))
+                )
+                assert {r.status_code for r in recovered} == {200}
+        finally:
+            await platform.stop()
+
+        verify = Database(StorageSettings(database_url=url))
+        await verify.connect()
+        counts = await stored_counts(verify)
+        await verify.close()
+        assert counts["detections"] == counts["distinct"] == 300
         assert persister.rejected == 0 and persister.dropped == 0
 
 

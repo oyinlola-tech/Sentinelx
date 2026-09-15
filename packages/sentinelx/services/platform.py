@@ -213,7 +213,11 @@ class Platform:
 
     async def run_retention(self) -> dict[str, int]:
         storage = self.settings.storage
-        async with self.database.session() as session:
+        # A purge is maintenance, not a request: its deletes may each use the full
+        # statement timeout instead of sharing the short per-request session deadline.
+        async with self.database.session(
+            timeout_seconds=storage.statement_timeout_seconds * 10
+        ) as session:
             purged = await RetentionRepository(session).purge(
                 retention_days=storage.retention_days,
                 audit_days=storage.audit_retention_days,
