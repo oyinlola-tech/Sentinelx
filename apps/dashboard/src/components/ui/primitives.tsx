@@ -16,10 +16,10 @@ import {
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
 const variants: Record<Variant, string> = {
-  primary: "bg-iris text-ground hover:bg-[#a5b3ff] font-medium",
+  primary: "bg-chalk text-ground font-semibold hover:bg-white",
   secondary: "bg-raised text-frost border border-line-strong hover:border-mist",
   ghost: "text-mist hover:text-frost hover:bg-raised",
-  danger: "bg-sev-critical/15 text-sev-critical border border-sev-critical/50 hover:bg-sev-critical/25",
+  danger: "bg-sev-critical/12 text-sev-critical border border-sev-critical/60 hover:bg-sev-critical/22",
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -37,7 +37,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   return (
     <button
       ref={ref}
-      className={`inline-flex items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sizing} ${variants[variant]} ${className}`}
+      className={`inline-flex items-center justify-center rounded-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sizing} ${variants[variant]} ${className}`}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       {...rest}
@@ -68,7 +68,7 @@ export function Field({ label, hint, error, children, htmlFor }: { label: string
 
 /** Base input styles. Width defaults to full unless the caller passes a w-* utility. */
 const inputBase =
-  "rounded-md border border-line-strong bg-ground px-2.5 text-sm text-frost placeholder:text-fog focus:border-iris focus:outline-none disabled:opacity-60";
+  "rounded-sm border border-line-strong bg-ground px-2.5 text-sm text-frost placeholder:text-fog focus:border-signal focus:outline-none disabled:opacity-60";
 
 function inputClass(className: string): string {
   const width = /(^|\s)(w-|min-w-|max-w-|flex-1)/.test(className) ? "" : "w-full";
@@ -103,10 +103,10 @@ export function Panel({ title, eyebrow, actions, children, className = "", bodyC
   return (
     <section id={id} className={`panel flex min-w-0 scroll-mt-20 flex-col ${className}`}>
       {(title || actions || eyebrow) && (
-        <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5">
+        <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-2">
           <div className="min-w-0">
             {eyebrow && <p className="eyebrow">{eyebrow}</p>}
-            {title && <h2 className="truncate text-sm font-medium text-frost">{title}</h2>}
+            {title && <h2 className="truncate font-display text-lg leading-tight font-semibold tracking-[0.01em] text-frost">{title}</h2>}
           </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </header>
@@ -149,7 +149,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
 export function StaleNotice({ error, className = "" }: { error: unknown; className?: string }) {
   const message = error instanceof Error ? error.message : "Too many requests. Wait a moment and try again.";
   return (
-    <p role="status" className={`flex items-start gap-2 rounded-md border border-sev-medium/40 bg-sev-medium/10 px-3 py-2 text-xs text-sev-medium ${className}`}>
+    <p role="status" className={`flex items-start gap-2 rounded-sm border border-signal/40 bg-signal/10 px-3 py-2 text-xs text-signal ${className}`}>
       <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden />
       <span>Showing the last data loaded. {message} This view refreshes on its own.</span>
     </p>
@@ -157,7 +157,7 @@ export function StaleNotice({ error, className = "" }: { error: unknown; classNa
 }
 
 export function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded bg-raised ${className}`} aria-hidden />;
+  return <div className={`animate-pulse rounded-sm bg-raised ${className}`} aria-hidden />;
 }
 
 export function TableSkeleton({ rows = 6, columns = 5 }: { rows?: number; columns?: number }) {
@@ -216,12 +216,12 @@ export function Dialog({ open, onClose, title, children, footer, wide = false }:
         event.preventDefault();
         onClose();
       }}
-      className={`m-auto w-[calc(100%-2rem)] ${wide ? "max-w-3xl" : "max-w-lg"} rounded-lg border border-line-strong bg-panel p-0 text-frost shadow-2xl backdrop:bg-black/60`}
+      className={`m-auto w-[calc(100%-2rem)] ${wide ? "max-w-3xl" : "max-w-lg"} rounded-sm border border-line-strong bg-panel p-0 text-frost shadow-[0_40px_120px_-30px_rgba(0,0,0,0.9)] backdrop:bg-[#060909]/75 backdrop:backdrop-blur-[2px]`}
     >
       {open && (
         <div className="flex max-h-[85vh] flex-col">
           <header className="flex items-center justify-between border-b border-line px-5 py-3">
-            <h2 id={titleId} className="font-display text-base font-semibold">
+            <h2 id={titleId} className="font-display text-xl font-semibold tracking-[0.01em]">
               {title}
             </h2>
             <button onClick={onClose} className="rounded p-1 text-mist hover:text-frost" aria-label="Close dialog">
@@ -268,7 +268,7 @@ export function Tabs<T extends string>({ value, onChange, options, label }: { va
             role="tab"
             aria-selected={selected}
             onClick={() => onChange(option.value)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${selected ? "border-iris text-frost" : "border-transparent text-mist hover:text-frost"}`}
+            className={`-mb-px border-b-2 px-3 py-2.5 text-sm transition-colors ${selected ? "border-signal text-frost" : "border-transparent text-mist hover:text-frost"}`}
           >
             {option.label}
             {option.count != null && <span className="ml-1.5 font-mono text-xs text-fog tabular">{option.count}</span>}
