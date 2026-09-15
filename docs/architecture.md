@@ -350,7 +350,7 @@ With `STORAGE__REDIS_REQUIRED=true`, startup fails if Redis is unreachable, and 
 
 **A `struct`-based decoder and file reader instead of Scapy objects.** Scapy allocates a Python object per layer per packet. The SentinelX decoder was measured at roughly two times faster than Scapy `Ether(bytes)` (see [benchmarking.md](benchmarking.md)). SentinelX also reads pcap and pcapng itself, because per-interface link types, nanosecond timestamps and length validation needed to be exact. The cost is maintaining a decoder and reader that cover fewer formats and protocols than Scapy. Scapy is still used for compiling BPF filters and for the portable libpcap live-capture backend.
 
-**Probe the host instead of assuming it.** Capture and firewall support are decided by opening a raw socket, checking capability bits, device permissions or elevation, and looking for tools, and each result carries a reason and a remedy. The cost is a probe that takes about a second the first time in a process, which is why its results are cached.
+**Probe the host instead of assuming it.** Capture and firewall support are decided by opening a raw socket, checking capability bits, device permissions or elevation, looking for tools and running each firewall tool's read-only listing command, and each result carries a reason and a remedy. The cost is a probe that takes about a second the first time in a process, which is why its results are cached.
 
 **Detection windows in process, shared state in Redis.** Keeping windows in memory avoids a round trip per packet. The cost is that detection state is per sensor process and is lost on restart.
 

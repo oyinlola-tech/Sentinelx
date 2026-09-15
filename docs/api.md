@@ -165,13 +165,16 @@ Three controls apply to `POST /api/v1/auth/login`:
 |---|---|---|---|
 | Login throttle | client address | `api.login_rate_limit_attempts` = 8 attempts per `api.login_rate_limit_window_seconds` = 300 s; reset by a successful login from that address | `429 {"detail": "too many login attempts; try again later"}` with `Retry-After` |
 | Per-address lockout | one username and one client address | `api.lockout_threshold` = 5 failures within `api.lockout_seconds` = 900 s lock that pair until the window ends | `423 {"detail": "account temporarily locked after repeated failures"}` with `Retry-After` |
-| Account lockout | the account, from any address | 4 times `lockout_threshold` (20 by default) consecutive failed passwords lock the account for `lockout_seconds` | the same 423 |
+| Account lockout | one username, from any address | 4 times `lockout_threshold` (20 by default) failures within `lockout_seconds` lock the username for `lockout_seconds` | the same 423 |
 
 A failure from one address therefore does not lock the owner out when they sign in
 from another address; only guessing spread across many addresses locks the account
-itself. The per-address counter lives in Redis (process memory without Redis); the
-account counter is stored in the database and reset by a successful login or when the
-lock is applied.
+itself. Both counters and the account lock live in Redis (process memory without
+Redis), keyed by the lower-cased username, and apply to unknown usernames exactly as to
+real accounts: the same thresholds, window, status, body, headers and dummy-hash timing,
+so lockout does not reveal which usernames exist. The account counter is reset by a
+successful login or when the lock is applied. A real account's lock is also written to
+the database, so it outlasts a restart.
 
 While locked, even the correct password returns 423. Credential failures always return
 `401 {"detail": "invalid username or password"}`, whether or not the username exists,

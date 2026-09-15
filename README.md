@@ -391,7 +391,7 @@ Out of the box SentinelX is in **detection-only mode with dry run enabled**, and
 | `DRY_RUN` | `true`, `false` | `true` |
 | `FIREWALL_BACKEND` | `null`, `auto`, `nftables`, `iptables`, `pf`, `windows_firewall` | `null` |
 
-`auto` picks the first usable backend for the operating system (nftables, then iptables on Linux; pf on macOS; Windows Firewall on Windows) and falls back to `null` when none is usable. A named backend that cannot run on the host (tool missing, wrong operating system, no privilege) does not stop startup: detection continues, health reports the backend as unavailable with the reason, and every firewall action fails with that reason. `sentinelx capabilities` lists each backend for the platform and whether it is usable.
+`auto` picks the first usable backend for the operating system (nftables, then iptables on Linux; pf on macOS; Windows Firewall on Windows) and falls back to `null` when none is usable. A named backend that cannot run on the host (tool missing, wrong operating system, no privilege, or a read-only probe such as `nft list tables` failing) does not stop startup: detection continues, health reports the backend as unavailable with the reason, and every firewall action fails with that reason. `sentinelx capabilities` lists each backend for the platform and whether it is usable.
 
 A safe path to enforcement:
 
