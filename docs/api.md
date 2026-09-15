@@ -303,7 +303,7 @@ route modules in `packages/sentinelx/api/routes/`.
 | Method | Path | Role | Purpose |
 |---|---|---|---|
 | GET | `/system/health` | Public | Liveness probe: `{"status": "ok" \| "degraded" \| "error", "version"}`. Not rate limited. |
-| GET | `/system/status` | viewer | Full health report: components (database, Redis, firewall, event bus, persister, sensor, rules), process metrics, pipeline status, safety posture. `components.persister` has `ok` (false only while writes are failing and being retried), `written`, `pending` (events buffered or being written), `retrying`, `failed_batches`, `rejected` (events the database refused while healthy) and `dropped` (events discarded when the buffer overflowed). |
+| GET | `/system/status` | viewer | Full health report: components (database, Redis, firewall, event bus, persister, sensor, rules), process metrics, pipeline status, safety posture. `components.database` has `ok`, `dialect` and, for administrators only, `url` (the database location with the password hidden: a SQLite file path, or the PostgreSQL host, port, user and database); analysts and viewers do not receive `url`. `components.persister` has `ok` (false only while writes are failing and being retried), `written`, `pending` (events buffered or being written), `retrying`, `failed_batches`, `rejected` (events the database refused while healthy) and `dropped` (events discarded when the buffer overflowed). |
 | GET | `/system/capabilities` | viewer | What this host can do: detection engine, PCAP replay, interface enumeration, packet capture, live capture, firewall control, automatic blocking and privileged access, each with `available`, `status`, `detail` and `remedy`, plus per-backend firewall availability. Cached for 30 seconds. The same report as `sentinelx capabilities`. |
 | GET | `/sensors` | viewer | Sensor status (a single-element list). |
 | GET | `/interfaces` | viewer | Network interfaces available for capture. |
@@ -324,7 +324,7 @@ route modules in `packages/sentinelx/api/routes/`.
 | GET | `/incidents/{incident_id}` | viewer | One incident with its detections and actions. |
 | PATCH | `/incidents/{incident_id}` | analyst | Any of `status`, `assigned_to` (up to 64 characters), `notes` (up to 10,000 characters). An empty body is a 422. Publishes `incident.updated` with the incident and `updated_by`, so other open dashboards refresh. Setting `status` to `resolved` or `false_positive` also closes the incident in the live correlation engine: new activity from the source opens a new incident, and the closed one no longer drives automatic responses. |
 | GET | `/alerts` | viewer | Untriaged detections at or above `response.webhook_min_risk` in the last `hours` (default 24, max 720), plus pending approvals. |
-| GET | `/threats` | viewer | Detections grouped by source address. Query: `hours` (1 to 720, default 24), `limit` (1 to 500, default 100). |
+| GET | `/threats` | viewer | Detections grouped by source address, highest maximum risk first. Counts, severities, statuses, detectors, categories, first and last seen are aggregated in the database over every live (non-replay) detection in the window; `destinations` lists the first 20 in sort order. Query: `hours` (1 to 720, default 24), `limit` (1 to 500 sources, default 100). |
 
 ### Firewall, blocking and approvals (`routes/firewall.py`)
 
@@ -749,7 +749,7 @@ Event types (`EventType` in `packages/sentinelx/events/bus.py`):
 | `response.pending_approval` | all roles |
 | `sensor.status` | all roles |
 | `packet.stats` | all roles |
-| `system.health` | all roles (published every 5 seconds) |
+| `system.health` | all roles (published every 5 seconds; the same report as `/system/status` without `components.database.url`) |
 | `replay.progress` | all roles |
 | `replay.completed` | all roles |
 | `rule.changed` | all roles |

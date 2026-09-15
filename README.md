@@ -8,6 +8,7 @@ Every alert shows its work: the evidence that triggered it, the thresholds it cr
 
 ## Contents
 
+- [Who is SentinelX for?](#who-is-sentinelx-for)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Platform support](#platform-support)
@@ -31,6 +32,20 @@ Every alert shows its work: the evidence that triggered it, the thresholds it cr
 - [Documentation](#documentation)
 - [Author](#author)
 - [License](#license)
+
+## Who is SentinelX for?
+
+SentinelX is built for people who look after **one host or a small network** and want to understand hostile traffic without running a security operations stack:
+
+- **Homelab and self-hosting users** who want to see who scans and password-guesses their internet-facing services.
+- **Small offices without a security team**, where one generalist needs ranked incidents and an audit trail rather than a raw alert feed.
+- **Students, educators and training labs** that need to see attacks recognised, with the evidence, on synthetic captures that never touch a network.
+- **Analysts triaging PCAP files** who want a reproducible, explainable first pass.
+- **Developers** who want network detections in their own tooling through the API, WebSocket stream, webhooks and Prometheus metrics.
+
+It is the wrong tool for high-speed links (it handles about 5,000 packets per second per process), payload signature matching at scale, full network security monitoring, or production Windows and macOS firewalls. For those, use Suricata, Zeek, Security Onion or a supported commercial product.
+
+[docs/use-cases.md](docs/use-cases.md) has detailed scenarios with setups, a comparison with alternatives, deployment recommendations and a decision checklist.
 
 ## Features
 
@@ -158,7 +173,7 @@ Then check what this host can do, and whether the configuration is sound:
 .venv/bin/sentinelx doctor         # PASS, WARN, FAIL or INFO per check; exit status 1 on any FAIL
 ```
 
-On a new install, `doctor` reports the SQLite database as PASS and the migrations check as WARN (SQLite databases are migrated automatically when SentinelX starts; `sentinelx db upgrade` migrates now), and warns that the API and dashboard are not running. `doctor` only inspects the database; it never migrates it.
+On a new install, before the first start, `doctor` reports the SQLite database as WARN (`database file does not exist yet; it is created and migrated when SentinelX starts`) and warns that the API and dashboard are not running. Once the file exists, an unmigrated database is PASS with a migrations WARN (`sentinelx db upgrade` migrates now). `doctor` only inspects the database: it never creates or migrates it.
 
 ### Linux
 
@@ -292,7 +307,7 @@ sentinelx doctor --api-url http://127.0.0.1:8000 --dashboard-url http://127.0.0.
 
 `sentinelx doctor` checks Python, the operating system, architecture, WSL and containers, dependencies, PCAP replay, interface enumeration, the capture backend, live capture, the capture interface, the firewall backend, automatic blocking, the safety posture, rules, the PCAP directory, the JWT secret (from the environment or `.env`), the database, migrations and Redis. It also probes the API and the dashboard and confirms that what answers is SentinelX, not another service on the same port.
 
-Exit codes: `0` success, `1` failure (including any `doctor` FAIL), `2` invalid usage or configuration, `130` interrupted. Some specifics: `start --port` outside 1-65535, `config --section` with an unknown section, a nonexistent path given to `rules validate` or `monitor --pcap`, and `block` or `unblock` without a target when not run in a terminal are usage errors (2). `detections --id` or `incidents --id` with an unknown id exits 1, with or without `--json`. An unreachable database in `db upgrade` or `db current`, an unwritable output, report or model path, and a capture that cannot be opened by `monitor -i` print a message and exit 1 instead of a traceback.
+Exit codes: `0` success, `1` failure (including any `doctor` FAIL), `2` invalid usage or configuration, `130` interrupted. Some specifics: `start --port` outside 1-65535, `config --section` with an unknown section, `config set` with a section or key that cannot be set at runtime (the message lists the runtime-editable sections or keys), a nonexistent path given to `rules validate` or `monitor --pcap`, and `block` or `unblock` without a target when not run in a terminal are usage errors (2). `detections --id` or `incidents --id` with an unknown id exits 1, with or without `--json`. An unreachable database in `db upgrade` or `db current`, an unwritable output, report or model path, and a capture that cannot be opened by `monitor -i` print a message and exit 1 instead of a traceback.
 
 ## Dashboard
 
@@ -516,6 +531,7 @@ Threat model and controls: [docs/security.md](docs/security.md). To report a vul
 
 | Document | Topic |
 |---|---|
+| [use-cases.md](docs/use-cases.md) | Who SentinelX is for, scenarios, when to use it and when not to |
 | [architecture.md](docs/architecture.md) | Components, data flow and design decisions |
 | [packet-capture.md](docs/packet-capture.md) | Capture sources, privileges and decoders |
 | [detection-engine.md](docs/detection-engine.md) | Detectors, thresholds, anomaly detection and evasions |
