@@ -418,6 +418,11 @@ def register(app: typer.Typer) -> None:
                 )
 
         run(main)
+        if username == settings.api.bootstrap_admin_username:
+            # A generated first-admin password left behind no longer works.
+            from sentinelx.services.bootstrap import default_password_file, remove_password_file
+
+            remove_password_file(settings.api.bootstrap_password_file or default_password_file())
         console.print(f"[green]password reset[/] for {username}; sessions revoked")
 
     # ----------------------------------------------------------------- metrics

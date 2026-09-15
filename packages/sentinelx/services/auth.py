@@ -161,8 +161,8 @@ class AuthService:
         """Create the first administrator when no users exist.
 
         Returns:
-            The generated password when one had to be generated, so the caller can
-            show it to the operator exactly once. It is never logged.
+            The generated password when one had to be generated, so the caller can hand
+            it to the operator through a private file. It is never logged or printed.
         """
         async with self.database.session() as session:
             users = UserRepository(session)
@@ -179,8 +179,8 @@ class AuthService:
                     username=self.settings.bootstrap_admin_username,
                     password_hash=await self._hash_async(password),
                     role=UserRole.ADMIN.value,
-                    # A generated password was shown on a terminal; make the first
-                    # login replace it.
+                    # A generated password sat in a file; make the first login
+                    # replace it.
                     must_change_password=generated is not None,
                 )
             )
@@ -238,8 +238,12 @@ class AuthService:
             await self._revoke_access_token(principal.token_id)
         return pair
 
-    async def set_password(self, user_id: int, new: str) -> None:
-        """Administrative reset. Forces a change at next login and revokes sessions."""
+    async def set_password(self, user_id: int, new: str) -> str:
+        """Administrative reset. Forces a change at next login and revokes sessions.
+
+        Returns:
+            The username whose password was reset.
+        """
         async with self.database.session() as session:
             user = await UserRepository(session).get(user_id)
             if user is None:
@@ -259,6 +263,7 @@ class AuthService:
             await users.end_sessions(user.id)
         await self.state.cache_pop(f"login-lock:{username.lower()}")
         await self.state.reset("login-fail-account", username.lower())
+        return username
 
     # ------------------------------------------------------------------ login
 

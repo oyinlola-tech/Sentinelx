@@ -25,6 +25,12 @@ from sentinelx.features.extractor import FeatureExtractor
 from sentinelx.firewall import FirewallAdapter, create_firewall
 from sentinelx.pipeline import Pipeline
 from sentinelx.services.auth import AuthService
+from sentinelx.services.bootstrap import (
+    BootstrapSecretError,
+    default_password_file,
+    remove_password_file,
+    write_password_file,
+)
 from sentinelx.services.config import WINDOW_FIELDS, ConfigService
 from sentinelx.services.queries import QueryService
 from sentinelx.services.replay import ReplayService
@@ -66,7 +72,10 @@ class Platform:
         self.queries: QueryService | None = None
         self.persister: EventPersister | None = None
         self.intel: ThreatIntelService | None = None
-        self.bootstrap_password: str | None = None
+        #: A generated first-admin password is waiting in this file to be replaced.
+        self.bootstrap_password_file: Path | None = None
+        #: The file could not be written; the operator must reset the password instead.
+        self.bootstrap_password_undelivered = False
         self._background: list[asyncio.Task[None]] = []
         self._sampler = ProcessSampler()
         self._capabilities: tuple[float, dict[str, Any]] | None = None
@@ -129,7 +138,9 @@ class Platform:
         )
         self.queries = QueryService(self.database, self.pipeline)
         if bootstrap:
-            self.bootstrap_password = await self.auth.ensure_bootstrap_admin()
+            generated = await self.auth.ensure_bootstrap_admin()
+            if generated is not None:
+                self._deliver_bootstrap_password(generated)
 
         if background:
             self._background.append(asyncio.create_task(self._health_loop(), name="health"))
@@ -168,6 +179,25 @@ class Platform:
             from sentinelx.parser.decoder import PacketDecoder
 
             pipeline.decoder = PacketDecoder(parse_networks(self.settings.capture.home_networks))
+
+    def _deliver_bootstrap_password(self, password: str) -> None:
+        """Put a generated first-admin password in its private file; never print it."""
+        path = self.settings.api.bootstrap_password_file or default_password_file()
+        try:
+            self.bootstrap_password_file = write_password_file(path, password)
+        except BootstrapSecretError as exc:
+            self.bootstrap_password_undelivered = True
+            log.error("bootstrap_password_file_failed", path=str(path), error=str(exc))
+
+    def bootstrap_password_replaced(self, username: str) -> None:
+        """The first administrator chose a password: the generated one is useless now."""
+        if (
+            self.bootstrap_password_file is not None
+            and username == self.settings.api.bootstrap_admin_username
+        ):
+            remove_password_file(self.bootstrap_password_file)
+            self.bootstrap_password_file = None
+            self.bootstrap_password_undelivered = False
 
     async def _settle_storage(self) -> None:
         """Wait (bounded) until queued events are handled and written to the database."""

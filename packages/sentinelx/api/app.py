@@ -46,6 +46,15 @@ block passes the safety guard whether it came from a detector or a person.
 """
 
 
+def _notice(*lines: str) -> None:
+    rule = "=" * 72
+    print(
+        "\n".join(["", rule, *(f"  {line}" for line in lines), rule, ""]),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def create_app(settings: Settings | None = None, *, platform: Platform | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -57,17 +66,21 @@ def create_app(settings: Settings | None = None, *, platform: Platform | None = 
         if owned:
             configure_logging(settings.telemetry, sensor_name=settings.sensor_name)
             await instance.start()
-        if instance.bootstrap_password:
-            # Printed once to the console, never logged: logs are shipped and retained.
-            print(
-                "\n" + "=" * 72 + "\n"
-                f"  SentinelX created the administrator account '{settings.api.bootstrap_admin_username}'.\n"
-                f"  One-time password: {instance.bootstrap_password}\n"
-                "  You will be asked to change it at first login. It will not be shown again.\n"
-                + "=" * 72
-                + "\n",
-                file=sys.stderr,
-                flush=True,
+        admin = settings.api.bootstrap_admin_username
+        # The password itself is never printed: console output is kept by docker logs,
+        # the systemd journal and log shippers. Only where to find it is shown.
+        if instance.bootstrap_password_file is not None:
+            _notice(
+                f"SentinelX created the administrator account '{admin}'.",
+                f"Its one-time password is in {instance.bootstrap_password_file}",
+                "(readable only by this account). Sign in and change it; the file is",
+                "then deleted.",
+            )
+        elif instance.bootstrap_password_undelivered:
+            _notice(
+                f"SentinelX created the administrator account '{admin}', but could not",
+                "store its generated password safely (see the log for why).",
+                f"Set one with: sentinelx users reset-password {admin}",
             )
         try:
             yield

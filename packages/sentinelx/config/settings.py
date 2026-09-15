@@ -562,7 +562,14 @@ class ApiSettings(BaseModel):
     bootstrap_admin_password: str = Field(
         default="",
         description="Used only to create the first admin when the user table is empty. "
-        "If unset, a password is generated and printed once at startup.",
+        "If unset, a password is generated and written to bootstrap_password_file.",
+    )
+    bootstrap_password_file: Path | None = Field(
+        default=None,
+        description="Where a generated first-admin password is written, readable only by "
+        "the service account, and removed once the password is changed. Default: "
+        "<temp directory>/sentinelx-<uid>/initial-admin-password. It is never printed, "
+        "because console output is kept by docker logs and the systemd journal.",
     )
 
     rate_limit_requests: int = Field(default=300, ge=1)

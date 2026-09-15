@@ -37,7 +37,9 @@ async def status(principal: Viewer, platform: PlatformDep) -> dict[str, Any]:
         }
     pipeline, _, _, _ = platform.require()
     report["pipeline"] = pipeline.status()
-    report["bootstrap_admin_pending"] = platform.bootstrap_password is not None
+    report["bootstrap_admin_pending"] = (
+        platform.bootstrap_password_file is not None or platform.bootstrap_password_undelivered
+    )
     return report
 
 

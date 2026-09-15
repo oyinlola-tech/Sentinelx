@@ -174,6 +174,7 @@ async def change_password(
     platform: PlatformDep,
 ) -> TokenResponse:
     pair = await platform.auth.change_password(principal, body.current_password, body.new_password)
+    platform.bootstrap_password_replaced(principal.username)
     await platform.audit.record(
         actor=principal.username,
         action="CHANGE_PASSWORD",
@@ -296,7 +297,8 @@ async def reset_password(
     request: Request,
     platform: PlatformDep,
 ) -> Response:
-    await platform.auth.set_password(user_id, body.new_password)
+    username = await platform.auth.set_password(user_id, body.new_password)
+    platform.bootstrap_password_replaced(username)
     await platform.audit.record(
         actor=principal.username,
         action="RESET_PASSWORD",
