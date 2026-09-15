@@ -88,7 +88,7 @@ function LoginForm() {
       </Button>
       <p className="flex items-start gap-1.5 text-xs text-fog">
         <Lock className="mt-0.5 size-3 shrink-0" aria-hidden />
-        First run? The administrator password is printed once in the server console, and you will be asked to change it.
+        First run? The server console shows where the one-time administrator password is stored. You will be asked to change it.
       </p>
     </form>
   );
