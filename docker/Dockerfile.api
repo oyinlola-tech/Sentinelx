@@ -22,7 +22,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /wheels /wheels
-RUN pip install /wheels/*.whl && rm -rf /wheels
+# pip is only needed to install the wheels: remove it so the runtime image does not ship
+# the base image's installer (and its advisories).
+RUN pip install /wheels/*.whl && rm -rf /wheels \
+ && python3 -m pip uninstall -y pip
 
 # Live capture and firewall changes need CAP_NET_RAW / CAP_NET_ADMIN. They are granted
 # to a *separate* interpreter used only by the capture sensor. Setting file

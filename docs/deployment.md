@@ -846,6 +846,9 @@ resolves to no usable backend; actions then fail with the reason.)
 | `STORAGE__DATABASE_URL` | `DATABASE_URL` | `sqlite+aiosqlite:///./sentinelx.db` | no | SQLAlchemy URL. `postgresql://` and `postgres://` are mapped to the asyncpg driver; `sqlite://` to aiosqlite. PostgreSQL is the production target. |
 | `STORAGE__DATABASE_ECHO` | | `false` | no | Log SQL statements. |
 | `STORAGE__POOL_SIZE` | | `10` | no | Connection pool size for PostgreSQL (at least 1). |
+| `STORAGE__CONNECT_TIMEOUT_SECONDS` | | `10` | no | PostgreSQL: seconds to establish a connection (0 < value ≤ 300). |
+| `STORAGE__STATEMENT_TIMEOUT_SECONDS` | | `60` | no | PostgreSQL: seconds a single statement may run before it is abandoned (0 < value ≤ 3600). |
+| `STORAGE__POOL_TIMEOUT_SECONDS` | | `10` | no | PostgreSQL: seconds to wait for a free pooled connection (0 < value ≤ 300). |
 | `STORAGE__MAX_OVERFLOW` | | `20` | no | Extra connections beyond the pool for PostgreSQL (at least 0). |
 | `STORAGE__REDIS_URL` | `REDIS_URL` | `redis://localhost:6379/0` | no | Redis URL. |
 | `STORAGE__REDIS_REQUIRED` | | `false` | no | When false, Redis failures degrade to in-process state instead of failing. |

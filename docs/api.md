@@ -512,7 +512,7 @@ Error bodies are JSON with a `detail` field. Handlers are installed in
 | 429 | API or login rate limit | `{"detail": "rate limit exceeded"}` or `{"detail": "too many login attempts; try again later"}` + `Retry-After` |
 | 502 | Firewall command failed | `{"detail": "firewall operation failed: ..."}` |
 | 507 | Upload refused because the upload area already holds `CAPTURE__UPLOAD_QUOTA_MB` or more | `{"detail": "the upload area is full (...); delete old uploads or raise CAPTURE__UPLOAD_QUOTA_MB"}` |
-| 503 | Database unavailable: at startup, or during a request (a lost or refused connection, or an exhausted connection pool: SQLAlchemy `OperationalError`, `InterfaceError`, `DisconnectionError` or pool `TimeoutError`) | `{"detail": "storage unavailable", "error_id": "<12 hex chars>"}` |
+| 503 | Database unavailable: at startup, or during a request (a lost or refused connection, an unresolvable database host, a connect timeout, or an exhausted connection pool: SQLAlchemy `OperationalError`, `InterfaceError`, `DisconnectionError` or pool `TimeoutError`, and network errors raised by the database driver) | `{"detail": "storage unavailable", "error_id": "<12 hex chars>"}` |
 | 500 | Unexpected error | `{"detail": "internal error", "error_id": "<12 hex chars>"}` |
 
 For 500 and 503 the exception detail is written to the server log under the same

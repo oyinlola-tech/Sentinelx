@@ -132,7 +132,7 @@ The engine keeps a registry of active entries keyed by canonical network. Target
 
 `ResponseEngine._automatic` handles each proposed action in this order:
 
-1. **Already blocked or rate limited.** If the target is already blocked, any preventive action is `skipped` with the reason suffix `; already blocked`. If the target is rate limited, a further `rate_limit` is `skipped` with `; already rate limited`, but a block proceeds and replaces the rate limit (escalation). A rate limit therefore never replaces a block, which would downgrade it and, on expiry, remove it. These skips are not published or audited.
+1. **Already blocked or rate limited.** If the target is already blocked, any preventive action is `skipped` with the reason suffix `; already blocked`. If the target is rate limited, a further `rate_limit` is `skipped` with `; already rate limited`, but a block proceeds and replaces the rate limit (escalation). A rate limit therefore never replaces a block, which would downgrade it and, on expiry, remove it. These skips are not published or audited. The same rule applies to a manual or approved rate limit: on an address that is already blocked it fails with `<network> is blocked; unblock it first to rate limit it instead`.
 2. **`detect_only`.** The decision is `skipped` and audited.
 3. **Safety guard.** If the guard refuses the target, the decision is `failed` with the error `safety guard: <reason>`, and it is audited. This check runs **before** queueing, so an administrator is never asked to approve an action that cannot be carried out.
 4. **`manual_approval`.** A `PendingAction` is queued with action, target, reason, risk, duration, detection or incident id, evidence, `action_id` and `created_at`, and `response.pending_approval` is published. If an action of the same type for the same target is already pending, no duplicate is queued. The decision is `pending_approval`. See [Manual approval](#manual-approval) for the queue's limits.
@@ -573,6 +573,7 @@ The server writes both through its event persister.
    - **Environment (recommended):** set `RESPONSE_MODE=automatic` and `DRY_RUN=false`, then restart. Check that the startup banner reads `PREVENTION ACTIVE - automatic responses are enforced and will modify the <backend> firewall on this host`.
    - **Dashboard:** in Settings, under Response mode, choose Automatic, clear dry run and save. A dialog asks you to type the confirmation phrase `ENABLE PREVENTION`.
    - **API:** send `PATCH /api/v1/config/response` (administrator role). A change that turns dry run off, or that makes automatic prevention active, is refused without the exact phrase: `this change allows SentinelX to modify this host's firewall; resend with confirmation 'ENABLE PREVENTION'`.
+   - Either way, the change is also refused (422) while the configured firewall reports itself unusable, for example without `CAP_NET_ADMIN` or with the tool missing: `the nftables firewall cannot be used on this host (...); prevention was not enabled`. SentinelX never shows `PREVENTION ACTIVE` for a firewall it cannot change.
 
      ```
      {"changes": {"mode": "automatic", "dry_run": false}, "confirmation": "ENABLE PREVENTION"}

@@ -382,6 +382,7 @@ class TestPreventionNeedsAWorkingFirewall:
             return {"backend": "nftables", "ok": False, "error": "Operation not permitted"}
 
         platform.config.firewall_probe = unusable
+        platform.settings.response.firewall_backend = "nftables"  # configured, but unusable
         refused = await client.patch(
             "/config/response",
             headers=admin,
