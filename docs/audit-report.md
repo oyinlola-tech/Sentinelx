@@ -367,7 +367,7 @@ The skips in the main run are the kernel tests, which run separately through `ma
 | Detections naming the target (172.22.0.4) across the whole run | 0 (33 live detections in total) |
 | Dashboard | Every page screenshotted with this data, no page errors; the images in `docs/images/` are from this run |
 
-Earlier runs of the same script found the five defects listed under "Resolved after the first report" as found by the live attack run. The stack's API image, dashboard image and tests were rebuilt and re-run after each fix.
+Earlier runs of the same script found the attribution, SYN flood, own-traffic, brute-force evidence and dashboard defects in section 4 ("Resolved after the first report"). After the fixes, the images were rebuilt and the whole run repeated from a fresh stack; the results above are from that final run.
 
 ## 8. Known limitations
 

@@ -96,16 +96,16 @@ What the run shows:
 
 <table>
   <tr>
-    <td width="50%"><a href="docs/images/incident.png"><img src="docs/images/incident.png" alt="Incident page: Reconnaissance with service disruption, risk 100, timeline, correlated detections and response decisions"></a><br><sub><b>Incident.</b> A scan, then floods, from one host: the timeline, the risk breakdown and the blocks the engine would have applied in detection-only mode.</sub></td>
-    <td width="50%"><a href="docs/images/detection.png"><img src="docs/images/detection.png" alt="Detection page for a SYN flood with four pieces of evidence and a risk score of 91"></a><br><sub><b>Detection.</b> A SYN flood with its evidence: 2,000 SYNs to one port, none completing a handshake, and why its risk is 91.</sub></td>
+    <td width="50%"><a href="docs/images/incident.png"><img src="docs/images/thumbs/incident.png" alt="Incident page: Reconnaissance with service disruption, risk 100, timeline, correlated detections and response decisions"></a><br><sub><b>Incident.</b> A scan, then floods, from one host: the timeline, the risk breakdown and the blocks the engine would have applied in detection-only mode.</sub></td>
+    <td width="50%"><a href="docs/images/detection.png"><img src="docs/images/thumbs/detection.png" alt="Detection page for a SYN flood with four pieces of evidence and a risk score of 91"></a><br><sub><b>Detection.</b> A SYN flood with its evidence: 2,000 SYNs to one port, none completing a handshake, and why its risk is 91.</sub></td>
   </tr>
   <tr>
-    <td><a href="docs/images/firewall.png"><img src="docs/images/firewall.png" alt="Firewall page with prevention active and one temporary block"></a><br><sub><b>Firewall.</b> Prevention active on nftables, and the temporary block on the attacker with the incident that caused it.</sub></td>
-    <td><a href="docs/images/threats.png"><img src="docs/images/threats.png" alt="Threats page ranking attacking hosts by risk"></a><br><sub><b>Threats.</b> Attacking hosts ranked by the worst thing each one did.</sub></td>
+    <td><a href="docs/images/firewall.png"><img src="docs/images/thumbs/firewall.png" alt="Firewall page with prevention active and one temporary block"></a><br><sub><b>Firewall.</b> Prevention active on nftables, and the temporary block on the attacker with the incident that caused it.</sub></td>
+    <td><a href="docs/images/threats.png"><img src="docs/images/thumbs/threats.png" alt="Threats page ranking attacking hosts by risk"></a><br><sub><b>Threats.</b> Attacking hosts ranked by the worst thing each one did.</sub></td>
   </tr>
   <tr>
-    <td><a href="docs/images/lab.png"><img src="docs/images/lab.png" alt="PCAP Lab replay report with throughput, latency, an incident, simulated decisions and detections"></a><br><sub><b>PCAP Lab.</b> A generated capture replayed through the same pipeline, with measured throughput and latency. Responses in a replay are always simulated.</sub></td>
-    <td><a href="docs/images/audit.png"><img src="docs/images/audit.png" alt="Audit log listing logins, prevention being enabled, the automatic block and the unblock"></a><br><sub><b>Audit log.</b> Prevention being enabled, the automatic block, the unblock and every sign-in, with who and from where.</sub></td>
+    <td><a href="docs/images/lab.png"><img src="docs/images/thumbs/lab.png" alt="PCAP Lab replay report with throughput, latency, an incident, simulated decisions and detections"></a><br><sub><b>PCAP Lab.</b> A generated capture replayed through the same pipeline, with measured throughput and latency. Responses in a replay are always simulated.</sub></td>
+    <td><a href="docs/images/audit.png"><img src="docs/images/thumbs/audit.png" alt="Audit log listing logins, prevention being enabled, the automatic block and the unblock"></a><br><sub><b>Audit log.</b> Prevention being enabled, the automatic block, the unblock and every sign-in, with who and from where.</sub></td>
   </tr>
 </table>
 
