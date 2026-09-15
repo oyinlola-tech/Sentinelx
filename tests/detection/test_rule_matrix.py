@@ -112,7 +112,9 @@ class TestDirectoryLoading:
             locked.chmod(0o600)
 
         root = hasattr(os, "geteuid") and os.geteuid() == 0  # root reads mode-000 files
-        assert [r.id for r in result.rules] == (["locked", "survivor"] if root else ["survivor"])
+        assert sorted(r.id for r in result.rules) == (
+            ["locked", "survivor"] if root else ["survivor"]
+        )
         joined = "\n".join(result.problems)
         assert "dangling.yml: not a regular file" in joined
         assert "directory.yml: not a regular file" in joined

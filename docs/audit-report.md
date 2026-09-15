@@ -178,6 +178,17 @@ Line references are approximate: the files changed during the pass. "Verified" n
 - **Docker:** the runtime image shipped `pip` 25.0.1 with published advisories; it is now removed.
 - **Frontend headers:** dashboard pages sent no Content-Security-Policy; a production CSP was added and verified in the browser.
 
+### Found on the clean machine (newer dependency releases)
+
+A fresh install resolved Typer 0.27, Click 8.5, FastAPI 0.141 and Starlette 1.6, where the development environment had Typer 0.20, Click 8.3, FastAPI 0.135 and Starlette 1.3. That exposed two product defects and three test assumptions:
+
+| Severity | Location | Problem | Root cause | Fix | Verification |
+|---|---|---|---|---|---|
+| Medium | `cli/security.py` | On a fresh install, `sentinelx block` or `unblock` without a target in a script crashed with an exception (exit 1) instead of a usage message (exit 2) | Typer 0.27 vendors its own copy of Click, so a `click.UsageError` from the installed click package is not recognised | Message on stderr and `typer.Exit(2)`; no direct Click imports remain in the product | CLI matrix passes under both Typer releases; `sentinelx block` in the rebuilt image exits 2 |
+| Low | `api/security.py` | Prometheus `path` labels lost the `/api/v1` prefix under FastAPI 0.141, changing metric series (and breaking dashboards or alert rules) with the dependency version | Newer FastAPI matches the router's own route, whose path has no include prefix | Labels normalised to the full template | Same labels under FastAPI 0.135 and 0.141 |
+| Test | `tests/unit/test_cli_matrix.py`, `tests/api/test_endpoint_matrix.py` | Command tree and route table introspection found nothing | The same vendoring, and FastAPI 0.141 keeping included routers as lazy entries | Version-independent walking | Pass on both environments |
+| Test | `tests/detection/test_rule_matrix.py` | The unreadable-file assertion failed as root | Root can read mode-000 files | Root-aware assertion | Passes as root and as a user |
+
 ### Test infrastructure
 
 - Log-capture tests failed depending on test order, because structlog caches module loggers on first use; `tests/conftest.py` now uncaches them.
@@ -304,7 +315,7 @@ Synthetic traffic with known ground truth, 5 runs each:
 | Unprivileged-container honesty checks (final images) | Capture 409; block `failed` with the real nftables error; prevention refused 422; banner stays DETECTION ONLY |
 | Frontend failure states (final dashboard) | 7/7 |
 | Browser smoke test under the new CSP | 15/15 |
-| Clean-machine run of the final working tree (`python:3.12-slim`, README steps) | Install, fixture generation, replay, capabilities, doctor, `pip check`: all pass; suite: CLEAN_RESULT |
+| Clean-machine run of the final working tree (`python:3.12-slim`, README steps, newest releases from PyPI) | Install, fixture generation, replay, capabilities, doctor and `pip check` pass. Full suite: 1,777 passed, 40 skipped, 5 failed on the first run, 1 failed on the second (details below); all fixed, and the failing tests re-run and pass there. Locally, the affected suites pass (742 passed, 1 skipped) |
 | Clean-machine install of the committed source before this pass's fixes | 476 passed, 15 skipped; dashboard built and served through its proxy |
 | Security checks | pip-audit: 0 vulnerabilities (runtime closure and image); npm audit: 0; secret scan of logs during auth flows: nothing found; `.env` not tracked |
 
@@ -337,8 +348,9 @@ Only genuine unresolved problems are listed.
 7. **Low:** the threats view ranks only the 500 highest-risk detections in its window, so per-source counts can be cut off on busy windows.
 8. **Low:** `doctor`'s database check creates an empty SQLite file when none exists.
 9. **Low:** `config set` with an unknown section exits 1 instead of 2.
-10. **Low:** unused settings (`scoring.incident_threshold`, `anomaly.ml_contamination`, `telemetry.metrics_enabled`, `metrics_path`, `profile_pipeline`); `HttpReputationProvider` is not wired in.
-11. **Process:**
+10. **Medium (process):** dependency ranges are open-ended (for example `fastapi>=0.110`, `typer>=0.12`). This pass showed that new upstream releases change behaviour: Typer vendoring Click, FastAPI's router layout. There is no lock or constraints file, and no CI job against the newest releases. Add tested upper bounds or a constraints file, plus a scheduled job against the latest versions.
+11. **Low:** unused settings (`scoring.incident_threshold`, `anomaly.ml_contamination`, `telemetry.metrics_enabled`, `metrics_path`, `profile_pipeline`); `HttpReputationProvider` is not wired in.
+12. **Process:**
     - Run the Windows and macOS CI jobs and fix what they find.
     - Test capture and firewall control on real Windows, macOS and WSL2 hosts.
     - Re-run ARM64 on native hardware.
