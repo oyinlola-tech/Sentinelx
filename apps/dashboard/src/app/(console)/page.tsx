@@ -113,6 +113,7 @@ function InstrumentStrip({ overview, livePps, loading }: { overview?: Overview; 
     { label: "Blocked", value: compact(overview?.blocked_sources), detail: overview?.pending_approvals ? `${overview.pending_approvals} awaiting approval` : "sources", href: "/firewall" },
     { label: "Health", value: overview?.health ?? "—", tone: overview?.health === "ok" ? "text-ok" : overview?.health === "degraded" ? "text-sev-medium" : overview?.health ? "text-sev-critical" : undefined, href: "/settings#health" },
   ];
+  // Seven readouts follow the risk cell; the last one widens so no row ends in an empty cell.
   return (
     <div className="panel grid grid-cols-2 divide-line sm:grid-cols-4 xl:grid-cols-8 xl:divide-x" aria-busy={loading}>
       <div className="col-span-2 flex items-center gap-4 border-b border-line px-4 py-3 sm:col-span-4 xl:col-span-1 xl:flex-col xl:items-start xl:justify-center xl:border-b-0">
@@ -129,9 +130,9 @@ function InstrumentStrip({ overview, livePps, loading }: { overview?: Overview; 
           </>
         );
         return readout.href ? (
-          <Link key={readout.label} href={readout.href} className="border-b border-line px-4 py-3 hover:bg-raised xl:border-b-0">{body}</Link>
+          <Link key={readout.label} href={readout.href} className="border-b border-line px-4 py-3 hover:bg-raised xl:border-b-0 last:col-span-2 last:border-b-0 sm:[&:nth-last-child(-n+3)]:border-b-0 xl:last:col-span-1">{body}</Link>
         ) : (
-          <div key={readout.label} className="border-b border-line px-4 py-3 xl:border-b-0">{body}</div>
+          <div key={readout.label} className="border-b border-line px-4 py-3 xl:border-b-0 last:col-span-2 last:border-b-0 sm:[&:nth-last-child(-n+3)]:border-b-0 xl:last:col-span-1">{body}</div>
         );
       })}
     </div>
