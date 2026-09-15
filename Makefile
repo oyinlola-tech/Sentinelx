@@ -127,8 +127,12 @@ docker-down: ## Stop the stack (data volumes are kept)
 	docker compose down
 
 .PHONY: docker-logs
-docker-logs: ## Follow API logs (shows the one-time admin password on first start)
+docker-logs: ## Follow API logs
 	docker compose logs -f api
+
+.PHONY: docker-admin-password
+docker-admin-password: ## Show the generated first-admin password (first start only; never in the logs)
+	docker compose exec api cat /tmp/sentinelx/initial-admin-password
 
 # ------------------------------------------------------------------ misc
 .PHONY: clean
