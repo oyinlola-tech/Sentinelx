@@ -227,6 +227,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         route = request.scope.get("route")
         template = getattr(route, "path", "unmatched")
+        # FastAPI >= 0.14x matches the router's own route, whose path lacks the
+        # include prefix; label with the full template on every version so metric
+        # series (and dashboards built on them) do not change with the dependency.
+        if template != "unmatched" and not template.startswith("/api/"):
+            template = "/api/v1" + template
         metrics.api_requests.labels(
             method=request.method, path=template, status=str(response.status_code)
         ).inc()
