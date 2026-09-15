@@ -12,7 +12,7 @@ To report a vulnerability, follow [SECURITY.md](../SECURITY.md). Do not include 
 | Captured traffic metadata | Addresses, DNS names, HTTP hosts and paths, TLS server names. This is personal data in many jurisdictions. |
 | Uploaded capture files | Full packet contents, including any cleartext credentials they happen to contain. |
 | User accounts and sessions | An administrator can enable prevention and block addresses. |
-| Configuration and secrets | `JWT_SECRET`, database and Redis credentials, the metrics token, the webhook URL (which often embeds a secret), reputation API keys. |
+| Configuration and secrets | `JWT_SECRET`, database and Redis credentials, the metrics token, the webhook URL (which often embeds a secret). |
 | Detection integrity | An attacker who can suppress or forge detections can hide or frame activity. |
 
 | Boundary | Untrusted side |
