@@ -66,10 +66,21 @@ class IntervalSample:
     dns_sources: Counter[str] = field(default_factory=Counter)
     icmp_sources: Counter[str] = field(default_factory=Counter)
 
-    def observe(self, packet: PacketEvent, *, solicited_reply: bool = False) -> None:
+    def observe(
+        self, packet: PacketEvent, *, solicited_reply: bool = False, response: bool = False
+    ) -> None:
+        """Count one packet.
+
+        Args:
+            solicited_reply: an ICMP echo reply to a request.
+            response: the packet comes from the side that did not open its flow. Rates
+                count it; attribution does not, so the source blamed for a spike is
+                whoever drove it rather than whoever answered.
+        """
         self.packets += 1
         self.bytes_total += packet.length
-        self.sources[packet.src_ip] += 1
+        if not response:
+            self.sources[packet.src_ip] += 1
         if packet.tcp_flags is not None and packet.tcp_flags.is_syn_only:
             self.syns += 1
             self.syn_sources[packet.src_ip] += 1
@@ -77,7 +88,7 @@ class IntervalSample:
             self.icmp += 1
             # The rate counts every ICMP packet, but a host answering pings is not a
             # contributor to blame: attribution goes to whoever sent the requests.
-            if not solicited_reply:
+            if not (solicited_reply or response):
                 self.icmp_sources[packet.src_ip] += 1
         dns = packet.metadata.get("dns")
         if isinstance(dns, dict) and not dns.get("is_response"):
@@ -152,7 +163,12 @@ class StatisticalAnomalyDetector(Detector):
         if now - self._current.start >= self.interval:  # very long gap: resynchronise
             self._current = IntervalSample(start=now)
 
-        self._current.observe(packet, solicited_reply=context.solicited_reply)
+        # SentinelX's own storage traffic is not part of the network being watched: the
+        # dashboard loading a page would otherwise read as a traffic spike.
+        if not context.own_traffic:
+            self._current.observe(
+                packet, solicited_reply=context.solicited_reply, response=context.is_response
+            )
         self.evaluations += 1
         return self._pending.pop(0) if self._pending else None
 

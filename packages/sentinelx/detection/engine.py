@@ -161,6 +161,12 @@ class DetectionEngine:
             return []
         started = time.perf_counter()
         results: list[Detection] = []
+        if self._own_traffic is not None:
+            packet = context.packet
+            # Both directions: queries to the database and its answers.
+            context.own_traffic = self._own_traffic(
+                packet.src_ip, packet.dst_ip, packet.dst_port
+            ) or self._own_traffic(packet.dst_ip, packet.src_ip, packet.src_port)
 
         for detector in self.detectors:
             if not detector.enabled:

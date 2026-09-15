@@ -226,3 +226,68 @@ class TestOwnStorageTraffic:
         assert "auth_brute_force" in {
             d.detector for d in run_detection(attack.frames, settings, engine)
         }
+
+
+class TestAnomalyAttribution:
+    """The victim of an HTTP flood answered 1:1 and was blamed for the packet-rate spike
+    (51% of packets); SentinelX's own database chatter while the dashboard loaded was
+    reported as an unusual packet rate from the sensor."""
+
+    def contexts(self, packets: list[tuple[bytes, float]], engine: DetectionEngine | None = None):  # type: ignore[no-untyped-def]
+        decoder, extractor = PacketDecoder(), FeatureExtractor()
+        for data, ts in packets:
+            packet = decoder.decode(data, ts)
+            assert packet is not None
+            context = extractor.process(packet)
+            if engine is not None:
+                engine.evaluate(context)
+            yield packet, context
+
+    def test_the_server_answering_a_flood_is_not_the_top_contributor(self) -> None:
+        from sentinelx.anomaly.statistical import IntervalSample
+
+        packets: list[tuple[bytes, float]] = []
+        for i in range(300):
+            ts, port = BASE_TIME + i * 0.003, 40000 + i
+            packets += [
+                (build_tcp(ATTACKER, TARGET, port, 8000, flags="S"), ts),
+                (build_tcp(TARGET, ATTACKER, 8000, port, flags="SA"), ts + 0.0001),
+                (build_tcp(ATTACKER, TARGET, port, 8000, flags="A"), ts + 0.0002),
+                (
+                    build_tcp(TARGET, ATTACKER, 8000, port, flags="PA", payload=b"x" * 200),
+                    ts + 0.0003,
+                ),
+                (build_tcp(TARGET, ATTACKER, 8000, port, flags="FA"), ts + 0.0004),
+            ]
+        sample = IntervalSample(start=BASE_TIME)
+        for packet, context in self.contexts(packets):
+            sample.observe(
+                packet, solicited_reply=context.solicited_reply, response=context.is_response
+            )
+        source, count, _ = sample.top_contributor("packets_per_second") or ("", 0, 0)
+        assert source == ATTACKER and count == 600  # the target sent 900 packets, all answers
+        assert sample.packets == 1500  # the rate itself still counts every packet
+
+    def test_own_storage_traffic_stays_out_of_the_baselines(self) -> None:
+        from sentinelx.anomaly import StatisticalAnomalyDetector
+
+        own = OwnServiceTraffic(
+            ["postgresql://sentinelx@postgres:5432/sentinelx"],
+            local_addresses=lambda: frozenset({TARGET}),
+            resolve=lambda host: ["172.22.0.3"],
+        )
+        detector = StatisticalAnomalyDetector()
+        engine = DetectionEngine(DetectionSettings(), detectors=[detector], own_traffic=own.matches)
+        packets: list[tuple[bytes, float]] = []
+        for i in range(50):
+            ts, port = BASE_TIME + i * 0.01, 50000 + i
+            packets += [
+                (build_tcp(TARGET, "172.22.0.3", port, 5432, flags="PA", payload=b"Q" * 40), ts),
+                (
+                    build_tcp("172.22.0.3", TARGET, 5432, port, flags="PA", payload=b"D" * 400),
+                    ts + 0.001,
+                ),
+            ]
+        seen = [context.own_traffic for _, context in self.contexts(packets, engine)]
+        assert all(seen)
+        assert detector._current is not None and detector._current.packets == 0

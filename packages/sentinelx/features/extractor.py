@@ -110,6 +110,18 @@ class FeatureContext:
     solicited_reply: bool = False
     """The packet answers a request its destination sent (an ICMP echo reply to an
     echo request), so it says nothing about what its sender set out to do."""
+    own_traffic: bool = False
+    """SentinelX's own traffic to or from its database or Redis. Set by the detection
+    engine; detectors that build network-wide baselines leave it out."""
+
+    @property
+    def is_response(self) -> bool:
+        """The packet travels from the side that did not open the conversation.
+
+        A server answering a flood sends about as many packets as the flooder; counted
+        as its own activity, it can look like the busiest source on the network.
+        """
+        return self.solicited_reply or self.packet.src_ip != self.flow.initiator_ip
 
     #: Populated lazily by :meth:`features` - built at most once per packet even
     #: when several detectors ask for it.

@@ -266,6 +266,8 @@ class MlAnomalyDetector(Detector):
         return max(0.0, min(1.0, (self.bundle.score_ceiling - raw) / span))
 
     def inspect(self, context: FeatureContext) -> Detection | None:
+        if context.own_traffic:
+            return None  # SentinelX talking to its own database or Redis
         source = context.profile.source_ip
         now = context.now
         packets = len(context.profile.packets)
