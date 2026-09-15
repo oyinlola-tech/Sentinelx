@@ -136,7 +136,7 @@ Throughput, latency and resource figures are measured on the machine running the
 
 ### With --persist
 
-`--persist` starts the same replay service the API uses, so the run appears in the dashboard's PCAP Lab. The service only reads files inside `PCAP_DIRECTORY` (default `./pcaps`); a file elsewhere is first copied to `PCAP_DIRECTORY/cli/<filename>`, replacing any earlier copy with the same name. The command waits for the replay to finish (a replay is reported `completed` only after its results are written), then waits one further storage flush interval, prints `stored as replay <id>; view it in the PCAP Lab` on stderr, and exits with code 1 if the replay did not complete.
+`--persist` starts the same replay service the API uses, so the run appears in the dashboard's PCAP Lab. The service only reads files inside `PCAP_DIRECTORY` (default `./pcaps`); a file elsewhere is first copied to `PCAP_DIRECTORY/cli/<filename>`, replacing any earlier copy with the same name. The command waits for the replay to finish (a replay is reported `completed` only after its results are written), then prints `stored as replay <id>; view it in the PCAP Lab` on stderr, and exits with code 1 if the replay did not complete.
 
 A persisted run requires a working database (`DATABASE_URL`). Redis is optional; without it the platform logs a degraded-mode warning and continues.
 

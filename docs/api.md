@@ -176,11 +176,10 @@ valid names. An administrator's password reset clears the account lock; it does 
 clear a per-address lock, which ends with its window.
 
 Argon2 hashing and verification run in worker threads, sharing one limit of 4
-concurrent operations per process (login verification, user creation, the bootstrap
-administrator, password changes and resets), so a login flood neither blocks the
-event loop nor exhausts memory. The one exception is re-hashing a password at login
-when the stored hash uses outdated Argon2 parameters, which runs in a worker thread
-outside that limit.
+concurrent operations per process (login verification, re-hashing at login when the
+stored hash uses outdated parameters, user creation, the bootstrap administrator,
+password changes and resets), so a login flood neither blocks the event loop nor
+exhausts memory.
 
 ### Forced password change
 

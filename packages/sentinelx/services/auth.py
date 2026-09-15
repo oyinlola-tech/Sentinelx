@@ -367,9 +367,7 @@ class AuthService:
             raise AuthError(_GENERIC_FAILURE)
 
         rehash = (
-            await self._hash_async(password)
-            if _hasher.check_needs_rehash(password_hash)
-            else None
+            await self._hash_async(password) if _hasher.check_needs_rehash(password_hash) else None
         )
         async with self.database.session() as session:
             users = UserRepository(session)
