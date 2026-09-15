@@ -108,7 +108,7 @@ export default function LoginPage() {
         {/* The scope: graticule fading out from the centre, range rings off to the right. */}
         <div className="graticule pointer-events-none absolute inset-0 [mask-image:radial-gradient(ellipse_at_40%_45%,black_20%,transparent_75%)]" aria-hidden />
         <div className="range-rings pointer-events-none absolute top-1/2 right-[-18rem] size-[64rem] -translate-y-1/2 rounded-full opacity-40 [mask-image:radial-gradient(circle,black_35%,transparent_70%)]" aria-hidden>
-          <div className="absolute inset-0 origin-center rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,color-mix(in_oklab,var(--color-signal)_18%,transparent)_40deg,transparent_42deg)] motion-safe:animate-[sweep_9s_linear_infinite]" />
+          <div className="absolute inset-0 origin-center rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,color-mix(in_oklab,var(--color-signal)_8%,transparent)_30deg,transparent_31deg)] motion-safe:animate-[sweep_9s_linear_infinite]" />
         </div>
 
         <div className="relative mx-auto flex min-h-full max-w-[1400px] flex-col px-5 py-6 lg:px-10">

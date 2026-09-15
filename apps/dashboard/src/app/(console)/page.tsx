@@ -117,14 +117,14 @@ function InstrumentStrip({ overview, livePps, loading }: { overview?: Overview; 
     <div className="panel grid grid-cols-2 divide-line sm:grid-cols-4 xl:grid-cols-8 xl:divide-x" aria-busy={loading}>
       <div className="col-span-2 flex items-center gap-4 border-b border-line px-4 py-3 sm:col-span-4 xl:col-span-1 xl:flex-col xl:items-start xl:justify-center xl:border-b-0">
         <p className="eyebrow">Current risk</p>
-        <p className="font-display text-3xl font-semibold tabular" style={{ color: bandColor[bandFor(risk)] }}>{Math.round(risk)}</p>
+        <p className="font-display text-6xl leading-none font-bold tabular" style={{ color: bandColor[bandFor(risk)] }}>{Math.round(risk)}</p>
         <p className="font-mono text-2xs text-fog">highest open incident</p>
       </div>
       {readouts.map((readout) => {
         const body = (
           <>
             <p className="eyebrow">{readout.label}</p>
-            <p className={`mt-1 font-mono text-xl tabular ${readout.tone ?? "text-frost"}`}>{loading && !overview ? "…" : readout.value}</p>
+            <p className={`mt-2 font-display text-4xl leading-none font-semibold tabular ${readout.tone ?? "text-frost"}`}>{loading && !overview ? "…" : readout.value}</p>
             {readout.detail && <p className="mt-0.5 truncate text-2xs text-fog">{readout.detail}</p>}
           </>
         );

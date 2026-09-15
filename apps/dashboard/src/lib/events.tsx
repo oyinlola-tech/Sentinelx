@@ -10,6 +10,8 @@ export type StreamState = "connecting" | "open" | "reconnecting" | "offline";
 
 interface EventsValue {
   state: StreamState;
+  /** Why the server last refused or closed the stream, when it said (for example a disallowed origin). */
+  problem: string | null;
   subscribe: (types: EventType[] | "*", listener: Listener) => () => void;
   recent: StreamEvent[];
 }
@@ -57,6 +59,7 @@ async function socketUrl(ticket: string): Promise<string> {
 export function EventsProvider({ enabled, children }: { enabled: boolean; children: ReactNode }) {
   const [state, setState] = useState<StreamState>("connecting");
   const [recent, setRecent] = useState<StreamEvent[]>([]);
+  const [problem, setProblem] = useState<string | null>(null);
   const listeners = useRef(new Set<{ types: Set<EventType> | null; listener: Listener }>());
 
   useEffect(() => {
@@ -106,6 +109,7 @@ export function EventsProvider({ enabled, children }: { enabled: boolean; childr
         }
         openedAt = Date.now();
         setState("open");
+        setProblem(null);
         // After a reconnect, refetch everything: events sent while disconnected are gone.
         if (everOpened) void mutate(() => true);
         everOpened = true;
@@ -128,6 +132,8 @@ export function EventsProvider({ enabled, children }: { enabled: boolean; childr
         }
       };
       created.onclose = (closed) => {
+        // Refusals carry a reason (1008 origin not allowed, 4401 invalid ticket, 4429 too many streams).
+        if (closed.code === 1008 || closed.code === 4401 || closed.code === 4429) setProblem(closed.reason || `closed with code ${closed.code}`);
         if (openedAt && Date.now() - openedAt > 10_000) attempt = 0;
         // 4403: role changed; reconnect at once with a fresh ticket and permissions.
         if (closed.code === 4403) attempt = 0;
@@ -154,7 +160,7 @@ export function EventsProvider({ enabled, children }: { enabled: boolean; childr
       listeners.current.delete(entry);
     };
   }, []);
-  const value = useMemo<EventsValue>(() => ({ state, recent, subscribe }), [state, recent, subscribe]);
+  const value = useMemo<EventsValue>(() => ({ state, problem, recent, subscribe }), [state, problem, recent, subscribe]);
   return <EventsContext.Provider value={value}>{children}</EventsContext.Provider>;
 }
 

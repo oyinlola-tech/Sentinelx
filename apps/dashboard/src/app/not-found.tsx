@@ -19,7 +19,7 @@ export default function NotFound() {
   return (
     <main className="relative flex min-h-dvh flex-col overflow-hidden">
       <div className="range-rings pointer-events-none absolute top-1/2 left-1/2 size-[80rem] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-60 [mask-image:radial-gradient(circle,black_25%,transparent_68%)]" aria-hidden>
-        <div className="absolute inset-0 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,color-mix(in_oklab,var(--color-signal)_16%,transparent)_36deg,transparent_38deg)] motion-safe:animate-[sweep_7s_linear_infinite]" />
+        <div className="absolute inset-0 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,color-mix(in_oklab,var(--color-signal)_7%,transparent)_30deg,transparent_31deg)] motion-safe:animate-[sweep_7s_linear_infinite]" />
         <div className="absolute top-1/2 left-0 h-px w-full bg-line-strong/60" />
         <div className="absolute top-0 left-1/2 h-full w-px bg-line-strong/60" />
       </div>

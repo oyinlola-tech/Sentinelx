@@ -169,6 +169,7 @@ function TopNav() {
           <UserMenu />
         </div>
       </div>
+      <StreamProblem />
       <ScopeStrip overview={overview} />
       {sheetOpen && <MobileSheet visible={visible} pathname={pathname} counts={counts} onClose={() => setSheetOpen(false)} />}
     </header>
@@ -190,7 +191,7 @@ function MegaMenu({ id, group, items, pathname, counts, onNavigate }: {
           <p className="heading-display text-3xl text-frost">{group.name}</p>
           <p className="mt-6 text-sm text-mist">{group.blurb}</p>
         </div>
-        <ul className="grid grid-cols-2 gap-px bg-line xl:grid-cols-3">
+        <ul className={`grid ${items.length > 2 ? "grid-cols-2" : "grid-cols-1"} ${items.length > 3 ? "xl:grid-cols-4" : ""} [&>li]:border-r [&>li]:border-b [&>li]:border-line`}>
           {items.map((item) => {
             const active = isActive(pathname, item.href);
             const count = item.badge ? counts[item.badge] : 0;
@@ -412,6 +413,26 @@ export function SafetyChip({ banner }: { banner: string }) {
       <span className="sm:hidden">{{ active: "Prevent", dry: "Dry run", detect: "Detect" }[mode]}</span>
       <span className="hidden sm:inline">{label}</span>
     </Link>
+  );
+}
+
+/** Tells the operator why the live stream is refused, and what to change, instead of spinning. */
+function StreamProblem() {
+  const { state, problem } = useEvents();
+  if (!problem || state === "open") return null;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const originRefused = /origin/i.test(problem);
+  return (
+    <div role="alert" className="border-t border-signal/40 bg-signal/10">
+      <p className="mx-auto max-w-[1680px] px-4 py-2 text-xs text-signal lg:px-8">
+        <span className="font-mono tracking-[0.1em] uppercase">Live stream refused</span> · {problem}.{" "}
+        {originRefused ? (
+          <>The API does not allow this dashboard address. Add <code className="font-mono text-frost">{origin}</code> to <code className="font-mono text-frost">CORS_ORIGINS</code> on the server and restart it.</>
+        ) : (
+          <>Retrying automatically.</>
+        )}
+      </p>
+    </div>
   );
 }
 
