@@ -31,7 +31,7 @@ from sentinelx.common.netutils import IPNetworkT
 from sentinelx.telemetry.logging import get_logger
 from sentinelx.telemetry.metrics import metrics
 
-__all__ = ["BlockEntry", "CommandResult", "CommandRunner", "FirewallAdapter"]
+__all__ = ["BlockEntry", "CommandResult", "CommandRunner", "FirewallAdapter", "firewall_address"]
 
 log = get_logger(__name__)
 
@@ -200,6 +200,19 @@ class CommandRunner:
                 f"could not execute firewall command: {exc}", command=" ".join(argv)
             ) from exc
         return completed.returncode, completed.stdout, completed.stderr
+
+
+def firewall_address(network: IPNetworkT) -> str:
+    """The text of a validated network for a firewall command.
+
+    Raises:
+        FirewallError: when the address carries an IPv6 zone identifier. ``ipaddress``
+            accepts any text after ``%`` (``2001:db8::1%'+$(cmd)+'``), and that text would
+            otherwise reach nft, pfctl or a PowerShell script verbatim.
+    """
+    if getattr(network.network_address, "scope_id", None):
+        raise FirewallError(f"refusing address with an IPv6 zone identifier: {network!r}")
+    return str(network)
 
 
 class FirewallAdapter(abc.ABC):

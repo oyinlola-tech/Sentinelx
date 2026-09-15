@@ -225,6 +225,19 @@ class DetectionRepository:
     async def get(self, detection_id: str) -> DetectionRecord | None:
         return await self.session.get(DetectionRecord, detection_id)
 
+    async def existing_ids(self, detection_ids: list[str]) -> set[str]:
+        """Which of ``detection_ids`` are already stored (one query per 1,000 ids)."""
+        found: set[str] = set()
+        unique = list(dict.fromkeys(detection_ids))
+        for start in range(0, len(unique), 1000):
+            rows = await self.session.scalars(
+                select(DetectionRecord.detection_id).where(
+                    DetectionRecord.detection_id.in_(unique[start : start + 1000])
+                )
+            )
+            found.update(rows)
+        return found
+
     async def page(
         self, filters: DetectionFilter, *, limit: int = 50, offset: int = 0, order: str = "newest"
     ) -> Page[DetectionRecord]:

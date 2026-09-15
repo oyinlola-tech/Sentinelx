@@ -27,7 +27,7 @@ from typing import Any
 
 from sentinelx.common.errors import FirewallError
 from sentinelx.common.netutils import IPNetworkT, parse_network
-from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter
+from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter, firewall_address
 from sentinelx.telemetry.logging import get_logger
 
 __all__ = ["WindowsFirewallAdapter", "powershell_path"]
@@ -108,7 +108,7 @@ class WindowsFirewallAdapter(FirewallAdapter):
         name = _rule_name(network)
         expires = datetime.now(UTC) + timedelta(seconds=duration) if duration else None
         description = f"exp={int(expires.timestamp())}" if expires else "exp=never"
-        address = str(parse_network(str(network)))  # re-validated: goes into a script
+        address = str(parse_network(firewall_address(network)))  # re-validated: goes into a script
         rules = ";".join(
             f"New-NetFirewallRule -Name '{name}-{direction.lower()}' "
             f"-DisplayName 'SentinelX block {address} ({direction.lower()})' "

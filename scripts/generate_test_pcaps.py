@@ -116,7 +116,7 @@ async def main() -> None:
         path = SUITE / "malformed" / filename
         path.write_bytes(data)
         manifest[f"malformed/{filename}"] = {"sha256": _sha256(path), "error": "PcapError"}
-    (SUITE / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (SUITE / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {len(manifest)} files to {SUITE.relative_to(ROOT)}")
 
 

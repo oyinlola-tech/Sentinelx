@@ -54,10 +54,11 @@ function FullFooter({ status, version }: { status: Status; version?: string }) {
   // Shares the SWR key the sidebar already polls, so this costs no extra request.
   const { data: overview } = useSWR<Overview>("/stats/overview", { refreshInterval: 30_000 });
   const visible = NAV.filter((item) => can(item.minRole));
-  const posture = overview?.safety.split(" - ")[0] ?? "Unknown";
+  // The footer is on every page: a malformed overview must not take the page down with it.
+  const posture = (typeof overview?.safety === "string" ? overview.safety.split(" - ")[0] : undefined) ?? "Unknown";
   const enforcing = posture.startsWith("PREVENTION");
   const plate: [string, ReactNode][] = [
-    ["Sensor", overview?.sensor.sensor ?? "…"],
+    ["Sensor", typeof overview?.sensor?.sensor === "string" ? overview.sensor.sensor : "…"],
     ["Build", `v${overview?.version ?? version ?? "…"}`],
     ["Status", <StatusLine key="status" status={status} />],
     [

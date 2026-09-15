@@ -18,7 +18,7 @@ from sentinelx.common.enums import Direction, Protocol
 from sentinelx.common.models import PacketEvent
 from sentinelx.common.netutils import IPNetworkT, parse_ip
 from sentinelx.parser import layers
-from sentinelx.parser.application import parse_dns, parse_http, parse_tls
+from sentinelx.parser.application import DnsInfo, parse_dns, parse_http, parse_tls
 from sentinelx.telemetry.metrics import metrics
 
 __all__ = ["AppParser", "PacketDecoder", "register_app_parser"]
@@ -35,7 +35,23 @@ _TLS_PORTS = frozenset({443, 8443, 993, 995, 465, 587, 636, 989, 990, 5061})
 def _dns_parser(payload: bytes, src_port: int, dst_port: int) -> dict[str, Any] | None:
     if not (_DNS_PORTS & {src_port, dst_port}):
         return None
-    info = parse_dns(payload)
+    return _dns_metadata(parse_dns(payload))
+
+
+def _dns_tcp_parser(payload: bytes, src_port: int, dst_port: int) -> dict[str, Any] | None:
+    """DNS over TCP: each message is preceded by a two-byte length (RFC 1035 4.2.2).
+
+    Parsing the segment as a bare message would read the length as the
+    transaction id and the id as the flags, inventing responses and rcodes.
+    """
+    if not (_DNS_PORTS & {src_port, dst_port}) or len(payload) < 14:
+        return None
+    if int.from_bytes(payload[:2], "big") < 12:
+        return None  # not a length prefix for a DNS message, e.g. a continuation segment
+    return _dns_metadata(parse_dns(payload[2:]))
+
+
+def _dns_metadata(info: DnsInfo | None) -> dict[str, Any] | None:
     if info is None:
         return None
     return {
@@ -91,7 +107,8 @@ def _tls_parser(payload: bytes, src_port: int, dst_port: int) -> dict[str, Any] 
 
 
 _APP_PARSERS: dict[str, tuple[AppParser, frozenset[Protocol]]] = {
-    "dns": (_dns_parser, frozenset({Protocol.UDP, Protocol.TCP})),
+    "dns": (_dns_parser, frozenset({Protocol.UDP})),
+    "dns_tcp": (_dns_tcp_parser, frozenset({Protocol.TCP})),
     "http": (_http_parser, frozenset({Protocol.TCP})),
     "tls": (_tls_parser, frozenset({Protocol.TCP})),
 }
@@ -167,13 +184,19 @@ class PacketDecoder:
         """
         total_length = wire_length if wire_length is not None else len(data)
 
-        link = layers.decode_link(data, link_type)
-        if link is None:
+        try:
+            link = layers.decode_link(data, link_type)
+            if link is None:
+                self.failed += 1
+                metrics.parse_errors.labels(layer="link").inc()
+                return None
+            event = self._decode_network(link, timestamp, total_length, interface)
+        except Exception:
+            # Every layer decoder is written to be total, so reaching this is a bug.
+            # It is still contained: one hostile frame must never stop capture.
             self.failed += 1
-            metrics.parse_errors.labels(layer="link").inc()
+            metrics.parse_errors.labels(layer="internal").inc()
             return None
-
-        event = self._decode_network(link, timestamp, total_length, interface)
         if event is None:
             self.failed += 1
             return None

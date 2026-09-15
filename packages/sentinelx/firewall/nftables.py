@@ -33,7 +33,7 @@ from typing import Any
 
 from sentinelx.common.errors import FirewallError
 from sentinelx.common.netutils import IPNetworkT
-from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter
+from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter, firewall_address
 from sentinelx.telemetry.logging import get_logger
 
 __all__ = ["NftablesAdapter"]
@@ -43,9 +43,10 @@ log = get_logger(__name__)
 
 def _element(network: IPNetworkT) -> str:
     """Serialise a validated network for nft. Host routes use the bare address."""
+    text = firewall_address(network)
     if network.num_addresses == 1:
         return str(network.network_address)
-    return str(network)
+    return text
 
 
 def _is_missing(stderr: str) -> bool:

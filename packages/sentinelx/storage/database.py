@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import event, inspect, text
+from sqlalchemy import event, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
@@ -72,9 +72,10 @@ class Database:
         """Create the engine and verify connectivity.
 
         Args:
-            create_schema: create missing tables directly from the models. Defaults
-                to True for SQLite (zero-setup development) and False for PostgreSQL,
-                where schema changes go through Alembic (``sentinelx db upgrade``).
+            create_schema: bring the schema to the latest revision by running the
+                migrations. Defaults to True for SQLite (zero-setup development) and
+                False for PostgreSQL, where schema changes go through Alembic
+                (``sentinelx db upgrade``).
             prepare_schema: check (and for SQLite, migrate) the schema. Diagnostics
                 pass False to inspect a database without changing it.
 
@@ -127,29 +128,28 @@ class Database:
         """Make sure the schema matches this version of SentinelX before any write.
 
         * In-memory SQLite (tests): tables are created from the models.
-        * SQLite files (``create_schema`` default): migrated to the latest revision
-          automatically. A file created before migrations were tracked is stamped at
-          the first revision and then upgraded, so upgrading SentinelX never leaves an
-          existing database missing a column.
+        * SQLite files (``create_schema`` default), or any database when
+          ``create_schema`` is True: migrated to the latest revision. A database
+          created with ``create_all`` (no recorded revision) is adopted first - see
+          :func:`sentinelx.storage.migrate.adopt_unversioned` - so upgrading never
+          tries to create tables that exist or leaves a column missing.
         * PostgreSQL: never changed automatically. Start-up refuses a schema that is
           not at the latest revision, instead of running and losing writes.
         """
         from sentinelx.storage import migrate
 
         in_memory = ":memory:" in self.url or self.url.endswith("sqlite+aiosqlite://")
-        if in_memory or (create_schema and self.dialect != "sqlite"):
+        if in_memory:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             return
         should_migrate = create_schema if create_schema is not None else self.dialect == "sqlite"
-        async with engine.connect() as connection:
-            tables = set(await connection.run_sync(lambda sync: inspect(sync).get_table_names()))
-        head = migrate.head_revision()
         if should_migrate:
-            if "alembic_version" not in tables and "detections" in tables:
-                await migrate.stamp(self.url, migrate.INITIAL_REVISION)
+            # Tables created without migrations would otherwise leave the database
+            # unversioned, which a later normal start refuses and ``db upgrade`` fails.
             await migrate.upgrade(self.url)
             return
+        head = migrate.head_revision()
         applied = await migrate.current_revision(self.url)
         if applied != head:
             raise StorageError(

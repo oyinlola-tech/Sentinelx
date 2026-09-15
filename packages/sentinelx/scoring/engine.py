@@ -25,6 +25,7 @@ previous responses        source was already blocked or rate limited before
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -87,7 +88,7 @@ class RiskEngine:
         Recording happens *after* scoring, so a detection never counts as its own
         history.
         """
-        context = context or RiskContext()
+        context = _sanitised(context or RiskContext())
         s = self.settings
         now = detection.timestamp.timestamp()
         history = self._history_for(detection.source_ip)
@@ -219,3 +220,25 @@ class RiskEngine:
 
     def reset(self) -> None:
         self._history.clear()
+
+
+def _sanitised(context: RiskContext) -> RiskContext:
+    """Clamp external inputs to their documented ranges.
+
+    ``intel_score`` comes from threat-intel providers and ``correlated_detectors`` from
+    the correlation engine. An out-of-range value must not buy more than the factor's
+    weight (``intel_score=5`` was worth 75 points), subtract points (a negative count),
+    or put ``inf``/``nan`` into contributions, which are serialised to JSON.
+    """
+    intel = context.intel_score
+    intel = min(max(intel, 0.0), 1.0) if math.isfinite(intel) else (1.0 if intel > 0 else 0.0)
+    correlated = max(int(context.correlated_detectors), 0)
+    if intel == context.intel_score and correlated == context.correlated_detectors:
+        return context
+    return RiskContext(
+        intel_score=intel,
+        intel_sources=context.intel_sources,
+        allowlisted=context.allowlisted,
+        correlated_detectors=correlated,
+        sensitive_destinations=context.sensitive_destinations,
+    )

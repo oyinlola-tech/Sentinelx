@@ -29,7 +29,7 @@ from typing import NoReturn
 
 from sentinelx.common.errors import FirewallError
 from sentinelx.common.netutils import IPNetworkT, parse_network
-from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter
+from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter, firewall_address
 from sentinelx.telemetry.logging import get_logger
 
 __all__ = ["PfAdapter"]
@@ -94,7 +94,7 @@ class PfAdapter(FirewallAdapter):
     async def block(
         self, network: IPNetworkT, *, duration: int | None = None, comment: str = ""
     ) -> BlockEntry:
-        address = str(parse_network(str(network)))
+        address = str(parse_network(firewall_address(network)))
         result = await self._runner.run(*self._table("add", address), check=False)
         if not result.ok:
             self._record("block", self.backend, False)
@@ -116,7 +116,7 @@ class PfAdapter(FirewallAdapter):
         )
 
     async def unblock(self, network: IPNetworkT) -> bool:
-        address = str(parse_network(str(network)))
+        address = str(parse_network(firewall_address(network)))
         result = await self._runner.run(*self._table("delete", address), check=False)
         if not result.ok:
             self._record("unblock", self.backend, False)

@@ -147,7 +147,7 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
       seen.add(payload.detection_id);
       merged.push({ timestamp: payload.timestamp, severity: payload.severity, title: payload.title, source: payload.source_ip });
     }
-    for (const detection of data?.items ?? []) {
+    for (const detection of Array.isArray(data?.items) ? data.items : []) {
       if (seen.has(detection.detection_id)) continue;
       seen.add(detection.detection_id);
       merged.push({ timestamp: detection.timestamp, severity: detection.severity, title: detection.title, source: detection.source_ip });
@@ -174,7 +174,7 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
             <span className="hidden lg:inline">Search</span>
             <kbd className="hidden rounded border border-line px-1 font-mono text-2xs text-fog lg:inline">Ctrl K</kbd>
           </button>
-          {overview?.safety && <SafetyChip banner={overview.safety} />}
+          {typeof overview?.safety === "string" && <SafetyChip banner={overview.safety} />}
           <StreamIndicator state={state} />
         </div>
       </div>

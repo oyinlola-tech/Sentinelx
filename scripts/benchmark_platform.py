@@ -305,7 +305,7 @@ def environment() -> dict[str, Any]:
 
     cpu = host.processor() or host.machine()
     try:
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
+        for line in Path("/proc/cpuinfo").read_text(encoding="ascii", errors="replace").splitlines():
             if line.startswith("model name"):
                 cpu = line.split(":", 1)[1].strip()
                 break

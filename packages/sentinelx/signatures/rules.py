@@ -34,6 +34,7 @@ Validation is deliberately strict, and reports *every* problem at once:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,6 +91,10 @@ def parse_duration(value: str | int | float) -> float:
             raise ValueError(f"invalid duration {value!r}; use e.g. 30s, 5m or 1h")
         unit = match.group(2).lower() if match.group(2) else None
         seconds = float(match.group(1)) * _UNITS[unit]
+    if not math.isfinite(seconds):
+        # YAML spells these ``.nan`` / ``.inf``; a NaN window slips past every
+        # comparison below (``nan <= 0`` and ``nan > max_window`` are both False).
+        raise ValueError(f"duration must be a finite number, got {value!r}")
     if seconds <= 0:
         raise ValueError(f"duration must be positive, got {value!r}")
     return seconds
@@ -323,12 +328,26 @@ def load_rules(path: Path, *, max_window_seconds: float) -> LoadResult:
     for file in files:
         if file.suffix not in {".yml", ".yaml"}:
             continue
-        if file.stat().st_size > MAX_RULE_FILE_BYTES:
-            problems.append(f"{file}: larger than {MAX_RULE_FILE_BYTES} bytes")
+        try:
+            if not file.is_file():
+                # A directory named "x.yml", a FIFO or a dangling symlink: reading it
+                # would crash (or block) the whole load.
+                problems.append(f"{file}: not a regular file")
+                continue
+            if file.stat().st_size > MAX_RULE_FILE_BYTES:
+                problems.append(f"{file}: larger than {MAX_RULE_FILE_BYTES} bytes")
+                continue
+            text = file.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            problems.append(f"{file}: not valid YAML ({exc})")
+            continue
+        except OSError as exc:
+            # One unreadable file must not take every other rule down with it.
+            problems.append(f"{file}: cannot be read ({exc.strerror or exc})")
             continue
         try:
-            document = load_rule_yaml(file.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, UnicodeDecodeError) as exc:
+            document = load_rule_yaml(text)
+        except yaml.YAMLError as exc:
             problems.append(f"{file}: not valid YAML ({exc})")
             continue
         loaded, issues = parse_rule_document(

@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 
 from sentinelx.common.errors import FirewallError
 from sentinelx.common.netutils import IPNetworkT
-from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter
+from sentinelx.firewall.base import BlockEntry, CommandRunner, FirewallAdapter, firewall_address
 from sentinelx.telemetry.logging import get_logger
 
 __all__ = ["IptablesAdapter"]
@@ -70,6 +70,7 @@ class IptablesAdapter(FirewallAdapter):
         self._meta: dict[str, BlockEntry] = {}
 
     def _runner(self, network: IPNetworkT) -> CommandRunner:
+        firewall_address(network)  # every operation on a network starts here
         if network.version == 6:
             if self._v6 is None:
                 raise FirewallError("ip6tables is not installed; cannot block IPv6 addresses")

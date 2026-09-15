@@ -170,11 +170,21 @@ class CorrelationEngine:
 
         incident = self._open.get(key)
         if incident is not None:
+            if detection.detection_id in incident.detection_ids:
+                # Redelivered (e.g. an event replayed after a reconnect): already counted.
+                return CorrelationResult(
+                    incident=incident,
+                    created=False,
+                    severity_changed=False,
+                    previous_risk=incident.risk.score,
+                )
             return self._extend(incident, detection, risk)
 
         pending = self._pending.setdefault(key, [])
         cutoff = now.timestamp() - self.settings.window_seconds
         pending[:] = [(d, r) for d, r in pending if d.timestamp.timestamp() >= cutoff]
+        if any(d.detection_id == detection.detection_id for d, _ in pending):
+            return None
         pending.append((detection, risk))
 
         distinct = {d.detector for d, _ in pending}
@@ -416,6 +426,23 @@ class CorrelationEngine:
             reason=reason,
             status=status.value,
         )
+
+    def close_incident(self, incident_id: str, status: IncidentStatus) -> bool:
+        """Stop correlating into an incident an analyst has closed.
+
+        Without this, a resolved or false-positive incident stays open in memory: later
+        detections from the same source keep extending it (and can drive automatic
+        responses from its risk) instead of opening a fresh incident.
+
+        Returns:
+            True when an open incident with that id was closed.
+        """
+        for key, incident in self._open.items():
+            if incident.incident_id == incident_id:
+                incident.status = status
+                self._close(key, status, reason="analyst")
+                return True
+        return False
 
     def open_incidents(self) -> list[Incident]:
         return sorted(self._open.values(), key=lambda inc: inc.risk.score, reverse=True)

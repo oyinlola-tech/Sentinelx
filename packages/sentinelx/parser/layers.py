@@ -70,13 +70,27 @@ IPPROTO_TCP: Final = 6
 IPPROTO_UDP: Final = 17
 IPPROTO_ROUTING: Final = 43
 IPPROTO_FRAGMENT: Final = 44
+IPPROTO_AH: Final = 51
 IPPROTO_ICMPV6: Final = 58
 IPPROTO_NONE: Final = 59
 IPPROTO_DSTOPTS: Final = 60
 
-#: IPv6 extension headers that share the ``next header`` / ``length`` shape and can
-#: therefore be skipped generically to reach the transport header.
-_IPV6_EXT_HEADERS: Final = frozenset({IPPROTO_HOPOPTS, IPPROTO_ROUTING, IPPROTO_DSTOPTS, 51, 135})
+#: IPv6 extension headers whose length is ``(hdr_ext_len + 1) * 8`` octets and can
+#: therefore be skipped generically to reach the transport header: hop-by-hop,
+#: routing, destination options, mobility (135), HIP (139) and shim6 (140).
+#: The fragment header (fixed 8 octets) and AH (``(payload_len + 2) * 4`` octets,
+#: RFC 4302) have their own sizes and are handled separately.
+_IPV6_EXT_HEADERS: Final = frozenset(
+    {IPPROTO_HOPOPTS, IPPROTO_ROUTING, IPPROTO_DSTOPTS, 135, 139, 140}
+)
+
+#: BSD loopback address-family values that carry IPv6 (NetBSD/OpenBSD, FreeBSD, macOS).
+_NULL_FAMILIES: Final[dict[int, int]] = {
+    2: ETHERTYPE_IPV4,
+    24: ETHERTYPE_IPV6,
+    28: ETHERTYPE_IPV6,
+    30: ETHERTYPE_IPV6,
+}
 
 _ETH_HEADER = struct.Struct("!6s6sH")
 _IPV4_HEADER = struct.Struct("!BBHHHBBH4s4s")
@@ -272,13 +286,16 @@ def _decode_raw_ip(data: bytes) -> LinkInfo | None:
 
 
 def _decode_null(data: bytes) -> LinkInfo | None:
-    """BSD loopback: a 4-byte host-order address family."""
+    """BSD loopback: a 4-byte address family in the *capturing* host's byte order.
+
+    A capture replayed on a host of the other endianness sees the family
+    byte-swapped, so both orders are tried. The valid values are all below 256,
+    so the two readings can never be confused with each other.
+    """
     if len(data) < 4:
         return None
-    family = struct.unpack_from("=I", data)[0]
-    ethertype = {2: ETHERTYPE_IPV4, 24: ETHERTYPE_IPV6, 28: ETHERTYPE_IPV6, 30: ETHERTYPE_IPV6}.get(
-        family
-    )
+    little, big = struct.unpack_from("<I", data)[0], struct.unpack_from(">I", data)[0]
+    ethertype = _NULL_FAMILIES.get(little, _NULL_FAMILIES.get(big))
     return LinkInfo(payload=data[4:], ethertype=ethertype)
 
 
@@ -329,7 +346,13 @@ def decode_ipv4(data: bytes) -> IpInfo | None:
 
 
 def decode_ipv6(data: bytes) -> IpInfo | None:
-    """Decode an IPv6 header and walk extension headers to the transport header."""
+    """Decode an IPv6 header and walk extension headers to the transport header.
+
+    The payload is trimmed to the header's payload length (bytes after it are a
+    link trailer, not transport data), unless that length is 0 (jumbogram) or
+    larger than what was captured. A non-first fragment stops the walk: what
+    follows its fragment header is data, not another header.
+    """
     if len(data) < 40:
         return None
     flow_label, payload_length, next_header, hop_limit, src_raw, dst_raw = _IPV6_HEADER.unpack_from(
@@ -338,33 +361,53 @@ def decode_ipv6(data: bytes) -> IpInfo | None:
     if flow_label >> 28 != 6:
         return None
 
+    end = min(40 + payload_length, len(data)) if payload_length else len(data)
     offset = 40
+    identification: int | None = None
+    fragment_offset = 0
+    more_fragments = False
+
     # Bounded walk: a crafted chain of extension headers must not loop forever.
     for _ in range(8):
-        if next_header not in _IPV6_EXT_HEADERS:
+        if next_header == IPPROTO_FRAGMENT:
+            if end < offset + 8:
+                return None
+            next_header = data[offset]
+            fragment_field, identification = struct.unpack_from("!HI", data, offset + 2)
+            fragment_offset = (fragment_field >> 3) * 8
+            more_fragments = bool(fragment_field & 0x1)
+            offset += 8
+            if fragment_offset:
+                break
+            continue
+        if next_header == IPPROTO_AH:
+            size_of = 4
+            bias = 2
+        elif next_header in _IPV6_EXT_HEADERS:
+            size_of = 8
+            bias = 1
+        else:
             break
-        if len(data) < offset + 2:
-            return None
-        next_header, ext_len = data[offset], data[offset + 1]
-        offset += (ext_len + 1) * 8
-        if offset > len(data):
-            return None
-
-    if next_header == IPPROTO_FRAGMENT:
-        if len(data) < offset + 8:
+        if end < offset + 2:
             return None
         next_header = data[offset]
-        offset += 8
+        offset += (data[offset + 1] + bias) * size_of
+        if offset > end:
+            return None
 
     return IpInfo(
         src_ip=socket.inet_ntop(socket.AF_INET6, src_raw),
         dst_ip=socket.inet_ntop(socket.AF_INET6, dst_raw),
         protocol_number=next_header,
-        payload=data[offset:],
+        payload=data[offset:end],
         ttl=hop_limit,
         version=6,
         total_length=payload_length + 40,
-        dscp=(flow_label >> 20) & 0xFF,
+        identification=identification,
+        fragment_offset=fragment_offset,
+        more_fragments=more_fragments,
+        # Traffic class is bits 20-27; DSCP is its upper six bits, as for IPv4.
+        dscp=(flow_label >> 22) & 0x3F,
     )
 
 

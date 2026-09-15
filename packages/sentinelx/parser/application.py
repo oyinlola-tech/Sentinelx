@@ -173,6 +173,10 @@ def _read_dns_name(data: bytes, offset: int) -> tuple[str, int]:
         if length == 0:
             cursor += 1
             break
+        if length & 0xC0 in (0x40, 0x80):
+            # Extended (EDNS0 bitstring) and reserved label types are obsolete or
+            # undefined. Reading them as lengths would yield labels over 63 bytes.
+            break
         if length & 0xC0 == 0xC0:  # compression pointer
             if cursor + 1 >= len(data):
                 break

@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-from sentinelx.common.netutils import IPNetworkT, parse_ip, parse_network
+from sentinelx.common.netutils import IPAddressT, IPNetworkT, parse_ip, parse_network
 
 __all__ = [
     "FIELDS",
@@ -147,6 +147,9 @@ FIELDS: Final[dict[str, FieldSpec]] = {
         _f("tls_is_legacy_version", K.BOOLEAN, "SSLv3, TLS 1.0 or TLS 1.1"),
     )
 }
+
+#: Fields holding a TCP/UDP port; literals compared with them must be valid ports.
+PORT_FIELDS: Final = frozenset({"source_port", "destination_port"})
 
 _NUMERIC_OPS: Final = frozenset({">", ">=", "<", "<="})
 _STRING_OPS: Final = frozenset({"contains", "startswith", "endswith"})
@@ -446,6 +449,47 @@ def validate_semantics(node: Node) -> list[str]:
             and not isinstance(value, (int, float))
         ):
             problems.append(f"{where}: {spec.name} is numeric; compare with a number")
+        problems.extend(_literal_problems(spec, op, value, where))
+    return problems
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _literal_problems(spec: FieldSpec, op: str, value: Any, where: str) -> list[str]:
+    """Range and type checks on the literals themselves.
+
+    Without these, ``destination_port == 65536``, ``source_ip == "999.1.1.1"`` or
+    ``destination_port in [ssh]`` are accepted and then silently never match, which
+    is exactly what strict validation exists to prevent.
+    """
+    if op == "in_network":
+        return []  # validated above
+    items = value if isinstance(value, tuple) else (value,)
+    problems: list[str] = []
+    for item in items:
+        if spec.kind in (K.COUNT, K.NUMBER):
+            if op in {"in", "not in"} and not _is_number(item):
+                problems.append(f"{where}: {spec.name} is numeric; {item!r} is not a number")
+                continue
+            if isinstance(item, bool) and op in {"==", "!="}:
+                problems.append(f"{where}: {spec.name} is numeric; compare with a number")
+                continue
+            if not _is_number(item):
+                continue  # already reported
+            if spec.name in PORT_FIELDS and not (float(item).is_integer() and 0 <= item <= 65_535):
+                problems.append(f"{where}: {item!r} is not a valid port (0-65535)")
+            elif spec.kind is K.COUNT and item < 0:
+                problems.append(f"{where}: {spec.name} is a count and cannot be negative")
+        elif spec.kind is K.ADDRESS and op in {"==", "!=", "in", "not in"}:
+            try:
+                parse_ip(str(item))
+            except ValueError:
+                hint = "; use in_network for prefixes" if "/" in str(item) else ""
+                problems.append(f"{where}: {item!r} is not a valid IP address{hint}")
+        elif spec.kind is K.BOOLEAN and op in {"in", "not in"} and not isinstance(item, bool):
+            problems.append(f"{where}: {spec.name} is boolean; list only true or false")
     return problems
 
 
@@ -495,6 +539,19 @@ def _network(value: Any) -> IPNetworkT:
     return cached
 
 
+_address_cache: dict[str, IPAddressT] = {}
+
+
+def _address(value: Any) -> IPAddressT:
+    key = str(value)
+    cached = _address_cache.get(key)
+    if cached is None:
+        cached = parse_ip(key)
+        if len(_address_cache) < 10_000:
+            _address_cache[key] = cached
+    return cached
+
+
 def _normalise(value: Any) -> Any:
     return value.lower() if isinstance(value, str) else value
 
@@ -510,6 +567,13 @@ def _compare(node: Comparison, observed: Any) -> bool:
             return any(
                 address.version == net.version and address in net for net in map(_network, networks)
             )
+        spec = FIELDS.get(node.field)
+        if spec is not None and spec.kind is K.ADDRESS and op in {"==", "!=", "in", "not in"}:
+            # Compare addresses, not spellings: "2001:DB8:0::1" is "2001:db8::1".
+            address = parse_ip(str(observed))
+            items = expected if isinstance(expected, tuple) else (expected,)
+            present = any(address == _address(item) for item in items)
+            return present if op in {"==", "in"} else not present
         if op in {"in", "not in"}:
             present = _normalise(observed) in {_normalise(item) for item in expected}
             return present if op == "in" else not present

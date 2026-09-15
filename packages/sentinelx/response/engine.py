@@ -263,8 +263,9 @@ class ResponseEngine:
             return []
         decisions = []
         for source in sorted(incident.affected_sources):
-            if self._block_key(source) in self._blocks:
-                continue
+            existing = self._blocks.get(self._block_key(source))
+            if existing is not None and not existing.rate_limited:
+                continue  # a rate-limited source may still be escalated to a block
             reason = f"incident '{incident.title}' risk {incident.risk.score:.0f}/100"
             decisions.append(
                 await self._automatic(
@@ -302,12 +303,13 @@ class ResponseEngine:
             detection_id=detection_id,
             incident_id=incident_id,
         )
-        if self._block_key(target) in self._blocks and action in (
-            ActionType.BLOCK_IP,
-            ActionType.TEMPORARY_BLOCK,
-        ):
+        existing = self._blocks.get(self._block_key(target))
+        if existing is not None and (action is ActionType.RATE_LIMIT or not existing.rate_limited):
+            # A rate limit never replaces anything: over a block it would downgrade (and
+            # on expiry remove) it. A block does replace a rate limit - that is escalation.
+            already = "rate limited" if existing.rate_limited else "blocked"
             return await self._finalise(
-                replace(base, dry_run=False, reason=f"{reason}; already blocked"),
+                replace(base, dry_run=False, reason=f"{reason}; already {already}"),
                 source="engine",
                 record=False,
             )
@@ -522,6 +524,8 @@ class ResponseEngine:
                 )
             return True
         if action is ActionType.UNBLOCK_IP:
+            if "%" in decision.target:
+                raise ValueError("IPv6 zone identifiers ('%...') are not firewall addresses")
             network = parse_network(decision.target)
             removed = await self.firewall.unblock(network)
             self._blocks.pop(str(network), None)
