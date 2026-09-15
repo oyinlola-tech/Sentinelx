@@ -93,7 +93,7 @@ Key:
 | Capability detection | Verified | Verified (reports container) | Verified (reports arm64) | Implemented | Implemented | Implemented (WSL1/2 from kernel release) |
 | Live capture | Verified (AF_PACKET, libpcap) | Verified (capture profile, host network) | Not verified | Implemented (libpcap, `/dev/bpf*`) | Implemented (Npcap) | Captures the WSL VM, not the Windows host |
 | Firewall control | Verified (nftables, iptables) | Verified (nftables in its own namespace, with an override) | Not verified | Implemented (pf anchor) | Implemented (NetSecurity cmdlets) | Changes the WSL VM only |
-| Test suite | 487 passed, 11 skipped; kernel 11 passed | Not run in the image | See section 7 | CI job defined, not run | CI job defined, not run | Not run |
+| Test suite | 487 passed, 11 skipped; kernel 11 passed | Not run in the image | 476 passed, 15 skipped, 0 failed (QEMU) | CI job defined, not run | CI job defined, not run | Not run |
 
 The 11 tests skipped in the normal run are the kernel tests, which run separately in a network namespace. For ARM64, QEMU user mode does not emulate the ioctls and netlink behaviour that capture and firewall control need, so those remain unverified on ARM64 hardware.
 
@@ -272,7 +272,7 @@ The pipeline is single-process Python at about 5,000 packets per second on this 
 | Docker prevention chain, API level through the proxy, final image | 16 of 16 steps passed |
 | Docker browser smoke test, final image | 15 of 15 checks passed |
 | Local browser smoke test (`.env` configuration) | Every existing page passes |
-| ARM64 under QEMU | ARM64_RESULT |
+| ARM64 (python:3.12-slim arm64 under QEMU user-mode emulation, no PostgreSQL/Redis) | 476 passed, 15 skipped (kernel tests; PostgreSQL/Redis tests), 0 failed; the 14 generated fixtures are byte-identical to x86_64 |
 
 An earlier browser run of the full UI prevention chain (buttons and pages) passed 16 of 17 on the previous image. The one failure was a harness check that assumed live capture was unavailable in the container.
 

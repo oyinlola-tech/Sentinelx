@@ -48,12 +48,12 @@ Terms used below:
 
 | Feature | Linux x86_64 | Docker Compose, Linux host | Linux ARM64 | macOS | Windows | WSL2 | Docker Desktop (macOS, Windows) |
 |---|---|---|---|---|---|---|---|
-| CLI, API | Tested | Tested | Not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified |
+| CLI, API | Tested | Tested | CLI under QEMU emulation only (see below); API not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified |
 | Dashboard | Tested | Tested (through the proxy, in a browser) | Not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified |
-| PCAP replay and detection | Tested | Tested | Not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified |
-| Interface enumeration and capability detection | Tested | Tested | Not yet verified | Implemented, unverified | Implemented, unverified | Implemented, unverified (reports WSL) | Not applicable to the computer |
-| Live capture | Tested: `af_packet`, `libpcap` | Tested: `capture` profile, host network | Not yet verified | Implemented, unverified: `libpcap` on `/dev/bpf*` | Implemented, unverified: `libpcap` on Npcap | Captures the WSL virtual machine, not the Windows host | Captures Docker's virtual machine, not the computer |
-| Firewall enforcement | Tested: nftables, iptables | Tested: nftables inside the API container | Not yet verified | Implemented, unverified: pf | Implemented, unverified: Windows Firewall | Changes the WSL virtual machine, not the Windows host | Not applicable to the computer |
+| PCAP replay and detection | Tested | Tested | Under QEMU emulation only: all 14 fixtures replayed | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified | Expected to work, not yet verified |
+| Interface enumeration and capability detection | Tested | Tested | Under QEMU emulation only: capability detection and `doctor` | Implemented, unverified | Implemented, unverified | Implemented, unverified (reports WSL) | Not applicable to the computer |
+| Live capture | Tested: `af_packet`, `libpcap` | Tested: `capture` profile, host network | Not verified | Implemented, unverified: `libpcap` on `/dev/bpf*` | Implemented, unverified: `libpcap` on Npcap | Captures the WSL virtual machine, not the Windows host | Captures Docker's virtual machine, not the computer |
+| Firewall enforcement | Tested: nftables, iptables | Tested: nftables inside the API container | Not verified | Implemented, unverified: pf | Implemented, unverified: Windows Firewall | Changes the WSL virtual machine, not the Windows host | Not applicable to the computer |
 | Rate limiting | Tested: nftables, iptables | Not separately verified | Not yet verified | Not supported by the pf adapter | Not supported by the Windows Firewall adapter | As Linux, inside the VM | Not applicable |
 | Temporary block expiry | nftables: in the kernel. iptables: by SentinelX | As Linux | Not yet verified | By SentinelX | By SentinelX | As Linux, inside the VM | Not applicable |
 
@@ -72,7 +72,15 @@ How it was verified:
   its interpreter has none, so firewall changes inside it need capabilities that
   `docker-compose.yml` does not grant (see
   [Container hardening](#container-hardening-in-the-default-stack)).
-- **Linux ARM64.** Not yet verified. No benchmark or test result exists for it.
+- **Linux ARM64 (platform verification).** Exercised under QEMU user-mode emulation
+  in a `python:3.12-slim` arm64 container, not on native hardware: installation with
+  `pip install -e ".[dev,ml]"`, capability detection (it reports `arm64` and a Docker
+  container), `sentinelx doctor`, and replay of all 14 generated fixtures. The
+  fixtures were byte-identical to those generated on x86_64. Test suite under
+  emulation: see the audit report. Native ARM64 hardware, live capture and firewall
+  control on ARM64 are not verified, because QEMU user mode does not emulate the
+  ioctls and netlink calls they need faithfully. The API server and dashboard were not
+  run on ARM64, and no benchmark result exists for it.
 - **macOS and Windows.** The libpcap/Npcap capture path, the pf and Windows Firewall
   adapters and the capability detection are unit-tested against recorded command
   output only. The test suite has not been run on these operating systems. The CI
@@ -133,6 +141,11 @@ Optional extras (defined in `pyproject.toml`):
 .venv/bin/pip install -e ".[ml]"
 .venv/bin/pip install -e ".[dev,ml]"
 ```
+
+Dependency floors of note: `python-dotenv>=1.2.2`, which excludes releases affected by
+PYSEC-2026-2270 (the advisory concerns `set_key` and `unset_key`, which SentinelX does
+not call). `python-multipart` is not a dependency: uploads are read as the raw request
+body.
 
 ### Linux
 
@@ -254,7 +267,7 @@ remedy where one applies. It exits with status 1 if any check is `FAIL`.
 | Check | Result |
 |---|---|
 | `python` | FAIL below 3.12. |
-| `configuration` | FAIL (and exit 1) if settings fail validation. |
+| `configuration` | FAIL (and exit 1) if settings fail validation, with the remedy `run: sentinelx config` (which prints the validation errors). |
 | `operating system` | INFO: operating system, architecture and Python version. |
 | `wsl`, `container` | INFO, only when detected. |
 | `dependencies` | FAIL if a required package, or the database driver for `DATABASE_URL`, cannot be imported. |
@@ -678,7 +691,9 @@ at startup. `.env.example` lists the most common variables.
   value wins at startup and the stored value is ignored (logged as
   `stored_setting_overridden_by_environment`). This lets an operator always switch
   prevention off by editing the environment and restarting. `sentinelx config`
-  (optionally `--section <name>`, `--json`) shows the effective settings.
+  (optionally `--section <name>`, `--json`) shows the effective settings with the same
+  redaction as `GET /api/v1/config`: secret-named fields as `[redacted]`, URL passwords
+  hidden, and the webhook URL as `scheme://host/…`.
 - **Confirmation**: turning dry run off, or enabling automatic prevention, at runtime
   requires the confirmation phrase `ENABLE PREVENTION` (typed in the dashboard;
   `confirmation` in the API request; `--confirm-prevention` on the CLI). The change is
@@ -986,8 +1001,9 @@ When Redis is unreachable and `STORAGE__REDIS_REQUIRED=false` (the default):
 
 - SentinelX logs `redis_unavailable_degraded_mode` once and continues with in-process
   equivalents.
-- Rate limits, login throttling and WebSocket tickets apply per process rather than
-  globally.
+- Rate limits, login throttling, WebSocket tickets, access-token revocations and the
+  per-user session cut-off (set by sign-out, password changes and resets) apply per
+  process rather than globally.
 - `GET /api/v1/system/health` and `/system/status` report `"status": "degraded"`, and
   `sentinelx doctor` shows a warning.
 - Reconnection is attempted every 30 seconds; `redis_recovered` is logged when it

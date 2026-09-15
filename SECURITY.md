@@ -31,7 +31,7 @@ In scope, for example:
 - A way to change the firewall while `DRY_RUN=true`, while in `detect_only` mode without the confirmation phrase having been given, or from a PCAP Lab replay.
 - Command injection through firewall adapters, or code execution through rules, uploaded captures, scenario parameters or configuration.
 - Packets, capture files, rule definitions or scenario parameters that crash the sensor, stop detection, or cause resource use out of proportion to the input.
-- Authentication or authorisation bypass, lockout bypass or abuse, CSRF, session fixation, refresh-token or WebSocket ticket reuse, or use of a revoked token.
+- Authentication or authorisation bypass, lockout bypass or abuse, CSRF, session fixation, refresh-token or WebSocket ticket reuse, or use of a revoked token or of an access token issued before a sign-out, password change or password reset (with Redis available; without Redis that cut-off is per process, as documented).
 - Secrets or credentials appearing in logs, API responses, the configuration view or stored data.
 - Reaching internal services through the webhook destination check, or bypassing the upload size limit or quota.
 - Client address spoofing past the rate limiter, lockout or audit log when `trusted_proxies` is configured as documented.

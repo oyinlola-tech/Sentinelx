@@ -362,8 +362,7 @@ async def _replay_persisted(
         record = await service.get(started["replay_id"])
         if record is None or record["status"] != "completed":
             raise PcapError(f"replay failed: {record.get('error') if record else 'record missing'}")
-        # Give the persister one flush interval so the detections are queryable on exit.
-        await asyncio.sleep(settings.storage.flush_interval_seconds + 0.2)
+        # No extra wait: the service reports "completed" only after results are stored.
     err.print(f"[dim]stored as replay {started['replay_id']}; view it in the PCAP Lab[/]")
     return {"replay_id": started["replay_id"], **record["report"]}
 

@@ -367,7 +367,7 @@ class AuthService:
             raise AuthError(_GENERIC_FAILURE)
 
         rehash = (
-            await asyncio.to_thread(self.hash_password, password)
+            await self._hash_async(password)
             if _hasher.check_needs_rehash(password_hash)
             else None
         )

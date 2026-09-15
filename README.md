@@ -4,7 +4,7 @@ SentinelX is an open-source network intrusion detection and prevention platform.
 
 Every alert shows its work: the evidence that triggered it, the thresholds it crossed, how its risk score was built, and what the response engine decided and why.
 
-> **Status: alpha (0.1.0).** SentinelX is tested (unit, integration, API, end-to-end replay tests, and kernel tests of live capture and firewall changes in a network namespace; PostgreSQL and Redis in CI) and benchmarked on synthetic traffic, but it has not been proven in production networks. It has been run on Linux x86_64 only; see [Platform support](#platform-support). It runs in **detection-only, dry-run mode by default** and never changes a firewall until an administrator enables prevention. Read [Limitations](#limitations) before deploying it.
+> **Status: alpha (0.1.0).** SentinelX is tested (unit, integration, API, end-to-end replay tests, and kernel tests of live capture and firewall changes in a network namespace; PostgreSQL and Redis in CI) and benchmarked on synthetic traffic, but it has not been proven in production networks. It has been run natively on Linux x86_64 only (Linux ARM64 partly, under emulation); see [Platform support](#platform-support). It runs in **detection-only, dry-run mode by default** and never changes a firewall until an administrator enables prevention. Read [Limitations](#limitations) before deploying it.
 
 ## Contents
 
@@ -112,13 +112,15 @@ What has been run, and on what. "Implemented, unverified" means the code path ex
 |---|---|---|---|
 | Linux x86_64 (Kali with Python 3.14; Python 3.12 in `python:3.12-slim`) | Tested | Tested: `af_packet` and `libpcap` | Tested: nftables and iptables |
 | Docker Compose on a Linux host | Tested: full stack end to end through the browser | Tested: `capture` profile on the host network | Tested: a real nftables block inside the API container |
-| Linux ARM64 | Not yet verified | Not yet verified | Not yet verified |
+| Linux ARM64 | PCAP replay, detection and CLI under QEMU user-mode emulation only (see below); API and dashboard not yet verified | Not verified | Not verified |
 | macOS | Expected to work, not yet verified | Implemented (libpcap, BPF devices), unverified | Implemented (pf), unverified |
 | Windows | Expected to work, not yet verified | Implemented (Npcap), unverified | Implemented (Windows Firewall), unverified |
 | WSL2 | Expected to work, not yet verified | Sees the WSL virtual machine, not the Windows host | Changes the WSL virtual machine, not the Windows host |
 | Docker Desktop (macOS, Windows) | Expected to work, not yet verified | Host networking reaches Docker's virtual machine, not your computer | Not applicable to the computer |
 
 Live capture and nftables/iptables enforcement were verified against a real kernel in an isolated network namespace (`make test-kernel`) and inside a container. PCAP replay, detection, the CLI and the API contain no operating-system-specific code, but the test suite has not been run on macOS or Windows. Under WSL, `sentinelx capabilities` and `sentinelx doctor` say that capture and firewall changes apply to the virtual machine. For native macOS or Windows capture, install SentinelX natively rather than in Docker Desktop.
+
+**Platform verification: Linux ARM64.** Exercised under QEMU user-mode emulation in a `python:3.12-slim` arm64 container: installation with `.[dev,ml]`, capability detection (reports `arm64` and a Docker container), `sentinelx doctor`, and replay of all 14 generated fixtures. The fixtures were byte-identical to those generated on x86_64. Test suite under emulation: see the audit report. Native ARM64 hardware, live capture and firewall control on ARM64 are not verified; QEMU user mode does not emulate the ioctls and netlink calls they need faithfully.
 
 Full matrix and per-platform notes: [docs/deployment.md](docs/deployment.md#platform-support).
 
@@ -472,7 +474,7 @@ make check              # lint, typecheck, test, rules and a dashboard productio
 
 The Makefile needs bash. Without it (on Windows, for example): `python -m pip install -e ".[dev,ml]"`, `python -m pytest`, and `npm ci` then `npm run lint`, `npm run typecheck` and `npm run build` in `apps/dashboard`.
 
-The CI workflow (`.github/workflows/ci.yml`) runs lint, type checks, tests against PostgreSQL and Redis, rule tests, a check that migrations match the models and that the committed OpenAPI contract has not drifted, the kernel tests (failing if any are skipped), a dashboard build, and builds of both container images. It also defines a portability job that runs the test suite, `capabilities`, `doctor` and a replay on macOS and Windows runners; no result from that job is claimed in [Platform support](#platform-support) yet. See [docs/contributing.md](docs/contributing.md).
+The CI workflow (`.github/workflows/ci.yml`) runs lint, type checks, tests against PostgreSQL and Redis (with the `ml` extra installed, so the machine-learning tests run), rule tests, a check that migrations match the models and that the committed OpenAPI contract has not drifted, the kernel tests (failing if any are skipped), a dashboard build, and builds of both container images. It also defines a portability job that runs the test suite, `capabilities`, `doctor` and a replay on macOS and Windows runners; that job has not run yet, so no result from it is claimed in [Platform support](#platform-support). See [docs/contributing.md](docs/contributing.md).
 
 ## Benchmarks
 
@@ -503,7 +505,7 @@ Threat model and controls: [docs/security.md](docs/security.md). To report a vul
 - **Encrypted traffic.** Only metadata is inspected (flows, DNS, TLS SNI and ALPN). There is no TLS decryption or payload signature matching in the style of Snort or Suricata.
 - **Single sensor state.** Detection state lives in the sensor process. Several sensors can share one database and Redis, but they do not share detection windows.
 - **Spoofed sources.** Blocking on source address can be abused with spoofed traffic. Prefer rate limits and short temporary blocks for floods.
-- **Only Linux x86_64 has been tested.** macOS and Windows capture and firewall adapters have been tested only against recorded command output, and Linux ARM64 has not been run. pf and Windows Firewall do not support rate limiting, and their temporary blocks expire only while SentinelX is running.
+- **Only Linux x86_64 has been tested natively.** macOS and Windows capture and firewall adapters have been tested only against recorded command output, and Linux ARM64 has been run only under QEMU user-mode emulation (replay, capability detection and doctor; no live capture or firewall control). pf and Windows Firewall do not support rate limiting, and their temporary blocks expire only while SentinelX is running.
 - **No MFA or SSO.** Put the dashboard behind a VPN or an authenticating reverse proxy if it must be reachable beyond a trusted network.
 - **Not yet production-proven.** Test in your environment in detection-only mode before relying on it.
 

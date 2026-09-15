@@ -11,9 +11,9 @@ API worker is honoured by another.
 
 Every message is ``{"id", "type", "timestamp", "payload"}`` where ``type`` is an
 :class:`~sentinelx.events.bus.EventType` value.  The server sends
-``{"type": "ping"}`` after 25 idle seconds, and re-checks the account at the same
-moment: a deactivated user is disconnected with 4401, a user whose role changed with
-4403. Each user may hold 10 streams (4429 beyond that). A client that cannot keep up
+``{"type": "ping"}`` after 25 idle seconds. The account is re-checked at least that
+often, whether the stream is idle or busy: a deactivated user is disconnected with
+4401, a user whose role changed with 4403. Each user may hold 10 streams (4429 beyond that). A client that cannot keep up
 has events dropped (the bus's bounded per-subscriber queue) and, if a single send
 stalls for 10 seconds, is disconnected - a slow dashboard never slows detection.
 

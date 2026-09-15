@@ -780,7 +780,7 @@ See [pcap-lab.md](pcap-lab.md) for the replay workflow.
 
 These are properties of the current design, not configuration mistakes.
 
-- **Threshold detectors miss what stays under their thresholds.** Slow port scans and low-rate brute force are confirmed misses with default settings ([benchmarking.md](benchmarking.md), `TestDocumentedEvasions`). Any rate-based detector can be evaded by an attacker who knows its threshold and window.
+- **Threshold detectors miss what stays under their thresholds.** Slow port scans and low-rate brute force are confirmed misses with default settings ([benchmarking.md](benchmarking.md), `TestDocumentedEvasions`, and the committed captures in `tests/pcaps/evasion/`, which `tests/capture/test_pcap_suite.py` asserts are not detected). Any rate-based detector can be evaded by an attacker who knows its threshold and window.
 - **Profiles are per source address.** Distributed or spoofed activity, each source below threshold, is not correlated by the built-in detectors. The statistical detector sees aggregates but attributes them to a single top contributor.
 - **No payload-level signatures.** SentinelX does not match exploit payloads. Brute force is inferred from session timing, not from failed logins.
 - **Encrypted traffic exposes metadata only.** HTTP floods over TLS, DNS over HTTPS or TLS, and anything inside a VPN are invisible to the application-layer checks. TLS decoding is limited to handshake metadata such as SNI and version.
