@@ -766,7 +766,12 @@ the stream; their payloads carry a non-null `replay_id`.
 
 `GET /api/v1/metrics` returns the Prometheus text exposition format
 (`text/plain; version=0.0.4`). Metric names are prefixed `sentinelx_`, for example
-`sentinelx_packets_captured_total`.
+`sentinelx_packets_captured_total`. With `TELEMETRY__METRICS_ENABLED=false` the endpoint
+answers `404 {"detail": "metrics are disabled"}` to everyone. With
+`TELEMETRY__PROFILE_PIPELINE=true` the pipeline also records
+`sentinelx_stage_latency_seconds{stage}` for the `decode`, `features`, `detection` and
+`response` stages (`response` covers threat intelligence, risk, correlation, response
+and publishing for a packet's detections); it costs a few clock reads per packet.
 
 Access depends on `api.metrics_token` (`API__METRICS_TOKEN`):
 

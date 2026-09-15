@@ -209,7 +209,6 @@ Scoring settings are read from the environment with the `SCORING__` prefix and a
 | `history_saturation` | `SCORING__HISTORY_SATURATION` | 5 | >= 1 | Distinct-detector count at which `history` reaches its full weight. |
 | `allowlist_penalty` | `SCORING__ALLOWLIST_PENALTY` | 40.0 | 0-100 | Points subtracted for an intel-trusted source. |
 | `auto_block_threshold` | `SCORING__AUTO_BLOCK_THRESHOLD` | 85.0 | 0-100 | Detection or incident risk at or above which the response engine proposes a preventive action. Actions are only applied under the conditions in [response-engine.md](response-engine.md). |
-| `incident_threshold` | `SCORING__INCIDENT_THRESHOLD` | 60.0 | 0-100 | Declared and editable, but not read by the correlation or response engines in this release. Incident creation is controlled by `CorrelationSettings`. |
 
 ## Correlation
 
@@ -322,7 +321,6 @@ Providers implement `ThreatIntelProvider.lookup(address)` and return an `IntelVe
 | --- | --- | --- |
 | `LocalDenylistProvider` | `local_denylist` | Score 1.0, category `denylist`. The description is the entry's label. |
 | `LocalAllowlistProvider` | `local_allowlist` | Score 0.0, `trusted=True`, category `allowlist`. |
-| `HttpReputationProvider` | `http_reputation` | The API's `score` (0-100) divided by 100 and clamped to 0-1. No verdict if the score is 0 or missing. |
 
 ### Local list files
 
@@ -341,18 +339,9 @@ File format (`load_network_file`):
 
 The files are read when the platform starts. Edit them and restart to apply changes.
 
-### Optional HTTPS reputation provider
+### External reputation feeds
 
-`HttpReputationProvider(url, api_key="", timeout=3.0, cache_seconds=3600.0)` is a generic JSON adapter:
-
-- The URL must start with `https://`. Any other URL raises `ValueError` at construction.
-- It sends `GET {url}/{address}` with `Accept: application/json`, plus `Authorization: Bearer <api_key>` when a key is given.
-- It expects `{"score": 0-100, "categories": [...]}`. Adapt `_parse` for a specific vendor.
-- **It never looks up private or loopback addresses.** For those it returns no verdict and sends no request.
-- Results, including "no verdict", are cached per address for `cache_seconds`. The cache is cleared once it holds more than 50,000 entries.
-- HTTP errors and invalid JSON raise `ThreatIntelError`.
-
-This provider is **not enabled by any setting** in this release. `Platform` builds only the two local providers. To use the HTTPS provider, construct a `ThreatIntelService` that includes it and pass it to `Pipeline(..., intel=...)`.
+SentinelX ships no external reputation provider. An earlier generic `HttpReputationProvider` was removed: it was never enabled by any setting, and its expected response format (`GET {url}/{address}` returning `{"score": 0-100}`) matched no real feed, so it could not be used without code changes. Every lookup also runs before the pipeline processes the next packet, so an external feed needs a design with failure backoff, not just a timeout. To add one, implement `ThreatIntelProvider.lookup()` for the specific feed, with https only, public destination addresses, a short timeout and caching, and pass a `ThreatIntelService` that includes it to `Pipeline(..., intel=...)`.
 
 ### Merging and failure handling
 

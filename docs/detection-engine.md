@@ -566,13 +566,13 @@ Verified options (`sentinelx anomaly train --help`):
 |---|---|
 | `PCAPS...` | One or more captures of normal traffic (required). Frames from all files are merged and sorted by timestamp |
 | `--output`, `-o` | Where to write the model. Defaults to `ANOMALY__ML_MODEL_PATH` (`models/isolation_forest.joblib`) |
-| `--contamination` | Isolation Forest contamination, 0.001-0.4, default 0.02 |
+| `--contamination` | Isolation Forest contamination, 0.001-0.4, default `ANOMALY__ML_CONTAMINATION` (0.02) |
 
 Training replays the captures through the decoder and feature extractor using the current detection settings, and samples each source's feature vector at most once every 5 seconds of packet time, and only when the source has at least 10 packets in its window. This mirrors how the detector scores at runtime. At least 50 vectors are required; with fewer the command exits with status 1 and asks for more normal traffic. The forest uses 200 trees and a fixed random seed of 0.
 
 The saved score scale maps the fitted model's decision boundary (`offset_`) to 0.0 and the lowest score seen in training to 1.0.
 
-The command does not read `ANOMALY__ML_CONTAMINATION`; pass `--contamination` explicitly if you need a different value.
+Without `--contamination` the command uses `ANOMALY__ML_CONTAMINATION` (default 0.02).
 
 After saving, the command loads the model back with the server's checks. If SentinelX would refuse to load it (for example because its directory is writable by other users), the command prints the reason and exits 1, although the file was written. A directory or file that cannot be written also exits 1 with a message.
 
@@ -769,7 +769,7 @@ All six window settings together determine W, which also caps the `within` windo
 | `ANOMALY__SIGMA_SATURATION` | `6.0` | > 0 | Deviation, in standard deviations, that maps to a score of 1.0 |
 | `ANOMALY__ML_ENABLED` | `false` | needs the `ml` extra | Load the Isolation Forest model and attach `ml_anomaly` (in `balanced` and `aggressive` modes) |
 | `ANOMALY__ML_MODEL_PATH` | `models/isolation_forest.joblib` | | Model file to load, and default training output |
-| `ANOMALY__ML_CONTAMINATION` | `0.02` | > 0, < 0.5 | Defined but not read by `sentinelx anomaly train`; use `--contamination` |
+| `ANOMALY__ML_CONTAMINATION` | `0.02` | > 0, < 0.5 | Default contamination for `sentinelx anomaly train` when `--contamination` is not given |
 | `ANOMALY__ML_MIN_SCORE` | `0.75` | 0.0-1.0 | Normalised score at or above which `ml_anomaly` reports |
 
 ### Tuning

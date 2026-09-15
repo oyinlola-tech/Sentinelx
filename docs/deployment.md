@@ -780,7 +780,6 @@ for how the score is used.
 | `SCORING__HISTORY_SATURATION` | | `5` | yes | History count at which the history factor reaches full weight (at least 1). |
 | `SCORING__ALLOWLIST_PENALTY` | | `40.0` | yes | Points subtracted when an allowlisted source is still detected (0 to 100). |
 | `SCORING__AUTO_BLOCK_THRESHOLD` | | `85.0` | yes | Risk at or above which an automatic block may be proposed (0 to 100). Acted on only with `RESPONSE_MODE=automatic` and `DRY_RUN=false`. |
-| `SCORING__INCIDENT_THRESHOLD` | | `60.0` | yes | 0 to 100. Defined, but not currently read by the platform. |
 
 ### Correlation (`correlation`)
 
@@ -806,7 +805,7 @@ for how the score is used.
 | `ANOMALY__SIGMA_SATURATION` | | `6.0` | yes | Deviation (in standard deviations) at which the score saturates (greater than 0). |
 | `ANOMALY__ML_ENABLED` | | `false` | no | Enable the Isolation Forest detector. Needs the `ml` extra and a trained model; a missing or untrusted model disables it with a logged error. |
 | `ANOMALY__ML_MODEL_PATH` | | `models/isolation_forest.joblib` | no | Model file. On POSIX systems it must not be group- or world-writable, must be owned by the user running SentinelX, and its directory must not be writable by the group or others (unless sticky). These checks are skipped on Windows; keep the model in a directory only you can write. |
-| `ANOMALY__ML_CONTAMINATION` | | `0.02` | no | Greater than 0 and less than 0.5. Defined, but not currently read by the platform (`sentinelx anomaly train --contamination` sets it for training). |
+| `ANOMALY__ML_CONTAMINATION` | | `0.02` | no | Greater than 0 and less than 0.5. The default for `sentinelx anomaly train --contamination` (the option itself accepts 0.001 to 0.4). |
 | `ANOMALY__ML_MIN_SCORE` | | `0.75` | yes | Minimum ML score for a detection (0 to 1). |
 
 ### Response (`response`)
@@ -899,9 +898,10 @@ None of the API settings are runtime-editable.
 | `TELEMETRY__LOG_LEVEL` | `LOG_LEVEL` | `INFO` | yes | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. |
 | `TELEMETRY__LOG_FORMAT` | `LOG_FORMAT` | `console` | no | `console` or `json`. |
 | `TELEMETRY__LOG_FILE` | | unset | no | Also write logs to this file (rotated at 50 MB, 5 backups). |
-| `TELEMETRY__METRICS_ENABLED` | | `true` | no | Defined, but not currently read; the metrics endpoint is always registered. |
-| `TELEMETRY__METRICS_PATH` | | `/metrics` | no | Defined, but not currently read; the endpoint is always `/api/v1/metrics`. |
-| `TELEMETRY__PROFILE_PIPELINE` | | `false` | no | Defined, but not currently read. |
+| `TELEMETRY__METRICS_ENABLED` | | `true` | no | Serve Prometheus metrics at `/api/v1/metrics`. When `false` the endpoint answers 404. |
+| `TELEMETRY__PROFILE_PIPELINE` | | `false` | no | Record per-stage latency in `sentinelx_stage_latency_seconds{stage}` (`decode`, `features`, `detection`, `response`). A few clock reads per packet. |
+
+`TELEMETRY__METRICS_PATH` and `SCORING__INCIDENT_THRESHOLD` were removed in this release: neither was ever read (the metrics endpoint is always `/api/v1/metrics`, and incidents are opened by the correlation settings). Old environment variables with these names are ignored, and a stored runtime value for `scoring.incident_threshold` is skipped with the warning `stored_setting_obsolete` without affecting other stored scoring changes.
 
 Whatever the level, `sentinelx start` routes uvicorn's loggers through SentinelX
 logging (format and secret redaction) at WARNING, so uvicorn's access log, which would

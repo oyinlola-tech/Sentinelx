@@ -63,7 +63,7 @@ It is the wrong tool for high-speed links (it handles about 5,000 packets per se
 **Analysis and response**
 - A configurable, additive 0–100 risk score with stored contributions.
 - Correlation of detections into incidents using kill-chain patterns (for example, reconnaissance followed by credential attacks).
-- Offline-first threat intelligence: local denylist and allowlist files, plus an optional HTTPS reputation provider.
+- Offline-first threat intelligence: local denylist and allowlist files, behind a provider interface for adding feeds.
 - A response engine with detect-only, manual-approval and automatic modes, dry run, temporary blocks, rate limiting (nftables and iptables) and HTTPS webhooks.
 - Firewall adapters for nftables, iptables, pf and Windows Firewall. nftables expires temporary blocks in the kernel; the other adapters rely on SentinelX's expiry task, which restores deadlines from the database after a restart.
 - A safety guard that refuses to block loopback, allowlisted and management addresses, the host's own addresses, operators signed in within the last hour, and oversized prefixes.
