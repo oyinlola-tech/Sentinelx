@@ -1,50 +1,68 @@
 @import "tailwindcss";
 
 /*
- * SentinelX design tokens.
+ * SentinelX design tokens: "night survey".
  *
- * Ground: blue-slate "oscilloscope glass", not pure black, so dense tables stay
- * readable for a whole shift. Brand/interactive accent is "signal iris", chosen to
- * sit outside the severity spectrum so a button never reads as an alert.
- * Severity colours are never the only signal: every severity also renders a label.
- * Contrast of text tokens against --color-ground is at least 4.5:1 (checked).
+ * The console borrows from the instruments network defence descends from: radar
+ * scopes, railway signal boxes and stencilled equipment plates. Colour is information,
+ * never decoration:
+ *
+ *   Graticule / Scope   green-black ground and panels, easy on the eyes for a shift
+ *   Chalk               text and primary actions (a button is chalk, not a colour)
+ *   Signal amber        attention and the live trace: focus, selection, dry run, warnings
+ *   Flare               danger: critical and high severity, prevention active, failures
+ *   Lichen              healthy: stream connected, systems operational
+ *
+ * Severity is never colour alone: every severity renders its label. Text tokens reach
+ * at least 4.5:1 against --color-ground.
+ *
+ * Token names predate this palette (frost, mist, iris...) and are kept so every view
+ * adopts it; `iris` is now an alias of the signal amber.
  */
 /* static: emit every token, including ones referenced only from inline styles. */
 @theme static {
-  --color-ground: #0b1117;
-  --color-panel: #111a23;
-  --color-raised: #182430;
-  --color-line: #233240;
-  --color-line-strong: #34495b;
-  --color-frost: #d7e1ea;
-  --color-mist: #95a7b7;
-  --color-fog: #6b7f90;
-  --color-iris: #8c9eff;
-  --color-iris-deep: #5b6fe0;
+  --color-ground: #0d1110;
+  --color-panel: #141a19;
+  --color-raised: #1b2422;
+  --color-line: #25302d;
+  --color-line-strong: #3a4844;
+  --color-frost: #e4ebe6;
+  --color-mist: #9ba9a3;
+  --color-fog: #7a8882;
 
-  --color-sev-critical: #ff4d5e;
-  --color-sev-high: #ff8a3d;
-  --color-sev-medium: #e8c547;
-  --color-sev-low: #56b3f5;
-  --color-sev-info: #8897a6;
-  --color-ok: #4fd1a1;
+  --color-signal: #ffb23f;
+  --color-signal-deep: #c7801a;
+  --color-iris: #ffb23f;
+  --color-iris-deep: #c7801a;
+  --color-chalk: #e4ebe6;
 
-  /* Severity as an ORDINAL ramp, for charts where severities sit side by side.
-     Validated with the dataviz palette validator (--ordinal, dark, surface #111a23):
-     single hue, monotone lightness, adjacent dL >= 0.06. The status hues above are
-     only ever used next to a text label (badges), never as the sole encoding. */
+  --color-sev-critical: #ff4f58;
+  --color-sev-high: #ff7b54;
+  --color-sev-medium: #ffb23f;
+  --color-sev-low: #8fb3c9;
+  --color-sev-info: #7a8882;
+  --color-ok: #86c5a4;
+
+  /* Severity as an ORDINAL ramp, for charts where severities sit side by side:
+     single hue, monotone lightness, validated against a dark surface. The status hues
+     above are only used next to a text label (badges), never as the sole encoding. */
   --color-ramp-info: #70463d;
   --color-ramp-low: #a35a49;
   --color-ramp-medium: #d66c50;
   --color-ramp-high: #f98662;
   --color-ramp-critical: #ffad86;
 
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, "SFMono-Regular", monospace;
-  --font-display: var(--font-archivo), var(--font-plex-sans), ui-sans-serif, sans-serif;
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-martian), ui-monospace, "SFMono-Regular", monospace;
+  --font-display: var(--font-shoulders), var(--font-public-sans), ui-sans-serif, sans-serif;
+  --font-stencil: var(--font-stencil-face), var(--font-shoulders), ui-sans-serif, sans-serif;
 
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1rem;
+
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
 
   --animate-tape: tape 1.2s ease-out;
 }
@@ -58,21 +76,32 @@
   to { opacity: 1; transform: scaleY(1); }
 }
 
+@keyframes sweep {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @layer base {
   html { color-scheme: dark; }
   body {
     background: var(--color-ground);
     color: var(--color-frost);
-    font-feature-settings: "ss01", "cv05";
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
   :focus-visible {
-    outline: 2px solid var(--color-iris);
+    outline: 2px solid var(--color-signal);
     outline-offset: 2px;
-    border-radius: 3px;
+    border-radius: 2px;
   }
-  ::selection { background: color-mix(in oklab, var(--color-iris) 35%, transparent); }
+  ::selection { background: color-mix(in oklab, var(--color-signal) 35%, transparent); color: var(--color-frost); }
   .tabular { font-variant-numeric: tabular-nums; }
+  /* Martian Mono is wide; tables and addresses use a condensed width. */
+  .font-mono { font-stretch: 87.5%; }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -88,27 +117,50 @@
   .panel {
     background: var(--color-panel);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: 4px;
   }
   .eyebrow {
     font-family: var(--font-mono);
-    font-size: var(--text-2xs);
-    letter-spacing: 0.08em;
+    font-stretch: 87.5%;
+    font-size: 0.65rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--color-fog);
+  }
+  /* Section and page titles: condensed signage. */
+  .heading-display {
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: 0.005em;
+    line-height: 0.95;
   }
   .data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.8125rem; }
   .data-table th {
     position: sticky; top: 0; z-index: 1;
     background: var(--color-panel);
     text-align: left; font-weight: 500;
-    font-family: var(--font-mono); font-size: var(--text-2xs);
-    letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-fog);
-    padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--color-line);
+    font-family: var(--font-mono); font-stretch: 87.5%; font-size: 0.65rem;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-fog);
+    padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--color-line);
     white-space: nowrap;
   }
-  .data-table td { padding: 0.45rem 0.75rem; border-bottom: 1px solid color-mix(in oklab, var(--color-line) 60%, transparent); vertical-align: middle; }
+  .data-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid color-mix(in oklab, var(--color-line) 70%, transparent); vertical-align: middle; }
   .data-table tbody tr { transition: background-color 120ms; }
-  .data-table tbody tr:hover { background: var(--color-raised); }
+  .data-table tbody tr:hover { background: var(--color-raised); box-shadow: inset 2px 0 0 var(--color-signal); }
   .data-table tbody tr[data-href] { cursor: pointer; }
+
+  /* The scope graticule: fine grid with a major division every fifth line. */
+  .graticule {
+    background-image:
+      linear-gradient(to right, color-mix(in oklab, var(--color-line) 55%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklab, var(--color-line) 55%, transparent) 1px, transparent 1px),
+      linear-gradient(to right, color-mix(in oklab, var(--color-line-strong) 45%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklab, var(--color-line-strong) 45%, transparent) 1px, transparent 1px);
+    background-size: 24px 24px, 24px 24px, 120px 120px, 120px 120px;
+  }
+  /* Radar range rings, centred on the element. */
+  .range-rings {
+    background-image: repeating-radial-gradient(circle at center, transparent 0 63px, color-mix(in oklab, var(--color-line-strong) 70%, transparent) 63px 64px);
+  }
 }

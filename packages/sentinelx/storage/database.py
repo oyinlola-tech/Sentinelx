@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -102,6 +103,8 @@ class Database:
             }
 
         engine = create_async_engine(self.url, **kwargs)
+        if self.dialect == "postgresql":
+            event.listen(engine.sync_engine, "invalidate", _abort_invalidated_connection)
         if self.dialect == "sqlite":
 
             @event.listens_for(engine.sync_engine, "connect")
@@ -176,31 +179,77 @@ class Database:
         return self._engine
 
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[AsyncSession]:
-        """A session that commits on success and rolls back on any exception."""
+    async def session(self, *, timeout_seconds: float | None = None) -> AsyncIterator[AsyncSession]:
+        """A session that commits on success and rolls back on any exception.
+
+        The whole unit of work - waiting for a connection, the statements run inside
+        the block and the commit - must finish within ``timeout_seconds`` (default
+        ``STORAGE__SESSION_TIMEOUT_SECONDS``). A database that accepts connections but
+        stops answering (a paused or silently partitioned server) otherwise holds the
+        caller until the operating system gives up on the connection. Past the
+        deadline the connection is discarded without waiting on the server and
+        :class:`StorageError` is raised, which the API answers with 503.
+        """
         if self._sessions is None:
             raise StorageError("database is not connected")
-        async with self._sessions() as session:
-            try:
-                yield session
-                await session.commit()
-            except BaseException as exc:
+        limit = (
+            self.settings.session_timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
+        deadline = asyncio.timeout(limit)
+        try:
+            async with deadline, self._sessions() as session:
                 try:
+                    yield session
+                    await session.commit()
+                except BaseException as exc:
+                    await self._discard(session, exc)
+                    raise
+        except TimeoutError as exc:
+            if deadline.expired():
+                raise StorageError(
+                    f"database at {self.safe_url} did not complete the work within {limit:g}s"
+                ) from exc
+            if _raised_by_database_driver(exc):
+                raise StorageError(
+                    f"database unavailable at {self.safe_url}: {type(exc).__name__}"
+                ) from exc
+            raise
+        except OSError as exc:
+            if _raised_by_database_driver(exc):
+                # The driver's own network errors (refused, unresolvable host, timed
+                # out) reach here unwrapped by SQLAlchemy. Report them as the storage
+                # outage they are, so the API answers 503 rather than a generic 500.
+                raise StorageError(
+                    f"database unavailable at {self.safe_url}: {type(exc).__name__}"
+                ) from exc
+            raise
+
+    @staticmethod
+    async def _discard(session: AsyncSession, exc: BaseException) -> None:
+        """Undo the session's work after ``exc`` without ever waiting on a dead server.
+
+        After a timeout or cancellation the driver may still be waiting for the server
+        to acknowledge a cancelled statement, and a rollback would wait with it, so the
+        connection is invalidated instead (closed at once; the server rolls back).
+        """
+        if not isinstance(exc, TimeoutError | asyncio.CancelledError):
+            try:
+                async with asyncio.timeout(_ROLLBACK_TIMEOUT_SECONDS):
                     await session.rollback()
-                except Exception:  # a broken connection cannot roll back; keep the cause
-                    log.debug("rollback_failed", error=type(exc).__name__)
-                if isinstance(exc, OSError | TimeoutError) and _raised_by_database_driver(exc):
-                    # The driver's own network errors (refused, unresolvable host, timed
-                    # out) reach here unwrapped by SQLAlchemy. Report them as the storage
-                    # outage they are, so the API answers 503 rather than a generic 500.
-                    raise StorageError(
-                        f"database unavailable at {self.safe_url}: {type(exc).__name__}"
-                    ) from exc
-                raise
+                return
+            except Exception:  # a broken connection cannot roll back; keep the cause
+                log.debug("rollback_failed", error=type(exc).__name__)
+        try:
+            await session.invalidate()
+        except Exception:
+            log.debug("invalidate_failed", error=type(exc).__name__)
 
     async def health(self) -> dict[str, Any]:
         try:
-            async with self.engine.connect() as connection:
+            async with (
+                asyncio.timeout(self.settings.session_timeout_seconds),
+                self.engine.connect() as connection,
+            ):
                 await connection.execute(text("SELECT 1"))
             return {"ok": True, "dialect": self.dialect, "url": self.safe_url}
         except (SQLAlchemyError, OSError, StorageError) as exc:
@@ -213,6 +262,30 @@ class Database:
 
 
 _DRIVER_PACKAGES = ("sqlalchemy", "asyncpg", "aiosqlite")
+#: A rollback on a healthy connection takes milliseconds; one that does not return
+#: promptly is on a connection that is no longer usable.
+_ROLLBACK_TIMEOUT_SECONDS = 5.0
+
+
+def _abort_invalidated_connection(
+    dbapi_connection: Any, _record: Any, _exception: BaseException | None
+) -> None:
+    """Close an invalidated asyncpg connection immediately, without waiting on the server.
+
+    SQLAlchemy closes an invalidated asyncpg connection gracefully, in a shielded task
+    that waits for the server - and first for any statement cancellation still in
+    flight, with no time limit. Against a server that accepts TCP but stops answering
+    that wait never ends and holds the request that triggered it. ``terminate()``
+    aborts the transport synchronously and cancels the driver's pending cancellation
+    requests; the graceful close that follows then finds the connection closed.
+    """
+    driver_connection = getattr(dbapi_connection, "driver_connection", None)
+    terminate = getattr(driver_connection, "terminate", None)
+    if callable(terminate):
+        try:
+            terminate()
+        except Exception:  # already closed or half-open; SQLAlchemy discards it anyway
+            log.debug("connection_terminate_failed")
 
 
 def _raised_by_database_driver(exc: BaseException) -> bool:
