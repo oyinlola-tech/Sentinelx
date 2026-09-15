@@ -208,7 +208,7 @@ Where to set it:
 | API | `POST /api/v1/sensors/start` with `{"bpf_filter": "tcp or udp"}` (at most 512 characters). If omitted, the configured filter is used |
 | Stored setting | `sentinelx config set capture bpf_filter '"tcp or udp"'` |
 
-`sentinelx start` has no filter option; it uses the configured filter. `sentinelx monitor -i` uses only the `--bpf` value, not the configured filter, and opens the capture with the `auto` backend and default promiscuous and buffer settings, whatever `CAPTURE__BACKEND`, `CAPTURE__PROMISCUOUS` and `CAPTURE__BUFFER_SIZE_MB` say.
+`sentinelx start` has no filter option; it uses the configured filter. `sentinelx monitor -i` uses `--bpf` when it is given and `BPF_FILTER` otherwise, and opens the capture with the configured `CAPTURE__BACKEND`, `CAPTURE__SNAPSHOT_LENGTH`, `CAPTURE__PROMISCUOUS`, `CAPTURE__BUFFER_SIZE_MB` and `CAPTURE__QUEUE_SIZE`.
 
 Validation and compilation:
 

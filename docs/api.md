@@ -368,7 +368,7 @@ administrator cannot block their own workstation. See
 | PATCH | `/rules/{rule_id}/enabled` | admin | `{"enabled": bool}`. |
 | DELETE | `/rules/{rule_id}` | admin | Delete a rule. 204. |
 | GET | `/detectors` | viewer | Built-in and rule detectors with their counters. |
-| PATCH | `/detectors/{name}/enabled` | admin | `{"enabled": bool}` for a built-in detector; persisted to `detection.disabled_detectors`. Rule detectors (`rule:*`) must use `/rules/{rule_id}/enabled`. |
+| PATCH | `/detectors/{name}/enabled` | admin | `{"enabled": bool}` for a built-in or anomaly detector; persisted to `detection.disabled_detectors`. Takes effect immediately; a detector disabled this way is attached switched off at the next start, so it can be re-enabled without a restart. 404 for a detector that is not attached. Rule detectors (`rule:*`) must use `/rules/{rule_id}/enabled` (422). |
 
 Definitions are 10 to 20,000 characters of YAML, parsed with a restricted loader that
 rejects anchors, aliases and nesting deeper than 32 levels. An invalid rule returns

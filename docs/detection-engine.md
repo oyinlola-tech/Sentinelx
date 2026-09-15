@@ -143,7 +143,7 @@ For emitted detections the engine also:
 
 ### Engine statistics
 
-`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. On restart, a built-in detector named in `disabled_detectors` is created disabled, and `statistical_anomaly` or `ml_anomaly` named there is not attached at all. Because a detector that is not attached cannot be toggled (the endpoint returns 404), re-enable an anomaly detector after such a restart by removing its name from `detection.disabled_detectors` (for example with `PATCH /api/v1/config/detection`) and restarting. See [api.md](api.md).
+`DetectionEngine.stats()` reports `detectors`, `enabled`, `detections_emitted`, `suppressed_cooldown`, `escalations`, `suppressed_allowlist`, `detector_errors`, and per-detector `evaluations` and `hits`. `GET /api/v1/detectors` returns each detector's name, description, category, default severity, references and live counters. `PATCH /api/v1/detectors/{name}/enabled` enables or disables a built-in or anomaly detector at runtime and persists the change to `disabled_detectors`; rule detectors are toggled through the rules endpoints instead. On restart, a built-in or anomaly detector named in `disabled_detectors` is attached but switched off (`attach_anomaly_detectors` in `assembly.py` does this for `statistical_anomaly` and `ml_anomaly`), so it can be switched back on from the dashboard or this endpoint without a restart. The endpoint returns 404 only for a detector that is not attached at all, for example an anomaly detector in `signature_only` mode or with `ANOMALY__ENABLED=false`, or the ML detector when its model did not load. See [api.md](api.md).
 
 ## Detection modes
 
@@ -161,7 +161,7 @@ For emitted detections the engine also:
 Within the mode:
 
 - If `DETECTION__ENABLED_DETECTORS` is non-empty, only built-in detectors whose names appear in it are kept. It does not affect rules or anomaly detectors.
-- Built-in detectors named in `DETECTION__DISABLED_DETECTORS` are instantiated but start disabled. `statistical_anomaly` and `ml_anomaly` named there are not attached.
+- Built-in and anomaly detectors named in `DETECTION__DISABLED_DETECTORS` are instantiated but start disabled, so they can be re-enabled at runtime.
 - The statistical detector is attached when `ANOMALY__ENABLED=true`; the ML detector when `ANOMALY__ML_ENABLED=true` and a trusted model loads (see [Model file checks](#model-file-checks)).
 - In the platform and API replays, rules disabled in the dashboard or with `sentinelx rules` are left out. `sentinelx replay`, `sentinelx monitor` and the benchmark have no database and load every valid rule file from the rules directory.
 
@@ -485,7 +485,7 @@ Code: `packages/sentinelx/anomaly/statistical.py` (`StatisticalAnomalyDetector`,
 
 Thresholds cannot be right for every network: 300 DNS queries per second is normal for a large resolver and alarming in a small office. The statistical detector learns what is normal for a set of network-wide metrics and reports departures.
 
-It is attached when `ANOMALY__ENABLED=true` (the default) and `DETECTION_MODE` is `balanced` or `aggressive`, unless `statistical_anomaly` is listed in `DETECTION__DISABLED_DETECTORS`.
+It is attached when `ANOMALY__ENABLED=true` (the default) and `DETECTION_MODE` is `balanced` or `aggressive`. If `statistical_anomaly` is listed in `DETECTION__DISABLED_DETECTORS`, it is attached switched off.
 
 ### Metrics
 
@@ -591,7 +591,7 @@ The ML dependencies must also be installed. These checks reduce the risk of load
 - Severity is medium when the score is at least 0.95, otherwise low. Confidence is `min(0.6, 0.3 + 0.3 * score)`. Action is `alert`; category `anomaly`.
 - Evidence: `anomaly_score`, `model` (version, training time, samples, contamination), up to four `feature:<name>` items for the largest non-zero feature values (a heuristic, not a feature attribution), and `interpretation: lead`.
 
-The ML detector is attached through `assembly.py` wherever the statistical detector is: the live platform, API and dashboard replays, `sentinelx replay`, `sentinelx monitor` and the benchmark, when `ANOMALY__ML_ENABLED=true`, `DETECTION_MODE` is `balanced` or `aggressive`, `ml_anomaly` is not in `DETECTION__DISABLED_DETECTORS`, and the model loads.
+The ML detector is attached through `assembly.py` wherever the statistical detector is: the live platform, API and dashboard replays, `sentinelx replay`, `sentinelx monitor` and the benchmark, when `ANOMALY__ML_ENABLED=true`, `DETECTION_MODE` is `balanced` or `aggressive`, and the model loads. With `ml_anomaly` in `DETECTION__DISABLED_DETECTORS` it is attached switched off.
 
 ## Writing a new detector
 

@@ -162,7 +162,7 @@ sentinelx monitor --pcap capture.pcap --duration 60
 | `--scenario TEXT` | Feed a synthetic scenario from memory. Unknown names exit with code 2 |
 | `--pcap PATH` | Replay a capture at speed 1 (original timing) |
 | `--interface`, `-i TEXT` | Capture from an interface. Default: `CAPTURE_INTERFACE` |
-| `--bpf TEXT` | Kernel BPF filter for live capture |
+| `--bpf TEXT` | Kernel BPF filter for live capture. Default: `BPF_FILTER`. Live capture also uses the configured capture backend, promiscuous mode, buffer size and queue size |
 | `--duration FLOAT` | Stop after N seconds |
 | `--enforce` | Use the configured firewall backend and response settings. Still subject to `DRY_RUN` |
 
