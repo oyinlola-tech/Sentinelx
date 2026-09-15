@@ -1,13 +1,11 @@
 """Threat-intelligence providers.
 
 Reputation lookups sit behind :class:`ThreatIntelProvider` so that no single feed
-is baked in.  The platform runs entirely offline with the local providers; an
-external provider is an optional addition, never a dependency.
+is baked in.  The platform runs entirely offline with the local providers.
 
-Lookups are on the detection path, not the packet path - they run only when a
-detector has already fired - so a slow provider delays scoring of a finding but
-never slows packet processing.  External lookups are cached and time-bounded, and
-a failing provider is skipped rather than failing the detection.
+Lookups run only when a detector has already fired, but the pipeline awaits them
+before it processes the next packet, so a provider must answer quickly: each lookup
+is time-bounded, and a failing provider is skipped rather than failing the detection.
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ from sentinelx.common.netutils import IPNetworkT, parse_ip, parse_network
 from sentinelx.telemetry.logging import get_logger
 
 __all__ = [
-    "HttpReputationProvider",
     "IntelVerdict",
     "LocalAllowlistProvider",
     "LocalDenylistProvider",
@@ -177,68 +174,6 @@ class LocalAllowlistProvider(_NetworkListProvider):
             categories=("allowlist",),
             description=label or "listed in local allowlist",
             matched=str(network),
-        )
-
-
-class HttpReputationProvider(ThreatIntelProvider):
-    """Generic JSON reputation API, disabled unless configured.
-
-    Expects ``GET {url}/{address}`` to return ``{"score": 0-100, "categories": [...]}``.
-    Adapt :meth:`_parse` for a specific vendor.  The API key is sent as a header
-    and never logged (see :func:`sentinelx.telemetry.logging.redact_secrets`).
-    """
-
-    name = "http_reputation"
-
-    def __init__(
-        self, url: str, api_key: str = "", timeout: float = 3.0, cache_seconds: float = 3600.0
-    ):
-        if not url.startswith("https://"):
-            raise ValueError("reputation provider URL must use https")
-        self.url = url.rstrip("/")
-        self._api_key = api_key
-        self.timeout = timeout
-        self.cache_seconds = cache_seconds
-        self._cache: dict[str, tuple[float, IntelVerdict | None]] = {}
-
-    async def lookup(self, address: str) -> IntelVerdict | None:
-        ip = parse_ip(address)
-        if ip.is_private or ip.is_loopback:
-            return None  # never leak internal addresses to a third party
-        cached = self._cache.get(address)
-        if cached and time.time() - cached[0] < self.cache_seconds:
-            return cached[1]
-
-        import httpx
-
-        headers = {"Accept": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.url}/{ip}", headers=headers)
-                response.raise_for_status()
-                verdict = self._parse(address, response.json())
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ThreatIntelError(f"{self.name} lookup failed: {type(exc).__name__}") from exc
-        self._cache[address] = (time.time(), verdict)
-        if len(self._cache) > 50_000:
-            self._cache.clear()
-        return verdict
-
-    def _parse(self, address: str, body: object) -> IntelVerdict | None:
-        if not isinstance(body, dict) or "score" not in body:
-            return None
-        score = max(0.0, min(1.0, float(body["score"]) / 100.0))
-        if score <= 0:
-            return None
-        categories = tuple(str(c) for c in body.get("categories", []) if isinstance(c, str))
-        return IntelVerdict(
-            provider=self.name,
-            address=address,
-            score=score,
-            categories=categories,
-            description=f"external reputation score {score:.0%}",
         )
 
 

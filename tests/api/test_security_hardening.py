@@ -246,6 +246,21 @@ class TestProxyAddresses:
         proxied = await client.get("/metrics", headers={"X-Forwarded-For": "203.0.113.9"})
         assert proxied.status_code == 403
 
+    async def test_metrics_endpoint_is_off_when_metrics_are_disabled(
+        self, platform: Platform, client: httpx.AsyncClient
+    ) -> None:
+        """Regression: TELEMETRY__METRICS_ENABLED=false was accepted but ignored."""
+        platform.settings.telemetry.metrics_enabled = False
+        platform.settings.api.metrics_token = "m" * 32
+        for headers in ({}, {"Authorization": "Bearer " + "m" * 32}):
+            response = await client.get("/metrics", headers=headers)
+            assert response.status_code == 404 and response.json() == {
+                "detail": "metrics are disabled"
+            }
+        platform.settings.telemetry.metrics_enabled = True
+        served = await client.get("/metrics", headers={"Authorization": "Bearer " + "m" * 32})
+        assert served.status_code == 200 and "sentinelx_" in served.text
+
     async def test_non_ascii_metrics_token_is_rejected_not_a_server_error(
         self, platform: Platform, client: httpx.AsyncClient
     ) -> None:
@@ -333,6 +348,22 @@ class TestPreventionSettings:
         await service.load_overrides()
         assert platform.settings.response.dry_run is True
         assert not platform.settings.prevention_active
+
+    async def test_a_stored_setting_that_no_longer_exists_keeps_the_rest_of_its_section(
+        self, platform: Platform
+    ) -> None:
+        # scoring.incident_threshold was editable, so databases may hold a value for it.
+        from sentinelx.services.config import ConfigService
+        from sentinelx.storage.repositories import SettingRepository
+
+        async with platform.database.session() as session:
+            await SettingRepository(session).set(
+                "scoring", {"incident_threshold": 70.0, "auto_block_threshold": 91.0}, "admin"
+            )
+        service = ConfigService(platform.settings, platform.database, platform.audit, platform.bus)
+        await service.load_overrides()
+        assert platform.settings.scoring.auto_block_threshold == 91.0
+        assert not hasattr(platform.settings.scoring, "incident_threshold")
 
     async def test_turning_dry_run_off_requires_confirmation_and_changes_the_banner(
         self, platform: Platform, client: httpx.AsyncClient, admin: dict[str, str]

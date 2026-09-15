@@ -185,3 +185,53 @@ class TestRedaction:
         assert "RuntimeError" in captured
         assert "local-variable-secret" not in captured
         assert "hunter2" not in captured
+
+
+def test_removed_settings_in_the_environment_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    # TELEMETRY__METRICS_PATH and SCORING__INCIDENT_THRESHOLD were never read and were
+    # removed; an environment that still sets them must keep loading.
+    monkeypatch.setenv("TELEMETRY__METRICS_PATH", "/custom")
+    monkeypatch.setenv("SCORING__INCIDENT_THRESHOLD", "70")
+    monkeypatch.setenv("ANOMALY__ML_CONTAMINATION", "0.05")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert not hasattr(settings.telemetry, "metrics_path")
+    assert not hasattr(settings.scoring, "incident_threshold")
+    assert settings.anomaly.ml_contamination == 0.05
+
+
+async def test_profile_pipeline_records_per_stage_latency() -> None:
+    """Regression: TELEMETRY__PROFILE_PIPELINE was accepted but nothing was recorded."""
+    from prometheus_client import REGISTRY
+
+    from sentinelx.pipeline import Pipeline
+    from sentinelx.testing.scenarios import tcp_port_scan
+
+    stages = ("decode", "features", "detection", "response")
+
+    def observed() -> dict[str, float]:
+        return {
+            stage: REGISTRY.get_sample_value(
+                "sentinelx_stage_latency_seconds_count", {"stage": stage}
+            )
+            or 0.0
+            for stage in stages
+        }
+
+    frames = tcp_port_scan().frames
+    for enabled in (False, True):
+        pipeline = Pipeline(
+            Settings(
+                storage={"database_url": "sqlite+aiosqlite:///:memory:"},
+                telemetry={"profile_pipeline": enabled},
+            )
+        )
+        before = observed()
+        detections = 0
+        for frame in frames:
+            detections += len(await pipeline.process_frame(frame))
+        after = observed()
+        changed = {stage for stage in after if after[stage] != before[stage]}
+        if enabled:
+            assert detections and changed == set(stages)
+        else:
+            assert changed == set()

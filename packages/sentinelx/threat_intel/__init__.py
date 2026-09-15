@@ -1,7 +1,6 @@
 """Threat intelligence providers."""
 
 from sentinelx.threat_intel.providers import (
-    HttpReputationProvider,
     IntelVerdict,
     LocalAllowlistProvider,
     LocalDenylistProvider,
@@ -11,7 +10,6 @@ from sentinelx.threat_intel.providers import (
 )
 
 __all__ = [
-    "HttpReputationProvider",
     "IntelVerdict",
     "LocalAllowlistProvider",
     "LocalDenylistProvider",
