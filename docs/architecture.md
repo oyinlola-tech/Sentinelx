@@ -315,7 +315,7 @@ Migrations live in `packages/sentinelx/storage/migrations`. `storage/migrate.py`
 | `sentinelx db purge` | Apply retention policies now. |
 | `sentinelx doctor` | Among other checks, reports whether the database schema is at the latest revision. |
 
-Retention is controlled by `storage.retention_days` (default 30; flat alias `RETENTION_DAYS`), `storage.audit_retention_days` (default 365) and `storage.metrics_retention_days` (default 7). Detections are purged by their timestamp, which is capture time, so detections from a replay of an old capture are removed at the next retention run if the capture is older than `retention_days`.
+Retention is controlled by `storage.retention_days` (default 30; flat alias `RETENTION_DAYS`), `storage.audit_retention_days` (default 365) and `storage.metrics_retention_days` (default 7). Live detections, incidents and response actions are purged by their own timestamps (detection time, incident last-seen time, decision time); only closed live incidents (`resolved` or `false_positive`) are removed. Detections, incidents and response actions from a replay carry the capture's timestamps, so they are never purged by those: they expire together with their replay record, `retention_days` after the replay ran (`replays.created_at`), whatever the age of the capture (`RetentionRepository.purge` in `storage/repositories.py`).
 
 Runtime setting changes made with `sentinelx config set` or the API are stored in the `settings` table and applied at the next startup, where they take precedence over environment variables, except `response.mode` and `response.dry_run`, where an explicit environment value wins.
 
@@ -355,7 +355,7 @@ With `STORAGE__REDIS_REQUIRED=true`, startup fails if Redis is unreachable, and 
 
 **Audit writes bypass the bus.** Audit records are written directly to the database so they cannot be dropped the way dashboard events can. A failed audit write by an administrative action returns an error. A failed audit write by the engine is logged at error level but does not reverse a firewall change that has already been made.
 
-**Packet time, not wall-clock time.** Windows, detection timestamps, risk history and correlation windows use capture timestamps, which makes replay faithful: a replay reproduces the original timeline whatever its speed. For live AF_PACKET capture, the timestamp is taken when the worker thread receives the frame, so any delay before the read shifts it. The cost is that a replay of an old capture is filed in the past (see [Database](#database) for retention).
+**Packet time, not wall-clock time.** Windows, detection timestamps, risk history and correlation windows use capture timestamps, which makes replay faithful: a replay reproduces the original timeline whatever its speed. For live AF_PACKET capture, the timestamp is taken when the worker thread receives the frame, so any delay before the read shifts it. The cost is that a replay of an old capture is filed in the past in time-filtered views; retention is unaffected, because replay results expire with their replay record (see [Database](#database)).
 
 **Bounded state with eviction.** The sensor stays within a predictable amount of memory under source floods. The cost is that an attacker who creates enough sources can push a real attacker's profile out of the table before a threshold is reached, and that a very long incident keeps only its most recent members. Eviction counters and `detection_total` make this visible.
 

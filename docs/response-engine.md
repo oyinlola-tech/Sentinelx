@@ -175,7 +175,7 @@ In `manual_approval` mode, queued actions are held **in memory** by the running 
 | Limit | Value |
 | --- | --- |
 | Pending actions held | 1,000 (`MAX_PENDING_APPROVALS`). When full, the oldest is dropped and `pending_approval_evicted` is logged |
-| Time limit | 24 hours (`PENDING_APPROVAL_TTL`). Older actions are removed when a new action is queued |
+| Time limit | 24 hours (`PENDING_APPROVAL_TTL`). Older actions are removed when a new action is queued, and whenever pending actions are listed, approved or rejected |
 
 | Operation | API |
 | --- | --- |
@@ -183,7 +183,7 @@ In `manual_approval` mode, queued actions are held **in memory** by the running 
 | Approve | `POST /api/v1/firewall/approvals/{action_id}/approve` (administrator role) |
 | Reject | `POST /api/v1/firewall/approvals/{action_id}/reject` with body `{"reason": "..."}` (administrator role) |
 
-Both approve and reject return 404 for an unknown `action_id`.
+Both approve and reject return 404 for an unknown `action_id`, including an action older than 24 hours: an expired request is not listed and cannot be approved or rejected.
 
 - **Approve** removes the pending action and runs it as a manual action with the reason `approved: <original reason>` and source `approval`. The safety guard runs again, and `DRY_RUN` still applies: with `DRY_RUN=true`, an approved action is `simulated`.
 - **Reject** removes the pending action and writes a `REJECT_RESPONSE` audit record with the pending action's details.
@@ -233,7 +233,7 @@ source_ip, destination_ip, evidence, timestamp
 - **Public destinations only.** Before each delivery, the host is resolved and every address it resolves to must be a public unicast address. Loopback, private, link-local, reserved and multicast addresses are refused with `webhook host '<host>' resolves to non-public address <address>; set RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES=true to allow internal receivers`. Set `RESPONSE__WEBHOOK_ALLOW_PRIVATE_ADDRESSES=true` (environment only) for an internal receiver. A DNS answer that changes between the check and the connection is not prevented. Redirects are not followed.
 - **Never on the detection path.** `handle_detection` puts the webhook on a bounded queue of 200 (`WEBHOOK_QUEUE_SIZE`) and returns immediately with a `webhook` decision whose reason ends with `queued for delivery`. One background worker delivers queued webhooks in order. When the queue is full, the webhook is dropped, `sentinelx_webhook_failures_total` is incremented, `webhook_queue_full` is logged, and the returned decision carries the error `webhook queue full; delivery skipped`.
 - **Delivery results.** The request uses a timeout of `RESPONSE__WEBHOOK_TIMEOUT_SECONDS` (default 5.0, at most 30). A failed or refused delivery produces a `webhook` decision with outcome `failed` and the error `webhook failed: <ExceptionName>` (or the refusal reason), increments `sentinelx_webhook_failures_total` and logs `webhook_failed`. Delivery results (`executed` or `failed`) are counted in `sentinelx_responses_total{action="webhook"}`; webhook decisions are not published, stored or audited.
-- **Display.** Webhook URLs often carry their secret in the path or query. Decision targets, webhook log lines and the settings view (`GET /api/v1/config`) show only `scheme://host[:port]/…`. The `UPDATE_SETTINGS` audit record and `config.changed` event of a runtime change to `webhook_url` currently contain the full URL, and both are visible to the analyst role.
+- **Display.** Webhook URLs often carry their secret in the path or query. Decision targets, webhook log lines and the settings view (`GET /api/v1/config`) show only `scheme://host[:port]/…`. The same applies to the before and after values in the `UPDATE_SETTINGS` (or `ENABLE_PREVENTION`) audit record and the `config.changed` event of a runtime change to `webhook_url`; fields with secret-like names in that diff are shown as `[redacted]` (`_display` in `packages/sentinelx/services/config.py`).
 
 ## Safety guard
 

@@ -326,8 +326,8 @@ route modules in `packages/sentinelx/api/routes/`.
 | POST | `/firewall/check` | analyst | `{"target"}`: preview whether the safety guard would permit acting on it. |
 | POST | `/firewall/block` | admin | Block or rate limit an address or prefix. Honours `DRY_RUN` and the safety guard. |
 | POST | `/firewall/unblock` | admin | `{"target", "reason"}`: remove a block. |
-| GET | `/firewall/approvals` | viewer | Actions waiting for approval (`RESPONSE_MODE=manual_approval`). |
-| POST | `/firewall/approvals/{action_id}/approve` | admin | Approve and carry out a pending action (still subject to the guard and dry run). |
+| GET | `/firewall/approvals` | viewer | Actions waiting for approval (`RESPONSE_MODE=manual_approval`), excluding requests older than 24 hours. |
+| POST | `/firewall/approvals/{action_id}/approve` | admin | Approve and carry out a pending action (still subject to the guard and dry run). An unknown action, or one older than 24 hours, returns 404. |
 | POST | `/firewall/approvals/{action_id}/reject` | admin | `{"reason"?}`: discard a pending action. |
 | GET | `/firewall/allowlist` | viewer | Response allowlist, detection allowlist and management addresses. |
 | PUT | `/firewall/allowlist` | admin | `{"networks": [...]}` (up to 1,000 entries): replace the never-block allowlist. Loopback is always retained. |

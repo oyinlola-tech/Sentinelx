@@ -3305,7 +3305,10 @@
             "description": "Successful Response"
           }
         },
-        "summary": "What this host can do: live capture, PCAP replay, firewall control, blocking"
+        "summary": "What this host can do: live capture, PCAP replay, firewall control, blocking",
+        "tags": [
+          "system"
+        ]
       }
     },
     "/api/v1/system/health": {

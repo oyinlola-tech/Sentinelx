@@ -945,17 +945,19 @@ removed.
 
 | Data | Removed when older than | Setting |
 |---|---|---|
-| Detections | `retention_days` | `RETENTION_DAYS` (30) |
-| Incidents with status `resolved` or `false_positive`, and every incident from a replay (by last-seen time) | `retention_days` | |
-| Response actions (by decision time) | `retention_days` | |
+| Live detections (by detection time) | `retention_days` | `RETENTION_DAYS` (30) |
+| Live incidents with status `resolved` or `false_positive` (by last-seen time) | `retention_days` | |
+| Live response actions (by decision time) | `retention_days` | |
+| Replay records (by when the replay ran, `replays.created_at`), together with every detection, incident and response action of that replay | `retention_days` | |
 | Inactive block records | `retention_days` | |
-| Replay records | `retention_days` | |
 | Uploaded capture files in `PCAP_DIRECTORY/uploads` (by file modification time) | `retention_days` | |
 | Traffic summaries, system metrics | `metrics_retention_days` | `STORAGE__METRICS_RETENTION_DAYS` (7) |
 | Audit events | `audit_retention_days` | `STORAGE__AUDIT_RETENTION_DAYS` (365) |
 | Refresh tokens | when expired | |
 
-Open live incidents are never removed by retention. Only regular files in the
+Open live incidents are never removed by retention. Replay results are not expired by
+their packet timestamps, so a replay of an old capture is kept for the full
+`retention_days` after it ran. Only regular files in the
 `uploads` subdirectory are deleted; generated fixtures and files you place elsewhere in
 the PCAP directory are left alone. All three retention values can be changed at
 runtime.

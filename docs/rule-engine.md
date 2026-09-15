@@ -464,7 +464,7 @@ Tests use the detection settings of the process running them, so window settings
 
 - Include at least one `match` and one `no_match`. `normal_traffic` is the standard negative.
 - Add a near-miss negative that shares the surface of the attack but stays under your threshold, as the shipped rules do: `ssh_brute_force` with `attempts: 10` against a threshold of 20, or `tcp_port_scan` with `ports: 30` against a threshold of 50.
-- Scenario names and parameters are checked by validation, so a misspelled scenario or parameter is reported as a validation problem and `sentinelx rules test` exits with status 1 without running the tests. The `--scenario` option of `sentinelx rules test` is the exception: its name is not checked first, and an unknown name ends in an unhandled `ValueError` traceback.
+- Scenario names and parameters are checked by validation, so a misspelled scenario or parameter is reported as a validation problem and `sentinelx rules test` exits with status 1 without running the tests. An unknown name passed to the `--scenario` option of `sentinelx rules test` exits with status 2 and lists the available scenarios.
 - A rule with no tests is reported as `<id> has no embedded tests` by `sentinelx rules test` but does not fail the command.
 
 ## Workflow
@@ -493,7 +493,7 @@ All commands below exist as shown in `sentinelx rules --help`.
 |---|---|
 | `sentinelx rules list [--json]` | Rules known to the platform, with state and origin (ID, name, enabled, severity, action, within, origin, condition). Opens the database and syncs file rules first. Invalid rules are printed as `invalid rule skipped:` |
 | `sentinelx rules validate [PATHS]... [--json]` | Validate rule files or directories without loading them into the platform. Defaults to `RULES_DIRECTORY`. Prints `valid <id>` or `invalid <problem>` and exits 1 if there is any problem, for CI |
-| `sentinelx rules test PATH [--pcap FILE] [--scenario TEXT] [--json]` | For each rule in one file: run its embedded tests (default), or run it against a capture (`--pcap`) or one scenario with default parameters (`--scenario`). Exits 1 if the file has validation problems or an embedded test fails |
+| `sentinelx rules test PATH [--pcap FILE] [--scenario TEXT] [--json]` | For each rule in one file: run its embedded tests (default), or run it against a capture (`--pcap`) or one scenario with default parameters (`--scenario`). Exits 1 if the file has validation problems or an embedded test fails, and 2 for an unknown `--scenario` name |
 | `sentinelx rules enable RULE_ID` | Enable a rule in the database. A running server picks this up on restart |
 | `sentinelx rules disable RULE_ID` | Disable a rule in the database. A running server picks this up on restart |
 | `sentinelx rules fields` | Print the field reference table |

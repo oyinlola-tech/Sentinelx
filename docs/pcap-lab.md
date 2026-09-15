@@ -312,7 +312,7 @@ sentinelx rules test rules                                                     #
 | `--scenario TEXT` | Run each rule over one synthetic scenario with default parameters |
 | `--json` | Machine-readable output |
 
-If both `--pcap` and `--scenario` are given, `--pcap` is used. Without either, the rules' embedded `tests:` are run and the command exits with code 1 if any test fails. Against a capture or scenario there is no expected outcome, so the exit code is 1 only when a rule file is invalid. The `--scenario` name is not checked before running: an unknown name ends in an unhandled `ValueError` and a traceback.
+If both `--pcap` and `--scenario` are given, `--pcap` is used. Without either, the rules' embedded `tests:` are run and the command exits with code 1 if any test fails. Against a capture or scenario there is no expected outcome, so the exit code is 1 only when a rule file is invalid. An unknown `--scenario` name exits with code 2 and prints the available scenarios.
 
 For each rule, `--json` returns `rule`, `target`, `packets` (decoded packets), `matched`, `detection_count`, `sources` (detections per source address), `elapsed_seconds`, `first_detection` (the explanation of the first match) and `evidence`. For example, `rules/network-recon.yml` against the generated `tcp_port_scan.pcap` gave `rapid_syn_scan` 171 detections from 203.0.113.45 over 440 packets, and `smb_sweep` none. Against `normal_traffic.pcap` neither rule matched.
 
