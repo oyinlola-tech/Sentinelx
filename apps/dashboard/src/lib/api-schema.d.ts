@@ -1706,7 +1706,7 @@ export interface operations {
             query?: {
                 target?: string | null;
                 outcome?: string[];
-                /** @description Include one alert per detection */
+                /** @description Include stored alert rows (current versions do not store alerts; see /alerts) */
                 include_alerts?: boolean;
                 /** @description Include decisions from replays */
                 include_replays?: boolean;

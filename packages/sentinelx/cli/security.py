@@ -308,13 +308,12 @@ def _ask(question: str, parameter: str) -> str:
     """
     import sys
 
-    import click
-
     if not sys.stdin.isatty():
-        raise click.UsageError(
-            f"Missing {parameter} (required when not run in a terminal).",
-            ctx=click.get_current_context(silent=True),
-        )
+        # Typer's own exit, not click.UsageError: recent Typer releases vendor their
+        # own copy of Click and treat exceptions from the installed click package as
+        # crashes (exit 1 with a traceback).
+        err.print(f"Missing {parameter} (required when not run in a terminal).")
+        raise typer.Exit(2)
     return str(typer.prompt(question))
 
 

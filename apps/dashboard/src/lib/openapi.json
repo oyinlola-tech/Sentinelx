@@ -1639,13 +1639,13 @@
             }
           },
           {
-            "description": "Include one alert per detection",
+            "description": "Include stored alert rows (current versions do not store alerts; see /alerts)",
             "in": "query",
             "name": "include_alerts",
             "required": false,
             "schema": {
               "default": false,
-              "description": "Include one alert per detection",
+              "description": "Include stored alert rows (current versions do not store alerts; see /alerts)",
               "title": "Include Alerts",
               "type": "boolean"
             }

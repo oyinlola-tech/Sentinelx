@@ -527,17 +527,33 @@ async def solo(tmp_path: Path) -> AsyncIterator[Env]:
 # ------------------------------------------------------------ policy table
 
 
+def iter_routes(routes: Any, prefix: str = "") -> Any:
+    """Every route with its full path, on FastAPI versions old and new.
+
+    FastAPI up to 0.13x copies included routers' routes into ``app.routes`` with the
+    prefix applied. Newer releases keep each included router as one lazy entry with
+    the original routes and the prefix in its include context.
+    """
+    for route in routes:
+        included = getattr(route, "original_router", None)
+        if included is not None:
+            context_prefix = getattr(getattr(route, "include_context", None), "prefix", "") or ""
+            yield from iter_routes(included.routes, prefix + context_prefix)
+        else:
+            yield route, prefix + getattr(route, "path", "")
+
+
 def test_policy_table_matches_the_live_routes(tmp_path: Path) -> None:
     app = create_app(make_settings(tmp_path, jwt_secret=JWT_SECRET))
     live: dict[tuple[str, str], str] = {}
     websockets: list[str] = []
-    for route in app.routes:
+    for route, path in iter_routes(app.routes):
         if isinstance(route, APIRoute):
-            assert route.path.startswith(API), route.path
+            assert path.startswith(API), path
             for method in route.methods:
-                live[(method, route.path.removeprefix(API))] = derived_access(route)
+                live[(method, path.removeprefix(API))] = derived_access(route)
         elif isinstance(route, APIWebSocketRoute):
-            websockets.append(route.path)
+            websockets.append(path)
     table = {(op.method, op.template): op.access for op in OPS}
     assert len(table) == len(OPS), "duplicate operation in OPS"
     assert set(live) == set(table), {

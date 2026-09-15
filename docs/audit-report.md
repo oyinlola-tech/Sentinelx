@@ -1,344 +1,364 @@
-# SentinelX verification and production-readiness audit
+# SentinelX final verification report
 
-Audit completed 2026-09-15 against SentinelX 0.1.0.
+Verification completed on 2026-09-15 against SentinelX 0.1.0, on the working tree after all fixes below.
 
-This report records what was tested, on which systems, what failed, what was fixed and what remains open. Every number here was measured during the audit, and the raw benchmark output is committed under `benchmarks/results/`. "Not verified" means exactly that: the code path exists but was not run on that system.
+This report records what was run, on which systems, what failed, what was fixed and what remains open. Every result here comes from a command or test that was executed during this pass. "Not tested" means exactly that. Raw benchmark output is committed in `benchmarks/results/`.
 
 ## 1. Executive summary
 
-SentinelX works end to end on Linux x86_64 and in Docker on a Linux host. This was verified with real traffic, a real kernel firewall and a real browser, on these paths:
+SentinelX was taken through a full verification pass rather than a rebuild:
 
-- **Detection:** live capture or PCAP replay, detection, risk scoring and correlation into incidents.
-- **Streaming:** the WebSocket event stream reaching the dashboard.
-- **Prevention:** a dry-run block, then enabling prevention with the confirmation phrase, a real nftables block visible in the kernel, the audit trail, and an unblock that restores the kernel state.
+- Six parallel audits: static code, parser and detectors, API and auth, database and Redis, CLI and doctor, and rules, risk, correlation and response.
+- A fresh-machine install following the README.
+- Browser tests of every dashboard page and every failure state.
+- Deliberate failure injection.
+- A complete end-to-end prevention run on a clean Docker stack, using real captured traffic and a real kernel firewall.
 
-The audit found and fixed a substantial number of real defects. Among the most serious:
+**The application works on Linux x86_64 and in Docker on a Linux host.** Every link of the required end-to-end chain was exercised and passed on the final images (19 of 19 steps):
 
-- An unauthenticated request could make the API log the JWT secret.
-- CLI crashes printed the JWT secret and database credentials.
-- A 400-byte YAML rule could expand to a 30 MB response.
-- The default Docker API image could not start at all.
-- Firewall commands failed under file capabilities.
-- The null firewall reported blocks as executed.
-- The retention job deleted replay results within a minute of starting.
-- A password change could end the session it was made from.
+- **Detection:** the dashboard started live capture, and a controlled TCP scan from a throwaway container on the stack's private network was captured and detected, explained with evidence and risk.
+- **Correlation and alerting:** the detections were correlated into an incident, streamed over the WebSocket, shown in the dashboard and raised as an alert.
+- **Prevention:**
+  - A dry-run block left the kernel untouched.
+  - Prevention was enabled with the confirmation phrase.
+  - A real nftables block appeared in the kernel and was audited and shown in the dashboard.
+  - Unblocking restored the kernel, and the incident was closed.
 
-Each fix has a regression test, and most of those tests were checked to fail against the old code.
+The pass found and fixed **more than 70 defects**, each with a regression test; most tests were confirmed to fail on the old code. The most serious:
 
-Cross-platform support is real in the code but only partly verified:
+- **Security events were being lost:**
+  - The event persister kept only 1,600 of 5,000 detections in a burst and dropped events while the database was paused.
+  - The event bus dropped detections when its queue filled.
+- **Visibility and filter bypasses:**
+  - A viewer could subscribe to analyst-only WebSocket events (audit and configuration changes).
+  - An automatic rate limit could downgrade an administrator's permanent block, letting traffic through again on iptables (reproduced in a network namespace).
+  - IPv6 zone identifiers and IPv4-in-IPv6 forms of protected addresses passed the firewall safety guard.
+- **Credentials and sessions:**
+  - `start --port 99999` silently bound a random port.
+  - An inherited environment variable could start live capture without `--capture`.
+  - uvicorn logged one-time WebSocket tickets.
+  - Log redaction missed `redis://:password@host` URLs, the exact form Docker Compose uses.
+  - Sign-out and password changes stopped protecting sessions during a Redis outage.
+- **Dishonest status:**
+  - With the database stopped, the API answered 500 instead of 503.
+  - Prevention could be enabled, and the banner showed "PREVENTION ACTIVE", while the firewall could not be changed at all.
 
-| Platform | Status |
-| --- | --- |
-| Linux x86_64 | Fully tested |
-| Docker on Linux | Fully tested |
-| Linux ARM64 | Exercised under QEMU emulation only |
-| macOS | Implemented; adapters unit-tested against recorded command output, never run on a real host |
-| Windows | Implemented; adapters unit-tested against recorded command output, never run on a real host |
-| WSL2 | Behaviour detected and documented; not run |
+**Verdict: BETA READY** for Linux x86_64 and Docker on a Linux host. It is not a release candidate, for these reasons:
 
-**Recommendation: BETA READY for Linux (x86_64, and Docker on a Linux host).** It is not ready for production use on macOS, Windows or WSL2. It is not production ready anywhere until the open items in sections 9 and 10 are closed, the Windows and macOS CI jobs have run, and it has had operational time on real networks.
+- Windows, macOS and WSL2 have never been run.
+- A silent network partition to PostgreSQL can still stall requests.
+- Throughput is single-process, about 5,000 packets per second on the test machine.
+- A handful of low-severity issues remain (section 9).
 
-## 2. Feature verification matrix
+## 2. Feature matrix
 
-Key:
+**PASS** means the feature was exercised against real components and worked. **PARTIAL** means it works with a documented gap. **NOT TESTABLE** means this environment could not run it.
 
-- **Verified** means exercised against real components during this audit.
-- **Tested** means covered by automated tests with in-process fakes.
-- **Not verified** means not exercised.
+| Feature | Status | Tested | Result | Notes |
+|---|---|---|---|---|
+| Installation (README path, clean container) | PASS | Fresh `python:3.12-slim` and `node:22-slim` containers built from the committed source | Backend and dashboard install, replay, capabilities and doctor work; clean suite passed (see section 7) | Needs network access to PyPI and npm |
+| Configuration and `.env` | PASS | Static reconciliation of every variable read; strict validation tests | `.env.example` complete; typos such as `DRY_RUN=ture` are errors | `.env` never committed (checked in git history) |
+| Backend API startup | PASS | Local, clean container, Docker | Starts cleanly with no tracebacks; noisy Alembic plugin lines removed | |
+| Database (SQLite, PostgreSQL 17) | PASS | Migrations up/down/up on both, schema diff, constraints, CRUD, pool, N+1 counts | No drift; downgrades work; 50 indexes match the models | New migration `60413ece4dff` |
+| Security-event persistence | PASS | 5,000-event burst, paused and stopped database, bad rows | All events stored exactly once; bad rows isolated | Was losing events (fixed) |
+| Redis | PASS | TTLs, counters, tickets, outage and reconnection | Degraded mode works; revocations written back on reconnect | |
+| Live packet capture | PASS | AF_PACKET and libpcap in a network namespace; the dashboard started capture in Docker; real scan captured | 1,506 packets, detection raised | Linux only |
+| PCAP replay | PASS | Committed PCAP suite, dashboard, API and CLI replays | Same pipeline as live; byte-identical results across runs | |
+| Packet parser | PASS | 394 tests: link layers, IPv4/IPv6, TCP, UDP, ICMP, ARP, DNS, HTTP, TLS; truncation at every length; 11,000 fuzzed frames | Never raises; 8 parser bugs fixed | |
+| Feature extraction | PASS | Exact-value tests; 200k packets from 50k sources | Bounded state | About 16 KB per tracked source |
+| Detection engine | PASS | Every detector: normal, attack, malformed input, exact threshold boundaries; 19 injected bugs all caught | 0 false positives in benchmarks | Slow and low-rate attacks evade (by design) |
+| Rule engine | PASS | 176 tests incl. 16 hostile conditions and 4 hostile YAML files | No code execution; no `eval`/`exec` anywhere | |
+| Risk engine | PASS | Determinism, factor direction, 2,100 random assessments | Always 0–100 and explained | Inputs now clamped |
+| Correlation and incidents | PASS | Grouping, escalation, duplicates, closure; incident closed from the dashboard | Unrelated sources stay separate | |
+| Response engine and dry run | PASS | Every mode; dry run sends zero mutating commands on every path | Failures reported as `failed` with the real error | |
+| Firewall: nftables | PASS | Network namespace and Docker, real traffic | Block, expiry, rate limit, unblock, restoration | |
+| Firewall: iptables | PASS | Network namespace, real traffic | Same as nftables | |
+| Firewall: pf, Windows Firewall | NOT TESTABLE | Unit tests against recorded command output only | | No macOS or Windows host |
+| Firewall safety | PASS | 58 refused and 6 allowed targets; unprivileged container | Blocks never reported when they failed | |
+| API | PASS | 212-test endpoint matrix covering all 67 operations | Correct status codes, no leaks, 503 on database outage | |
+| Authentication | PASS | 24-test matrix and hardening tests | Tampered or expired tokens rejected; nothing sensitive logged | |
+| Authorization | PASS | Every operation × role | Enforced by the backend, not the dashboard | |
+| WebSocket | PASS | Tickets, origin, multiple clients, reconnect, per-user cap, role filtering, live event reaching the dashboard | Viewer subscription leak fixed | |
+| Frontend pages | PASS | Headless Chrome on every page, local and Docker | No console errors; CSP verified | |
+| Frontend states | PASS | Network failure, 500, malformed JSON, wrong-shaped JSON, slow API, expired session, stream loss | Nothing crashes | Wrong-shaped data shows the page's error panel |
+| CLI | PASS | All 31 leaf commands × help, usage errors, `--json`, services down | Exit codes 0/1/2 | 19 bugs fixed |
+| `doctor` | PASS | Scenarios (a)–(g) incl. privileged namespace and a fake service | Never reports PASS for anything unavailable | |
+| Capability detection | PASS | Unprivileged host, privileged namespace, Docker, unprivileged container | Accurate, with remedies | |
+| Docker Compose | PASS | Clean start, health checks, order, migrations, capture profile, restart, persistence | Ready in about 32 s | |
+| Benchmarks | PASS | Platform and detection benchmarks re-run | Section 6 | |
+| Windows, macOS, WSL2 | NOT TESTABLE | Static review only | | |
 
-| Feature | Result | How it was verified |
-| --- | --- | --- |
-| Backend API (FastAPI) | Verified | 498 tests collected; in-process API tests; Docker stack through the proxy |
-| Dashboard (Next.js) | Verified | Lint, typecheck and production build pass; headless Chrome signs in and renders every console page with no console errors, error boundaries or crashes, on the local build and the Docker stack |
-| CLI | Verified | CLI tests (exit codes, JSON on stdout, secret redaction); `capabilities`, `doctor`, `fixtures`, `replay` run on x86_64 and ARM64 |
-| REST API validation, pagination, errors | Tested | API tests: bounds on offsets and ids, 413/415/422/507 upload codes, no stack traces in responses |
-| WebSocket stream | Verified | Through the nginx proxy: ticket authentication, foreign origin refused (1008), per-user cap (4429), deactivation (4401) on idle and busy streams, detections delivered live |
-| Authentication and authorisation | Tested | Role matrix; refresh rotation and reuse detection; lockout per account and address; logout and password change end other sessions |
-| Database: SQLite | Verified | Suite; automatic migration of SQLite files |
-| Database: PostgreSQL | Verified | `make test-integration`; Docker stack; outdated schema refused |
-| Redis | Verified | Integration tests; degraded per-process mode when unreachable, confirmed locally |
-| Live capture: AF_PACKET | Verified | Kernel tests in a network namespace (`lo`, `any`, BPF filter); Docker capture profile on the host network |
-| Live capture: libpcap | Verified on Linux | Kernel tests; not verified with Npcap on Windows or BPF devices on macOS |
-| PCAP replay | Verified | Same pipeline as live (`assembly.py`); two replays give identical results; pcapng and nanosecond pcap from Wireshark `editcap` replay identically |
-| Committed PCAP suite | Verified | `tests/pcaps`: benign, attacks, evasion and malformed files, with a manifest of exact results |
-| Parsing | Tested | Decoder tests; hostile and truncated captures rejected with `PcapError` |
-| Feature extraction, detectors, rules | Tested | Detector tests; rule YAML with no `eval` and a restricted loader; rules validate and pass their embedded tests |
-| Risk scoring and explanations | Tested | Rationale present in the API and dashboard |
-| Correlation and incidents | Verified | Replay in Docker: 9 detections gave 1 incident, "Potential host compromise attempt", final when the replay reports completion |
-| Alerts (webhooks) | Tested | https only; private destinations refused; secrets redacted in the view, audit and events |
-| Response engine and dry run | Verified | A dry-run block left the kernel unchanged |
-| Prevention: nftables | Verified | Network namespace and Docker: block, timeout, re-block, rate limit, unblock, teardown |
-| Prevention: iptables | Verified | Network namespace, with real traffic |
-| Prevention: pf (macOS) | Not verified | Unit tests against recorded output only |
-| Prevention: Windows Firewall | Not verified | Unit tests against recorded output only |
-| Safety guard | Verified | Loopback refusal in Docker; allowlist, management and operator-address protection tested |
-| Audit log | Verified | `ENABLE_PREVENTION`, `TEMPORARY_BLOCK`, `BLOCK_IP` (refused), `UNBLOCK_IP` and `START_REPLAY` recorded in Docker |
-| Real data in the dashboard | Verified | Every page fetches from the API; no simulated timers (frontend audit) |
-| Rule management | Tested | Create, test, toggle and delete; disabled anomaly detectors can be re-enabled |
-| Analytics | Tested | Timeline and false-positive counts |
-| Platform capabilities | Verified | Detected, not hardcoded: reports x86_64 vs arm64, container, privileges, and unavailable features with remedies |
-| `doctor` | Verified | Never reports PASS for an unavailable feature; a foreign service on port 3000 is reported as "not SentinelX" |
-| Docker Compose | Verified | Default stack, capture profile, proxy, restarts; API image built from current code |
-| Reproducible replay and fixtures | Verified | Byte-identical fixtures across runs and across x86_64 and ARM64 |
-| Retention | Tested | Live data expires by timestamp; replay data expires with its replay |
-| Graceful handling of unsupported features | Verified | Missing `nft` or `iptables` reported as unavailable; ioctls refused under QEMU no longer crash enumeration |
+## 3. Platform matrix
 
-## 3. Cross-platform matrix
+| Feature | Linux | Windows | macOS | WSL2 | Docker |
+|---|---|---|---|---|---|
+| Install (backend and dashboard) | PASS | NOT TESTED | NOT TESTED | NOT TESTED | PASS |
+| CLI, API, WebSocket, dashboard | PASS | NOT TESTED | NOT TESTED | NOT TESTED | PASS |
+| PCAP replay and detection | PASS | NOT TESTED | NOT TESTED | NOT TESTED | PASS |
+| Capability detection and doctor | PASS | NOT TESTED | NOT TESTED | NOT TESTED | PASS |
+| Live packet capture | PASS | NOT TESTED | NOT TESTED | NOT TESTED | PASS (container namespace, or host network with the capture profile) |
+| Firewall control and prevention | PASS (nftables, iptables) | NOT TESTED | NOT TESTED | NOT TESTED | PASS (nftables inside the container's own namespace, verification override) |
+| Temporary blocks and unblock | PASS | NOT TESTED | NOT TESTED | NOT TESTED | PASS |
 
-| Capability | Linux x86_64 | Docker (Linux host) | Linux ARM64 | macOS | Windows | WSL2 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Install | Verified | Verified | Verified (QEMU) | Not verified | Not verified | Not verified |
-| CLI, API, dashboard | Verified | Verified | CLI verified (QEMU) | Expected, not verified | Expected, not verified | Expected, not verified |
-| PCAP replay and detection | Verified | Verified | Verified (QEMU) | Expected, not verified | Expected, not verified | Expected, not verified |
-| Capability detection | Verified | Verified (reports container) | Verified (reports arm64) | Implemented | Implemented | Implemented (WSL1/2 from kernel release) |
-| Live capture | Verified (AF_PACKET, libpcap) | Verified (capture profile, host network) | Not verified | Implemented (libpcap, `/dev/bpf*`) | Implemented (Npcap) | Captures the WSL VM, not the Windows host |
-| Firewall control | Verified (nftables, iptables) | Verified (nftables in its own namespace, with an override) | Not verified | Implemented (pf anchor) | Implemented (NetSecurity cmdlets) | Changes the WSL VM only |
-| Test suite | 487 passed, 11 skipped; kernel 11 passed | Not run in the image | 476 passed, 15 skipped, 0 failed (QEMU) | CI job defined, not run | CI job defined, not run | Not run |
+Notes:
 
-The 11 tests skipped in the normal run are the kernel tests, which run separately in a network namespace. For ARM64, QEMU user mode does not emulate the ioctls and netlink behaviour that capture and firewall control need, so those remain unverified on ARM64 hardware.
+- **Linux:** tested on Kali (kernel 7.1.5, x86_64) with Python 3.14 locally and Python 3.12 in Debian-based containers.
+- **ARM64:** exercised only under QEMU user-mode emulation in the previous pass (476 passed, 15 skipped, 0 failed; fixtures byte-identical to x86_64). It was **not re-run on this pass's final code**.
+- **Windows and macOS (supported by design, not tested):**
+  - Capture goes through libpcap (Npcap on Windows, `/dev/bpf*` on macOS), and firewall adapters exist for Windows Firewall and pf.
+  - The static audit found no platform assumptions in the core packages. All OS-specific code is behind adapters or platform checks.
+  - A Windows-only defect (ML models could never load) was found and fixed statically.
+  - The CI jobs for Windows and macOS are defined but have not run.
+- **WSL2 (supported by design, not tested):** capture and firewall changes apply to the WSL virtual machine, not the Windows host. SentinelX detects WSL and says so. PCAP replay has no platform dependency.
+- **Docker:** the stock API container is deliberately unprivileged. It reports capture and firewall control as unavailable, with remedies. It refuses capture (409) and refuses to enable prevention (422). Host network capture needs the `capture` profile.
 
 ## 4. Bugs found
 
-All of these were fixed during the audit unless marked open. "Mutation-verified" means the regression test was confirmed to fail on the code before the fix.
+Line references are approximate: the files changed during the pass. "Verified" names the regression test. Where noted, the test was confirmed to fail on the pre-fix code.
 
-### Correctness and data integrity
+### High
 
-- **Retention deleted replay results early.** Detections carry capture time, so replays of captures older than `RETENTION_DAYS` were purged at the first retention run, 60 seconds after start. Fixed: replay data now expires with its replay. Mutation-verified.
-- **Replays were marked `completed` before their results were stored.** Clients read intermediate incidents. Fixed: the bus drains and the persister flushes first. Mutation-verified; confirmed on PostgreSQL in Docker.
-- **Detections were stamped with wall-clock time.** Replays were not reproducible. Fixed: packet capture time is used.
-- **Stale detection windows.** Old attempts could re-fire a brute-force detection. Fixed: windows expire before detectors read them. Mutation-verified.
-- **Fixture generation was not deterministic.** IP IDs, TCP sequence numbers and DNS IDs came from an unseeded RNG. Fixed. Mutation-verified.
-- **Block registry mismatch.** A bare IP and its `/32` were tracked as different blocks. Fixed.
-- **Temporary iptables blocks became permanent after a restart.** Fixed: the expiry is stored in the rule comment.
-- **The 24-hour approval limit was not enforced.** Expired requests could still be approved. Fixed.
-- **Anomaly detectors disabled in the dashboard could not be re-enabled** (the toggle returned 404). Fixed.
-- **CLI replay queued approvals in manual-approval mode** where API replays show simulated decisions. Fixed. Mutation-verified.
-- **`sentinelx monitor -i` ignored the capture settings:** backend, BPF, promiscuous mode, buffer and queue sizes. Fixed.
-- **The API sometimes returned 500s:** huge offsets or ids, a NUL byte in the inspect path, a bad pcapng upload, invalid scenario parameters. Fixed.
+| Location | Problem | Root cause | Fix | Verification |
+|---|---|---|---|---|
+| `storage/persister.py` | Security events lost: 1,600 of 5,000 detections kept in a burst; paused database dropped 500; failed batches discarded | Database writes ran inside the event bus handler, blocking its bounded queue; no retry | Buffered background writer (50,000 cap), retries with backoff, per-row isolation of bad data, counted and logged drops | `tests/integration/test_storage_matrix.py` (all events stored exactly once; failed before the fix) |
+| `events/bus.py` | Detections dropped when the handler queue was full | `publish` never yielded and dropped on a full queue | Security event types wait up to 10 s for room; statistics are still shed | `tests/unit/test_event_bus.py` (failed before the fix) |
+| `api/websocket.py` | A viewer could receive audit and configuration events | A filter of only analyst-only types became empty, which the bus reads as "all types" | Close with 1008; never send unsubscribed types | `test_websocket_viewer_cannot_subscribe_to_analyst_only_events` |
+| `response/engine.py` | An automatic rate limit replaced an existing block (iptables deleted the DROP rule at once; nftables expiry later removed it) | The "already blocked" check ignored whether the entry was a rate limit | A rate limit never replaces a block; a block may replace a rate limit | Unit tests and a kernel test in a network namespace |
+| `response/safety.py`, all firewall adapters | IPv6 zone identifiers (`2001:db8::1%'+$(calc)+'`) passed the guard and reached pfctl, nft and the PowerShell script | `ipaddress` accepts any text after `%` | Refused in the guard, on unblock and by `firewall_address()` in every adapter | Adapter and guard matrix tests |
+| `cli/main.py` | `start --port 99999` bound a random port; `--port 0` fell back to the default | No range check; `port or default` | Port must be 1–65535 | `tests/unit/test_cli_matrix.py` |
+| `cli/main.py` | An inherited `SENTINELX_START_CAPTURE` started live capture without `--capture` | Server read the variable unconditionally | Removed unless `--capture` is given | CLI matrix test |
+| `cli/main.py` | uvicorn logged WebSocket ticket URLs, bypassing redaction | uvicorn default logging | uvicorn loggers routed through SentinelX logging at WARNING | Verified on a live server: 0 ticket lines |
 
-### Capture and platform
+### Medium
 
-- **AF_PACKET on `any`** decoded nothing, because it used one link type for all frames. Fixed.
-- **An invalid BPF filter silently fell back** to an unfiltered capture. Fixed.
-- **Scapy could not decode Linux loopback** (link type 772). Fixed.
-- **Interface enumeration crashed** when the kernel refused `SIOCETHTOOL` (QEMU, sandboxed kernels). This also crashed pytest collection on ARM64. Fixed. Mutation-verified.
+| Location | Problem | Fix | Verification |
+|---|---|---|---|
+| `telemetry/logging.py` | Redaction missed `redis://:pass@host`, `Basic` credentials, `X-Api-Key`, `ticket`, `passphrase` | Patterns and keys extended | `test_audit_gaps_in_redaction_are_closed` (failed before the fix) |
+| `services/auth.py`, `storage/models.py` | A logout or password-change cut-off lived only in Redis or process memory, so sessions came back during an outage or restart | Cut-off stored in `users.sessions_ended_at` (migration `60413ece4dff`) | `TestSessionCutOffSurvivesCacheLoss` |
+| `storage/redis_state.py` | Tokens revoked during a Redis outage became valid when Redis returned | Degraded-mode entries written back on reconnect | Storage matrix test |
+| `storage/database.py`, `api/errors.py` | Stopped database: API answered 500 | Driver network errors (for example `socket.gaierror` when Docker DNS drops the host) are raised as `StorageError` and mapped to 503; SQLAlchemy outage errors mapped to 503 | `test_driver_network_errors_become_storage_errors`; failure injection in Docker |
+| `storage/database.py` | PostgreSQL connections had no connect, statement or pool timeouts | New `STORAGE__CONNECT_TIMEOUT_SECONDS`, `STATEMENT_TIMEOUT_SECONDS`, `POOL_TIMEOUT_SECONDS` | Applied and documented; the silent-partition case remains (section 9) |
+| `services/config.py` | Prevention could be enabled, with "PREVENTION ACTIVE" shown, while the firewall could not be changed | Enabling is refused while the firewall reports itself unusable | `TestPreventionNeedsAWorkingFirewall`; unprivileged container in Docker |
+| `api/routes/detections.py` | Resolving an incident did not reach the live correlation engine, which kept extending it and could auto-block from it | `PATCH` to resolved or false_positive calls `close_incident()` | `test_resolving_an_incident_stops_live_correlation_into_it` (failed before the fix) |
+| `api/security.py` | No request body limit outside nginx, including unauthenticated login | `BodySizeLimitMiddleware` (1 MiB, streamed upload exempt) returns 413 | `TestRequestBodyLimit` (failed before the fix) |
+| `api/routes/auth.py` | Two administrators changing each other concurrently could leave no active administrator | Row locks and a recount in the same transaction | Concurrent admin tests (SQLite) |
+| `response/engine.py` | A manual or approved rate limit could downgrade a block | Refused with "unblock it first" | `test_manual_rate_limit_never_downgrades_an_existing_block` |
+| `response/safety.py` | IPv4-mapped, 6to4, Teredo and NAT64 forms of protected addresses could be blocked | Embedded IPv4 checked against every protection | Guard matrix |
+| `signatures` | Condition literals unchecked (port 65536, `999.1.1.1`); `within: .nan` accepted; one unreadable file aborted all rule loading | Literal validation, finiteness check, per-file problems | Rule matrix |
+| `scoring/engine.py` | Out-of-range, infinite or negative inputs distorted scores | Inputs sanitised and clamped | Risk matrix (random property test) |
+| `correlation/engine.py` | A redelivered detection was double-counted and could trigger escalation | Deduplicated by detection id | Correlation matrix |
+| `parser/layers.py`, `parser/decoder.py` | IPv6 non-first fragments decoded as transport headers; IPv6 AH offsets wrong; DNS over TCP misparsed | Fragment offset honoured; AH length rule; TCP length prefix | Parser matrix (failed before the fix) |
+| `features/extractor.py` | A backwards time step over 60 s stopped window expiry, causing false `connection_rate` detections | State reset (`clock_resets`) | Feature matrix |
+| `features/profiles.py` | A non-numeric DNS label length from a parser raised outside error isolation | Type checks | Feature matrix |
+| `anomaly/statistical.py` | A backwards time step was scored as a huge spike | Interval restarts | Detector matrix |
+| `anomaly/ml.py` | On Windows every model was rejected; on POSIX a model in a directory others can write was trusted | POSIX checks skipped on Windows; parent directory checked | `test_model_in_a_directory_others_can_write_is_refused` |
+| `storage/migrate.py`, `database.py` | Databases built from the models got stuck: startup refused, and `db upgrade` failed with DuplicateTableError | Unversioned databases adopted and stamped | Three adoption scenarios |
+| `cli` | `db current/upgrade`, `anomaly train` and unwritable directories printed tracebacks; `rules validate` exited 0 for a missing path; `monitor --duration` never stopped on a quiet interface | Clear errors and correct exit codes | CLI matrix |
+| `services/diagnostics.py` | `doctor` aborted without a report when Redis was required; no ML model check; crashed on an IPv6 API host | Fixed | CLI matrix |
+| Dashboard shell | A wrong-shaped overview response crashed every page (footer called `.split` on a missing field) | Shell tolerates malformed data | `states.mjs` browser test: every page, 7/7 |
 
-### Firewall
+### Low
 
-- **Under file capabilities, `nft` and `iptables` did not inherit `CAP_NET_ADMIN`,** so every block failed with "Operation not permitted". Fixed with ambient capabilities.
-- **The null backend reported blocks as executed.** Fixed: it refuses.
-- **nftables could not refresh a timeout or re-block an address permanently.** Fixed with an atomic add-delete-add.
-- **The expiry reaper had a race and dropped failed unblocks.** Fixed: it runs under the engine lock and retries.
+- **Detection engine:** unknown names in `DETECTION__ENABLED_DETECTORS` silently enabled nothing, and the allow-list did not govern anomaly detectors. Both fixed with tests.
+- **Firewall and response:**
+  - A manual unblock of an invalid target was recorded as simulated; it is now refused.
+  - The banner read "will modify the auto firewall", and the capabilities remedy for `auto` gave the wrong advice.
+  - A firewall setup failure crashed startup; it is now retried per action.
+  - In dry run with manual approval, SentinelX created nftables objects; it no longer does.
+- **Uploads:** an oversized streamed upload returned 422; it now returns 413, and a full quota returns 507.
+- **Tokens:** a non-numeric token subject caused a 500; it now returns 401.
+- **API paths and bodies:**
+  - With `root_path` set, prefixed requests skipped rate limiting and headers.
+  - Invalid JSON sent to `/auth/refresh` caused a 500.
+  - Equal-valued rows paged unstably.
+- **Health:** persister health stayed unhealthy forever after one retried failure; it now follows the retry state.
+- **Dashboard:** the block dialog gave no feedback when the safety check failed; it now shows an error and a "Check again" button.
+- **CLI:** assorted exit codes and messages (unknown `--id`, missing target on a pipe, unknown `--section`, Rich markup swallowing text).
+- **Logs:** Alembic plugin noise at startup.
+- **Docker:** the runtime image shipped `pip` 25.0.1 with published advisories; it is now removed.
+- **Frontend headers:** dashboard pages sent no Content-Security-Policy; a production CSP was added and verified in the browser.
 
-### Docker and deployment
+### Test infrastructure
 
-- **The API and migrate containers could not start** (exec failed with EPERM) because capabilities were set on the shared interpreter. Fixed: a separate `python3-sensor` interpreter holds them.
-- **The capture-profile sensor listened on `0.0.0.0` on the host.** Fixed: it binds the proxy network's gateway.
-- **The sensor healthcheck** probed 127.0.0.1 regardless of `API_HOST`. Fixed.
-- **Firewall health reported an error** before the nftables table existed. Fixed.
-- **WebSocket disconnects** logged tracebacks. Fixed.
-
-### Configuration and diagnostics
-
-- **Flat aliases such as `DRY_RUN` were ignored in `.env`,** and a typo such as `DRY_RUN=ture` read as false. Fixed: values are parsed strictly.
-- **`doctor` gave false results:**
-  - PASS for missing rules;
-  - PASS for a foreign service on the dashboard port;
-  - FAIL for a fresh SQLite database that SentinelX would migrate.
-
-  All fixed.
-
-### Tests
-
-- **Fixed sleeps made tests fail on slow hosts.** Replaced with bounded polling.
+- Log-capture tests failed depending on test order, because structlog caches module loggers on first use; `tests/conftest.py` now uncaches them.
+- Fixed sleeps in two API tests failed on slow machines; they now poll with a bound.
 
 ## 5. Security findings
 
-Severities are this audit's assessment of impact in a default deployment.
-
 ### Critical
 
-No open critical findings.
+None found.
 
 ### High (all fixed)
 
-- **H1.** An unauthenticated request could trigger a Rich traceback that logged frame locals, including the `Settings` object and JWT secret. Fixed: tracebacks carry no locals, and exception text is scrubbed of secrets. Regression test.
-- **H2.** CLI crashes printed the settings, including the JWT secret and database URL. Fixed. Regression test.
-- **H3.** Uploads were accepted before authentication and without size limits (multipart). Fixed: raw-body upload, with authentication and Content-Length checked before the body is read, plus streaming limits and a quota.
-- **H4.** YAML alias expansion: a 400-byte rule produced a 30 MB response. Scenario parameters were also unbounded, so an analyst could exhaust memory. Fixed: restricted loader and parameter bounds.
-- **H5.** Token races:
-  - concurrent refresh-token reuse went undetected;
-  - WebSocket tickets could be redeemed twice;
-  - a global login lockout let anyone lock out the administrator.
-
-  Fixed: atomic claim, GETDEL, and lockout per account-address pair plus account.
-- **H6.** The safety banner did not reflect all enforcement paths, and dry run could be switched off without confirmation. Fixed: truthful banner and confirmation phrase.
-- **H7.** A block could be reported as successful when nothing was enforced (null backend). Fixed.
+1. Loss of security events under load or during database trouble (persister and event bus).
+2. Viewer access to analyst-only event types over the WebSocket.
+3. Firewall safety-guard bypass with IPv6 zone identifiers, a potential PowerShell injection path on Windows for an authenticated administrator.
+4. Weakening of an administrator's block by an automatic rate limit.
+5. One-time WebSocket tickets written to server logs.
+6. Unintended live capture from an inherited environment variable.
+7. Binding an unexpected random port.
 
 ### Medium (all fixed)
 
-- **M1.** The configuration view could expose secrets and the full webhook URL. It is now redacted by pattern, including in audit diffs and `config.changed` events.
-- **M2.** A spoofed `X-Forwarded-For` was believed (leftmost hop). The client address is now the rightmost untrusted hop.
-- **M3.** Metrics were served to proxied requests that appeared to come from loopback. Fixed.
-- **M4.** Webhook SSRF: private and internal destinations were allowed. Now refused unless explicitly permitted.
-- **M5.** WebSocket streams ignored deactivation and role changes, busy streams were never rechecked, and there was no per-user connection cap. Fixed.
-- **M6.** Logout and password change left other sessions' access tokens valid until expiry. A stale session's refresh after a password change revoked the caller's new session. Fixed.
-- **M7.** The Compose capture sensor was reachable from other hosts. Fixed.
-- **M8.** An absolute server path leaked in upload responses and errors. Fixed.
-- **M9.** The operator's own address could be blocked. It is now protected for an hour after any API use.
+- **Leakage:** incomplete log redaction of Redis URLs and API keys.
+- **Sessions:** session cut-offs lost during a Redis outage; revocations lost across a Redis outage.
+- **Firewall safety:** blocking IPv4-in-IPv6 forms of protected addresses; manual rate limits weakening blocks.
+- **Denial of service:** no request body limit without nginx.
+- **Administration:** a zero-administrator race.
+- **Honesty:** "PREVENTION ACTIVE" with an unusable firewall; a closed incident still driving automatic responses.
+- **Model files:** untrusted-directory model loading.
+- **Rules:** unvalidated rule literals that silently never matched.
 
-### Low (open unless noted)
+### Low
 
-- **L1.** Dashboard pages send no Content-Security-Policy; the API responses do.
-- **L2.** A refused manual block returns HTTP 200 with `executed: false` and an error, rather than a 4xx status.
-- **L3.** Dry-run unblock does not validate the target as strictly as a real one.
-- **L4.** A 6to4 address that embeds a loopback address (`2002:7f00:1::1`) is not refused. Blocking it does not affect loopback traffic.
-- **L5.** Access-token cut-off after logout has one-second resolution. Without Redis, the cut-off, rate limits and tickets are per process.
-- **L6.** Refused configuration and user operations are not all audited.
-- **L7.** DNS rebinding between the webhook destination check and the connection is possible.
-- **L8.** python-dotenv 1.2.1 has PYSEC-2026-2270 (`set_key` follows symlinks). SentinelX never calls it; the dependency floor is now `>=1.2.2`. Fixed.
+- **Open:**
+  - With about 20 source addresses, account lockout can tell real usernames from unknown ones.
+  - `/auth/refresh` through the cookie does not require the client header; SameSite=Strict mitigates this.
+  - `/system/status` shows viewers the database location (SQLite path, or PostgreSQL host and user; never the password).
+  - An unauthenticated request with malformed JSON gets 422 before 401, because FastAPI parses the body before authentication.
+- **Fixed:** the other Low items in section 4.
 
-### Info
+### Informational
 
-- JWTs are signed with HS256 using a shared secret. There is no MFA or SSO.
-- Analysts can see the host's interface addresses and cancel other users' replays. Viewers can see interface MAC addresses.
-- GitHub private vulnerability reporting is disabled on the repository, although `SECURITY.md` refers to it. Turn it on in the repository settings.
-- `npm audit --omit=dev` reports 0 vulnerabilities. `pip-audit` on the runtime dependency closure finds only L8.
+- **Execution and injection:** no `eval`, `exec`, `shell=True` or string-built commands. Every subprocess uses an argument list through `CommandRunner`. Rule YAML uses a restricted loader. Every database query is parameterized through SQLAlchemy.
+- **Path traversal and uploads:** replay paths are resolved inside `PCAP_DIRECTORY` and traversal is refused. Uploads are streamed after authentication, with size, quota and magic-number checks.
+- **SSRF:** webhooks must be https and resolve to public addresses unless explicitly allowed.
+- **Browser protections:** CORS is limited to configured origins. Cookies are HttpOnly and SameSite=Strict, with CSRF double-submit. The API sends a strict CSP, and the dashboard now sends a production CSP.
+- **Tokens:** JWTs are HS256 with a shared secret. There is no MFA or SSO.
+- **Repository settings:** GitHub private vulnerability reporting is disabled on the repository, although `SECURITY.md` refers to it.
+
+### Dependency audit
+
+- **Python:**
+  - The runtime dependency closure (49 packages) and the packages shipped in the API image (53) have no known vulnerabilities (`pip-audit`, 2026-09-15).
+  - The only earlier hits were `pip` itself in the image (removed) and python-dotenv 1.2.1 (floor already raised to 1.2.2).
+- **Dashboard:** production npm dependencies have 0 vulnerabilities (`npm audit --omit=dev`).
+- **Hygiene:** no packages were mass-upgraded, and no unused or duplicate runtime dependencies were found.
 
 ## 6. Performance results (measured)
 
-All figures come from an Intel Core i5-8350U (8 logical CPUs) with Python 3.14.6.
-
-The API figures use a single uvicorn worker on loopback, SQLite and no Redis (`benchmarks/results/platform-20260915T003639Z.md`). The detection figures use synthetic traffic, 5 runs per experiment (`benchmarks/results/20260914T213750Z.md`).
+All runs used an Intel Core i5-8350U (8 logical CPUs) with Python 3.14.6, on a single uvicorn worker over loopback. API tests ran against SQLite without Redis. Reports: `benchmarks/results/platform-20260915T075621Z.md` and `benchmarks/results/20260915T075712Z.md`.
 
 ### API latency
 
-| Endpoint | Sequential p50 | Sequential p99 | Concurrency 10 p50 | req/s at concurrency 10 |
-| --- | --- | --- | --- | --- |
-| GET /system/health | 1.8 ms | 3.5 ms | 22.4 ms | 415.7 |
-| GET /detections?limit=50 | 14.8 ms | 20.8 ms | 233.9 ms | 43.0 |
-| GET /incidents?limit=50 | 8.9 ms | 13.6 ms | 92.2 ms | 108.0 |
-| GET /stats/overview | 35.1 ms | 54.5 ms | 287.0 ms | 34.5 |
-| POST /auth/login (Argon2id) | 65.1 ms | 105.0 ms | 658.1 ms | 15.2 |
+| Endpoint | Sequential p50 | Sequential p99 | Concurrency 10 p50 | Requests/s at concurrency 10 |
+|---|---|---|---|---|
+| GET /system/health | 1.8 ms | 4.4 ms | 22.6 ms | 382.5 |
+| GET /detections?limit=50 | 19.7 ms | 26.2 ms | 216.8 ms | 45.4 |
+| GET /incidents?limit=50 | 9.1 ms | 12.1 ms | 92.4 ms | 105.3 |
+| GET /stats/overview | 72.3 ms | 100.9 ms | 393.5 ms | 24.9 |
+| POST /auth/login (Argon2id) | 81.7 ms | 92.1 ms | 549.1 ms | 17.7 |
+
+The overview endpoint is slower than in the previous run (35 ms); this run seeded 2,347 detections, against 832 then.
 
 ### Event delivery and storage
 
-- **WebSocket delivery, publish to client:** p50 28.9 ms, max 46.9 ms. Only 10 events were measured.
-- **Storage throughput:** detections produced and stored, including pipeline processing.
+- **WebSocket, publish to client:** p50 30.1 ms, max 43.5 ms, over 10 events during a replay.
+- **Storage, detections produced and stored including pipeline processing:**
+  - SQLite: 2,347 of 2,347 stored, 163.8 per second.
+  - PostgreSQL 17: 2,347 of 2,347 stored, 103.8 per second.
 
-| Database | Stored | Stored per second |
-| --- | --- | --- |
-| SQLite | 832 of 832 | 123.7 |
-| PostgreSQL | 832 of 832 | 92.3 |
-
-### Pipeline load
+### Pipeline under increasing volume
 
 | Packets | Packets/s | p50 | p99 | RSS growth |
-| --- | --- | --- | --- | --- |
-| 1,000 | 4,926.9 | 0.177 ms | 0.348 ms | 0.0 MB |
-| 10,000 | 5,311.9 | 0.165 ms | 0.465 ms | 0.5 MB |
-| 50,000 | 4,922.4 | 0.173 ms | 0.609 ms | 0.0 MB |
+|---|---|---|---|---|
+| 1,000 | 4,513.8 | 0.176 ms | 0.651 ms | 0.0 MB |
+| 10,000 | 5,126.4 | 0.178 ms | 0.376 ms | 0.0 MB |
+| 50,000 | 5,141.4 | 0.182 ms | 0.341 ms | 0.0 MB |
 
-### Detection quality
+### Detection experiments
 
-These results come from synthetic scenarios with known ground truth and do not predict real-world detection rates.
+Synthetic traffic with known ground truth, 5 runs each:
 
 | Measure | Result |
-| --- | --- |
+|---|---|
 | Detection rate, 14 attack experiments | 100% |
 | False positives | 0 in every experiment |
-| Evasion (slow port scan, low-rate brute force) | 0%, as expected |
-| Throughput | 2,890–4,634 packets/s |
-| Latency per detection | 0.39–0.81 ms |
-| Peak RSS | 119–124 MB |
-| Decoder | 41,433 frames/s, 2.1 times Scapy |
+| Slow port scan and low-rate brute force (expected misses) | 0% |
+| Throughput | 3,207–5,594 packets/s |
+| Latency per detection | 0.41–0.80 ms |
+| Peak RSS | 120.8–124.7 MB |
+| Decoder | 48,896 frames/s, 2.2 times Scapy |
 
-The detection run predates `assembly.py`, so it ran without local threat intelligence.
+### Elevated rates, from the storage and bus tests
 
-The pipeline is single-process Python at about 5,000 packets per second on this CPU. That suits hosts and small links, not high-bandwidth network taps.
+- 5,000 detections published in a burst were all stored exactly once.
+- 200,000 packets from 50,000 sources stayed within the configured state caps. 50,000 sources with 200,000 connections used about 823 MB.
 
 ## 7. Test results
 
 | Check | Result |
-| --- | --- |
-| `ruff check`, `ruff format --check` | Pass, 160 files |
-| `mypy` (strict, 116 source files) | Pass |
-| `pytest` with real PostgreSQL 17 and Redis 7 (`make test-integration`) | 487 passed, 11 skipped (the kernel tests) |
-| Kernel tests in a network namespace (`make test-kernel`) | 11 passed |
-| PCAP suite (`tests/capture/test_pcap_suite.py`) | 38 passed (part of the main run) |
+|---|---|
+| Backend test suite with real PostgreSQL 17 and Redis 7 | 1,820 passed, 14 skipped, 0 failed |
+| Coverage | 88.0% (was 78.8% at the start of the pass) |
+| Kernel tests (network namespace, real AF_PACKET, libpcap, nftables, iptables) | 13 passed |
+| New tests this pass | 1,322 (1,834 collected against 498 at the start of the pass, excluding kernel tests), in the endpoint, auth, parser, feature, detector, rule, risk, correlation, response, storage, CLI and event bus matrices |
+| ruff check, ruff format | Pass (174 files) |
+| mypy (strict) | Pass (116 source files) |
 | Dashboard lint, typecheck, production build | Pass |
-| OpenAPI contract regenerated from code | In sync after regeneration (the new `system` tag on `/system/capabilities` changed `openapi.json`); dashboard typecheck passes |
-| Rules | 7 valid; embedded tests pass |
-| Docker prevention chain, API level through the proxy, final image | 16 of 16 steps passed |
-| Docker browser smoke test, final image | 15 of 15 checks passed |
-| Local browser smoke test (`.env` configuration) | Every existing page passes |
-| ARM64 (python:3.12-slim arm64 under QEMU user-mode emulation, no PostgreSQL/Redis) | 476 passed, 15 skipped (kernel tests; PostgreSQL/Redis tests), 0 failed; the 14 generated fixtures are byte-identical to x86_64 |
+| OpenAPI contract | Regenerated from the code; the only change is one parameter description (`include_alerts`) |
+| Rules | 7 valid; embedded rule tests pass |
+| Browser end-to-end chain (final images, clean stack) | 19/19 |
+| Failure injection (final images) | 15/15 |
+| Unprivileged-container honesty checks (final images) | Capture 409; block `failed` with the real nftables error; prevention refused 422; banner stays DETECTION ONLY |
+| Frontend failure states (final dashboard) | 7/7 |
+| Browser smoke test under the new CSP | 15/15 |
+| Clean-machine run of the final working tree (`python:3.12-slim`, README steps) | Install, fixture generation, replay, capabilities, doctor, `pip check`: all pass; suite: CLEAN_RESULT |
+| Clean-machine install of the committed source before this pass's fixes | 476 passed, 15 skipped; dashboard built and served through its proxy |
+| Security checks | pip-audit: 0 vulnerabilities (runtime closure and image); npm audit: 0; secret scan of logs during auth flows: nothing found; `.env` not tracked |
 
-An earlier browser run of the full UI prevention chain (buttons and pages) passed 16 of 17 on the previous image. The one failure was a harness check that assumed live capture was unavailable in the container.
-
-### Coverage
-
-Coverage was measured on the SQLite run, and separately on the kernel run.
-
-| Module | Main run | Kernel run |
-| --- | --- | --- |
-| All modules | 78.8% | — |
-| config/settings.py | 96% | — |
-| api/security.py | 95% | — |
-| response/safety.py | 93% | — |
-| signatures/rules.py | 93% | — |
-| api/websocket.py | 92% | — |
-| system/interfaces.py | 92% | — |
-| telemetry/logging.py | 92% | — |
-| services/config.py | 90% | — |
-| storage/repositories.py | 90% | — |
-| services/auth.py | 87% | — |
-| nftables adapter | 84% | 80% |
-| capture/pcapfile.py | 84% | — |
-| response/engine.py | 80% | — |
-| api/routes/auth.py | 80% | — |
-| iptables adapter | 59% | 82% |
-| capture/afpacket.py | 37% | 76% |
-| capture/libpcap.py | 25% | 71% |
-| Windows Firewall adapter | 71% | — |
-| pf adapter | 64% | — |
-| system/privileges.py | 50% | 40% |
-
-Most of the privilege code is for other operating systems.
+The 14 skips in the main run are the kernel tests, which run separately, plus tests that need privileges or are platform specific.
 
 ## 8. Known limitations
 
-- **Unverified platforms.** macOS, Windows and WSL2 have never been run. The pf and Windows Firewall adapters and Npcap/BPF capture are unverified on real hosts.
-- **Unverified on ARM64.** Live capture and firewall control are not verified on ARM64 hardware.
-- **Docker networking.** Docker Desktop on macOS and Windows captures its virtual machine, not the computer. WSL2 capture and firewall changes apply to the WSL virtual machine.
-- **Throughput.** About 5,000 packets per second in one Python process, with no multi-sensor scale-out beyond running separate sensors.
-- **Evasion.** Slow and low-rate attacks below the default thresholds are not detected. This is asserted in `tests/pcaps/evasion`.
-- **Aggressive mode.** `aggressive` detection mode currently selects the same detectors as `balanced`.
-- **No Redis.** Without Redis, rate limits, WebSocket tickets and session cut-offs are per process.
-- **No rate limiting on pf and Windows Firewall.** Their expiry depends on SentinelX's reaper, with deadlines restored from the database at start.
-- **libpcap on Linux loopback** sees packets twice; `af_packet` is preferred and selected by `auto`.
-- **Authentication.** HS256 JWTs with a shared secret; no MFA or SSO.
+- **Platforms:** only Linux x86_64 has been run natively. Windows, macOS and WSL2 have not been run. ARM64 ran only under emulation, and not on this pass's final code.
+- **Capture and firewall scope:** live capture and firewall control on Windows (Npcap, Windows Firewall) and macOS (BPF, pf) are implemented but unverified. pf and Windows Firewall have no rate limiting, and their temporary blocks expire only while SentinelX runs.
+- **Throughput:** a single Python process handles about 5,000 packets per second on the test CPU. That suits hosts, labs and small segments, not high-speed links.
+- **Evasion:** threshold detectors can be evaded by slow or distributed attacks, as asserted in `tests/pcaps/evasion`.
+- **Memory:** plan about 16 KB per tracked source (default cap 50,000 sources).
+- **Silent database partitions:** a stopped or unreachable PostgreSQL server is reported immediately and events are buffered. A server that accepts connections but stops responding (packets dropped) can hold requests on open connections until the operating system gives up, because closing such a connection waits for the peer.
+- **Redis:** without Redis, rate limits, WebSocket tickets and single-token revocations are per process. Session cut-offs are in the database.
+- **Docker:** the stock container is unprivileged. Firewall control and capture there need explicit capabilities or the host-network capture profile.
+- **Alert decisions:** they are not stored; the detection is the alert (`GET /alerts`, webhooks).
+- **Encrypted traffic:** only metadata (flows, DNS, TLS SNI and ALPN) is inspected.
+- **Authentication:** no MFA or SSO.
 
-## 9. Remaining work
+## 9. Remaining issues
 
-1. Run the new `portability` CI job on Windows and macOS and fix what it finds. Then test live capture and firewall control on real hosts: an elevated Windows session with Npcap, and root on macOS with pf.
-2. Run the `kernel` CI job on GitHub Actions and confirm it runs rather than skips.
-3. Verify on native ARM64 hardware, including the kernel tests.
-4. Add a Content-Security-Policy to the dashboard (L1). Return a 4xx for refused manual blocks (L2). Close L3, L4 and L6.
-5. Turn on GitHub private vulnerability reporting.
-6. Re-run the detection benchmark now that pipelines include threat intelligence. Benchmark the API with PostgreSQL and Redis and more than one worker.
-7. Make `aggressive` mode meaningful or remove it. Consider longer-window detectors for slow scans.
-8. Soak test: a multi-day live capture on a real network, watching memory, database growth and false positives.
+Only genuine unresolved problems are listed.
 
-## 10. Release recommendation
+1. **Medium:** a silent network partition to PostgreSQL can stall API requests on already-open connections (above). This needs a request-level deadline or a different connection-close strategy.
+2. **Low:** in `firewall/iptables.py`, if inserting the new rule succeeds but deleting the old rule fails, the decision is reported failed while the rule stays in the kernel, missing from the registry.
+3. **Low:** capability detection treats a firewall as available when the tool is installed and privileges are held, without a functional probe. Enabling prevention now performs a real probe.
+4. **Low:** account lockout lets roughly 20 source addresses tell real usernames from unknown ones.
+5. **Low:** `/auth/refresh` through the cookie does not require the dashboard client header; SameSite=Strict mitigates this.
+6. **Low:** `/system/status` shows viewers the database location, without the password.
+7. **Low:** the threats view ranks only the 500 highest-risk detections in its window, so per-source counts can be cut off on busy windows.
+8. **Low:** `doctor`'s database check creates an empty SQLite file when none exists.
+9. **Low:** `config set` with an unknown section exits 1 instead of 2.
+10. **Low:** unused settings (`scoring.incident_threshold`, `anomaly.ml_contamination`, `telemetry.metrics_enabled`, `metrics_path`, `profile_pipeline`); `HttpReputationProvider` is not wired in.
+11. **Process:**
+    - Run the Windows and macOS CI jobs and fix what they find.
+    - Test capture and firewall control on real Windows, macOS and WSL2 hosts.
+    - Re-run ARM64 on native hardware.
+    - Turn on GitHub private vulnerability reporting.
 
-**BETA READY**, scoped to Linux x86_64 and Docker on a Linux host.
+## 10. Final verdict
 
-The core promise holds under test on those platforms:
+**BETA READY**
 
-- Detection is explainable and reproducible.
-- Prevention is off by default and needs an explicit phrase to enable.
-- The kernel firewall changes when prevention is on, reverts on unblock, and every change is audited.
-- The security hardening is covered by regression tests.
+On Linux x86_64 and in Docker on a Linux host, every required subsystem was run and verified:
 
-It is not PRODUCTION READY. Three platforms the project claims to support have never run it. The Windows and macOS CI jobs have not run. Low-severity security items remain open, and there has been no long-running operation on a real network. For macOS, Windows and WSL2 the honest status is DEVELOPMENT READY.
+- Capture and replay, detection, risk and correlation.
+- WebSocket, dashboard, CLI and doctor.
+- Real prevention and restoration.
+- Failure handling, security controls and the full end-to-end chain.
+
+The defects found were fixed and regression-tested, and the full regression suite passes.
+
+It is not a release candidate:
+
+- Three platforms the project targets (Windows, macOS, WSL2) have never been run, and their CI jobs have not run.
+- One medium issue remains (silent database partitions).
+- It has had no long-running operation on a real network.

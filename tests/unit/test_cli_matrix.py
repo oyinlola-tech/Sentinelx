@@ -20,13 +20,14 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
-import click
 import pytest
 import typer
-from click.testing import Result
 from typer.testing import CliRunner
 
 from sentinelx.cli.main import app
+
+#: The runner's result type; which Click copy provides it depends on the Typer release.
+Result = Any
 
 REPO_RULES = Path(__file__).resolve().parents[2] / "rules"
 ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
@@ -35,21 +36,29 @@ ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 # ------------------------------------------------------------------ helpers
 
 
-def _walk(
-    command: click.Command, path: tuple[str, ...] = ()
-) -> Iterator[tuple[tuple[str, ...], click.Command]]:
+def _is_group(command: Any) -> bool:
+    # Duck-typed: recent Typer releases vendor their own Click, whose classes are not
+    # the installed click package's classes.
+    return isinstance(getattr(command, "commands", None), dict)
+
+
+def _walk(command: Any, path: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], Any]]:
     yield path, command
-    if isinstance(command, click.Group):
+    if _is_group(command):
         for name, sub in sorted(command.commands.items()):
             yield from _walk(sub, (*path, name))
 
 
 COMMANDS = dict(_walk(typer.main.get_command(app)))
-LEAVES = {path: cmd for path, cmd in COMMANDS.items() if not isinstance(cmd, click.Group)}
+LEAVES = {path: cmd for path, cmd in COMMANDS.items() if not _is_group(cmd)}
 
 
-def _required_arguments(command: click.Command) -> list[click.Parameter]:
-    return [p for p in command.params if isinstance(p, click.Argument) and p.required]
+def _required_arguments(command: Any) -> list[Any]:
+    return [
+        p
+        for p in command.params
+        if type(p).__name__.endswith("Argument") and getattr(p, "required", False)
+    ]
 
 
 def invoke(*args: str, input: str | None = None) -> Result:

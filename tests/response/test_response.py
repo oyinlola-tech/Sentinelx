@@ -504,7 +504,7 @@ class TestIptablesExpiry:
 
 
 async def test_dry_run_unblock_of_an_invalid_target_is_refused_not_simulated() -> None:
-    engine, firewall, audit, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=True)
+    engine, firewall, _audit, _ = await engine_for(ResponseMode.DETECT_ONLY, dry_run=True)
     for target in ("notanip", "1.2.3.4; rm -rf /", "2001:db8::1%eth0", "10.0.0.0/33"):
         decision = await engine.manual_action(
             ActionType.UNBLOCK_IP, target, actor="admin", reason="cleanup"

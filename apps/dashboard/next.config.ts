@@ -7,11 +7,32 @@ import type { NextConfig } from "next";
  */
 const apiOrigin = process.env.SENTINELX_API_URL ?? "http://127.0.0.1:8000";
 
+/**
+ * Everything the dashboard loads is same-origin (local fonts, the proxied API and the
+ * event stream). Next.js hydration uses inline scripts, so scripts and styles allow
+ * 'unsafe-inline'; the policy still blocks scripts and connections to other origins,
+ * framing, plugins and <base> hijacking. Development needs eval for React Refresh,
+ * so the policy is applied to production builds only.
+ */
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join("; ");
+
 const securityHeaders = [
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "no-referrer" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+  ...(process.env.NODE_ENV === "production" ? [{ key: "Content-Security-Policy", value: contentSecurityPolicy }] : []),
 ];
 
 const nextConfig: NextConfig = {
