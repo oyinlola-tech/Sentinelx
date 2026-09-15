@@ -175,6 +175,8 @@ sentinelx interfaces --json
 
 Interfaces are enumerated with `psutil` (`packages/sentinelx/system/interfaces.py`) on every platform. The table shows name, state, addresses, MAC, MTU, received packets and dropped packets, and ends with a line saying whether live capture is available and through which backend. The JSON form is `{"capture": <capture capabilities>, "interfaces": [...]}`; each interface also has `is_up`, `is_loopback`, `speed_mbps` and transmit and byte counters. `GET /api/v1/interfaces` returns the interface list.
 
+If the operating system refuses interface statistics (`psutil.net_if_stats`, which some sandboxed kernels and QEMU user-mode emulation do), the addresses are still listed. State then comes from `/sys/class/net/<name>/operstate` on Linux when readable and is otherwise `unknown`, with `is_up` false, MTU 0 and no speed; I/O counters that cannot be read are shown as 0. If the addresses themselves cannot be read, enumeration fails with an error, and the firewall safety guard refuses to block (`local_addresses_unknown`) rather than assume the host has no addresses.
+
 Choose the interface in one of these ways:
 
 | Method | Example |

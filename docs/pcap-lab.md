@@ -127,7 +127,7 @@ Throughput, latency and resource figures are measured on the machine running the
 
 ### With --persist
 
-`--persist` starts the same replay service the API uses, so the run appears in the dashboard's PCAP Lab. The service only reads files inside `PCAP_DIRECTORY` (default `./pcaps`); a file elsewhere is first copied to `PCAP_DIRECTORY/cli/<filename>`, replacing any earlier copy with the same name. The command waits for the replay to finish, waits one storage flush interval so the detections are queryable, prints `stored as replay <id>; view it in the PCAP Lab` on stderr, and exits with code 1 if the replay did not complete.
+`--persist` starts the same replay service the API uses, so the run appears in the dashboard's PCAP Lab. The service only reads files inside `PCAP_DIRECTORY` (default `./pcaps`); a file elsewhere is first copied to `PCAP_DIRECTORY/cli/<filename>`, replacing any earlier copy with the same name. The command waits for the replay to finish (a replay is reported `completed` only after its results are written), then waits one further storage flush interval, prints `stored as replay <id>; view it in the PCAP Lab` on stderr, and exits with code 1 if the replay did not complete.
 
 A persisted run requires a working database (`DATABASE_URL`). Redis is optional; without it the platform logs a degraded-mode warning and continues.
 
@@ -266,6 +266,7 @@ Every client-supplied path (`inspect`, `POST /replay`, and `pcap_path` in `POST 
 - `speed` must be between 0 and 100. `limit`, when given, is between 1 and 100,000,000.
 - Starting, cancelling and uploading are recorded as `START_REPLAY`, `CANCEL_REPLAY` and `UPLOAD_PCAP` audit events.
 - Progress is published every 0.5 seconds as `replay.progress` and stored on the run record. The end of a run publishes `replay.completed` with status `completed`, `cancelled` or `failed`.
+- A run is marked `completed` only after its detections and incidents have been written: the service first waits for the event bus to drain (up to 10 seconds) and for the persister to flush (`Platform._settle_storage`). Detections and incidents read for a replay right after it reports `completed` are therefore final.
 - A failed run stores the capture error message, or `<ExceptionType>: replay failed` for other errors.
 - Replay is CPU-bound and shares the event loop with the API. The reader yields to the loop at least every 5 ms of processing, so the API and WebSocket stay responsive during an unpaced replay, but they slow down.
 
@@ -274,12 +275,12 @@ Every client-supplied path (`inspect`, `POST /replay`, and `pcap_path` in `POST 
 `ReplayService._isolated_pipeline` builds a separate `Pipeline` for each replay:
 
 - **Separate state.** Its feature windows, source profiles, scoring history and correlation state are its own, so replayed traffic cannot mix with live detection state.
-- **Forced dry run.** A deep copy of the settings is taken and `response.dry_run` is set to true and `response.firewall_backend` to `null`, whatever the live configuration is.
+- **Forced dry run.** A deep copy of the settings is taken (`simulation_settings` in `packages/sentinelx/assembly.py`) and `response.dry_run` is set to true and `response.firewall_backend` to `null`, whatever the live configuration is.
 - **In-memory firewall.** The pipeline is given a `MemoryFirewall`, so even the simulated decisions have no path to a real firewall.
 - **Decisions stay visible.** If the live response mode is `manual_approval`, the replay switches to `automatic` so the report shows what would have been decided instead of queueing approval requests. With dry run forced, those decisions are not applied.
 - **Tagged output.** `pipeline.replay_id` is set, and every detection, incident and response decision it publishes carries that ID. The persister stores the ID with each record. Live detection and incident queries exclude records that have one, and the firewall action history (`GET /firewall`, `GET /firewall/actions`) excludes replay decisions unless `include_replays=true`.
 
-The CLI replay without `--persist` uses the same safeguards in simpler form: it forces `dry_run` and passes a `MemoryFirewall`. `sentinelx monitor` does the same unless `--enforce` is given.
+The CLI replay without `--persist` uses the same `simulation_settings` (dry run forced, `null` backend, `manual_approval` shown as `automatic`) and a `MemoryFirewall`, so its decisions appear as simulated exactly as in an API or dashboard replay. `sentinelx monitor` forces dry run and uses a `MemoryFirewall` unless `--enforce` is given; it does not change the response mode.
 
 Every front end assembles its detectors through `packages/sentinelx/assembly.py`, so a replay runs exactly the detection a live sensor runs. `tests/api/test_security_hardening.py` checks that an API replay pipeline has the same detector names as the live pipeline and shares its threat-intelligence service.
 

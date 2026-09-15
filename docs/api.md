@@ -431,7 +431,11 @@ are not followed.
 | GET | `/replay/{replay_id}` | viewer | Replay status, progress and final report. |
 | POST | `/replay/{replay_id}/cancel` | analyst | Cancel a running replay; 409 if it is not running. |
 
-Replay responses are always simulated; a replay never changes the firewall. See
+Replay responses are always simulated; a replay never changes the firewall. API,
+dashboard and CLI replays use the same simulation settings (dry run forced, `null`
+backend, `manual_approval` shown as `automatic`). `GET /replay/{replay_id}` reports
+`completed` only after the replay's detections and incidents have been written, so
+detection and incident queries for that replay are final from then on. See
 [pcap-lab.md](pcap-lab.md).
 
 Scenario parameters are validated before anything is generated. An unknown scenario is
