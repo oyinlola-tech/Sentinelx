@@ -253,7 +253,7 @@ cd apps/dashboard && npm run dev # forwards /api to SENTINELX_API_URL, default h
 
 The dashboard server forwards `/api` requests, including the event stream, to the API, so the browser uses one origin.
 
-On first start with an empty user table, SentinelX creates an `admin` account. If `API__BOOTSTRAP_ADMIN_PASSWORD` is not set, a password is generated and printed **once** to the server's standard error, and you must change it at first sign-in. It is never written to the log.
+On first start with an empty user table, SentinelX creates an `admin` account. If `API__BOOTSTRAP_ADMIN_PASSWORD` is not set, a password is generated and written to a file only the server's account can read. By default that file is `<temp directory>/sentinelx-<uid>/initial-admin-password`; set `API__BOOTSTRAP_PASSWORD_FILE` to choose another path. The console shows where the file is, never the password itself, because console output ends up in `docker logs` and the systemd journal. You must change the password at first sign-in, and the file is then deleted. If the file cannot be written safely, the console tells you to run `sentinelx users reset-password admin` instead.
 
 A SQLite database is created and migrated to the latest schema automatically at startup. PostgreSQL needs `sentinelx db upgrade` first; see [docs/deployment.md](docs/deployment.md#database-migrations).
 
@@ -460,7 +460,7 @@ Endpoint reference, roles and event types: [docs/api.md](docs/api.md).
 ```bash
 cp .env.example .env         # set POSTGRES_PASSWORD, REDIS_PASSWORD and a 32+ character JWT_SECRET
 docker compose up -d --build # postgres, redis, migrate, api, dashboard, proxy
-docker compose logs -f api   # shows the one-time admin password on first start
+docker compose exec api cat /tmp/sentinelx/initial-admin-password   # one-time admin password, first start only
 ```
 
 Open `http://127.0.0.1:3000`. An nginx proxy serves the dashboard, the REST API and the event stream on that one origin. The API is also published on `127.0.0.1:8000` for scripts and Prometheus; the proxy does not serve `/api/v1/metrics`. All ports are bound to loopback. The `migrate` service applies database migrations before the API starts.

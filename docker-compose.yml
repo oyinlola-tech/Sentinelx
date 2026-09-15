@@ -25,6 +25,8 @@ x-api-env: &api-env
   REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
   JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ characters) in .env}
   API__BOOTSTRAP_ADMIN_PASSWORD: ${API__BOOTSTRAP_ADMIN_PASSWORD:-}
+  # A generated first-admin password goes here (the container's tmpfs), never to the logs.
+  API__BOOTSTRAP_PASSWORD_FILE: /tmp/sentinelx/initial-admin-password
   API__METRICS_TOKEN: ${API__METRICS_TOKEN:-}
   # Browsers reach the API through the proxy, on the dashboard's origin.
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}

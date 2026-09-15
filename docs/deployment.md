@@ -371,7 +371,8 @@ cp .env.example .env
 # edit .env: set POSTGRES_PASSWORD, REDIS_PASSWORD and JWT_SECRET
 python -c "import secrets; print(secrets.token_urlsafe(48))"   # generates a JWT_SECRET
 make docker-up        # or: docker compose up -d --build
-make docker-logs      # follow API logs; shows the one-time admin password on first start
+make docker-logs      # follow API logs
+make docker-admin-password   # first start: the generated admin password (never in the logs)
 ```
 
 Then open `http://127.0.0.1:3000`.
