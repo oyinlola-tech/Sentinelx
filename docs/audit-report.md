@@ -212,6 +212,7 @@ A fresh install resolved Typer 0.27, Click 8.5, FastAPI 0.141 and Starlette 1.6,
 | Test | `tests/detection/test_rule_matrix.py` | 1 failure on Windows | `chmod 0` only sets the read-only attribute on Windows, so the file stays readable | Assertion accounts for Windows |
 | Test | `tests/unit/test_cli_matrix.py` | 1 failure on Windows | `doctor` reports the normalised architecture (`AMD64` is `x86_64`; Linux `aarch64` is `arm64`, so ARM64 Linux would also have failed), while the test compared the raw `platform.machine()` | Compares against `detect_environment().label()` |
 | Test | `tests/integration/test_storage_matrix.py` | The pool test failed once under load (5 server connections counted where 4 are allowed) | PostgreSQL removes a closed overflow connection from `pg_stat_activity` only when its backend exits, a moment later; the test read the view immediately | Bounded wait (5 s) for the view to settle; a leaked connection still fails. Passes alone and three at once |
+| Test | `tests/api/test_api.py` | The audit-log redaction test checked `"hooks.example.com" in text` (CodeQL `py/incomplete-url-substring-sanitization`), which also passes for `https://evil.test/hooks.example.com` or a URL that keeps its secret path | The recorded URL is parsed with `urlsplit` and scheme, host, port, path, query and fragment are compared exactly. The product already parsed URLs this way; no product code used substring host checks | With the redaction deliberately broken both ways, the old assertion passes and the new test fails; with correct redaction it passes |
 | Test | `pyproject.toml` | The HTTPS webhook tests (payload delivered without leaking the secret, certificate checks) were silently skipped on clean installs and in CI | `cryptography` was not a dev dependency | Added (`cryptography>=42,<50`, pinned 49.0.0); the 7 tests run in the clean pinned container |
 
 ### Test infrastructure
@@ -323,14 +324,17 @@ Synthetic traffic with known ground truth, 5 runs each:
 
 | Check | Result |
 |---|---|
-| Backend test suite with real PostgreSQL 17 and Redis 7 | 1,820 passed, 14 skipped, 0 failed |
-| Coverage | 88.0% (was 78.8% at the start of the pass) |
-| Kernel tests (network namespace, real AF_PACKET, libpcap, nftables, iptables) | 13 passed |
+| Backend test suite with real PostgreSQL 17 and Redis 7, including the `docker pause` partition test (final code) | 1,863 passed, 15 skipped, 0 failed. The skips are the kernel tests, which run separately |
+| Coverage | 88% (was 78.8% at the start of the first pass) |
+| Kernel tests (network namespace, real AF_PACKET, libpcap, nftables, iptables) | 14 passed, 0 skipped |
+| Clean `python:3.12-slim` container on the pinned `constraints.txt` versions (FastAPI 0.141.1, Typer 0.27.2, Starlette 1.6.0, SQLAlchemy 2.0.53) | `pip check`, ruff and mypy pass; 1,840 passed, 27 skipped, 0 failed (skips: kernel tests, tests that cannot run as root, and one needing Wireshark's `editcap`); the HTTPS webhook tests run |
+| Windows and macOS test failures reported by CI | Reproduced and fixed locally: the parser tests fail on the old code and pass on the new with Scapy's host lookups made to raise; the full capture, detection and unit suites pass under that condition |
+| First-run administrator password (CodeQL finding) | Real server and fresh Compose stack: never in console output or any container log; file `0600` on tmpfs; browser first-run flow passes and the file is deleted |
 | New tests this pass | 1,322 (1,834 collected against 498 at the start of the pass, excluding kernel tests), in the endpoint, auth, parser, feature, detector, rule, risk, correlation, response, storage, CLI and event bus matrices |
-| ruff check, ruff format | Pass (174 files) |
-| mypy (strict) | Pass (116 source files) |
+| ruff check, ruff format | Pass (176 files) |
+| mypy (strict) | Pass (117 source files) |
 | Dashboard lint, typecheck, production build | Pass |
-| OpenAPI contract | Regenerated from the code; the only change is one parameter description (`include_alerts`) |
+| OpenAPI contract | Regenerated from the final code; no drift |
 | Rules | 7 valid; embedded rule tests pass |
 | Browser end-to-end chain (final images, clean stack) | 19/19 |
 | Failure injection (final images) | 15/15 |
@@ -341,7 +345,7 @@ Synthetic traffic with known ground truth, 5 runs each:
 | Clean-machine install of the committed source before this pass's fixes | 476 passed, 15 skipped; dashboard built and served through its proxy |
 | Security checks | pip-audit: 0 vulnerabilities (runtime closure and image); npm audit: 0; secret scan of logs during auth flows: nothing found; `.env` not tracked |
 
-The 14 skips in the main run are the kernel tests, which run separately, plus tests that need privileges or are platform specific.
+The skips in the main run are the kernel tests, which run separately through `make test-kernel`.
 
 ## 8. Known limitations
 

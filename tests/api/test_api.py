@@ -5,6 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -335,9 +336,21 @@ class TestValidationAndSafety:
         )
         assert response.status_code == 200, response.text
         audit = await client.get("/audit", headers=admin, params={"action": "UPDATE_SETTINGS"})
-        text = audit.text
-        assert "hooks.example.com" in text
-        assert "SECRETPATH" not in text and "sig=abc" not in text
+        assert audit.status_code == 200, audit.text
+        # Nothing of the secret path or query anywhere in the response.
+        assert "SECRETPATH" not in audit.text and "sig=abc" not in audit.text
+        # The change itself is recorded with the URL reduced to scheme and host. Parse it
+        # and compare each part: a substring match on the host would also accept a URL
+        # that merely mentions it (``https://evil.test/hooks.example.com``).
+        entries = [e for e in audit.json()["items"] if e["target"] == "response"]
+        assert len(entries) == 1, entries
+        recorded = urlsplit(entries[0]["details"]["changes"]["webhook_url"]["to"])
+        assert (recorded.scheme, recorded.hostname, recorded.port) == (
+            "https",
+            "hooks.example.com",
+            None,
+        )
+        assert (recorded.path, recorded.query, recorded.fragment) == ("/…", "", "")
 
     async def test_path_traversal_refused(
         self, client: httpx.AsyncClient, admin: dict[str, str]
