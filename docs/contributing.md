@@ -158,6 +158,10 @@ unshare -rn sh -c 'ip link set lo up && ip link add sx0 type dummy && \
 
 `tests/kernel/conftest.py` marks every kernel test `root` and skips it unless the process has both capabilities and the two test addresses are assigned locally, so `make test`, the CI backend and portability jobs, and other operating systems skip them. The CI kernel job runs them and fails if any is skipped. The target needs unprivileged user namespaces to be enabled (some distributions disable them) and the `ip`, `nft` and `iptables` commands.
 
+### Live attack demo
+
+Synthetic frames test detectors against the traffic their author imagined. Before changing how a detector counts or attributes traffic, also run it against real tools with `scripts/live_demo.sh` (Linux with Docker; see the header of the script). It starts the Compose stack on ports 3300 and 8800 with capture and nftables control inside the API container, attacks it from containers on the stack's private network with `nmap`, `hping3`, `dig` and an HTTP flood, enables automatic prevention, and prints what SentinelX recorded. Check in particular that no detection names the target (`172.22.0.4`): earlier runs found the target blamed for its own echo replies and answers, a SYN flood against an open port missed, and SentinelX's own database traffic reported as a brute force. Each finding becomes a test in `tests/detection/test_live_run_regressions.py`. Run `scripts/live_demo.sh down` afterwards; it removes the stack, its volumes and the `.demo/` state directory.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and on every pull request. A newer run for the same ref cancels one in progress. It has five jobs:
