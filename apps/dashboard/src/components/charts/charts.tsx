@@ -254,22 +254,34 @@ export function LineSeries({ points, height = 140, format = num, label }: { poin
   );
 }
 
+/**
+ * Protocol identity colours. Each protocol keeps its colour whatever its share (colour
+ * follows the entity, not its rank). Four validated slots on the dark panel surface
+ * (dataviz validator: lightness band, chroma, CVD >= 8, normal-vision >= 15), chosen
+ * outside the reserved status hues (amber attention, flare danger, lichen healthy);
+ * anything else folds into a neutral "other".
+ */
+const PROTOCOL_COLORS: Record<string, string> = { tcp: "#3987e5", udp: "#d55181", icmp: "#9085e9", arp: "#2a9cb0" };
+
+function protocolColor(key: string): string {
+  return PROTOCOL_COLORS[key.toLowerCase()] ?? "var(--color-line-strong)";
+}
+
 /** Share of a whole as one segmented bar, direct-labelled (used for protocol mix). */
 export function ShareBar({ shares }: { shares: Record<string, number> }) {
   const entries = Object.entries(shares).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]);
-  const palette = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"]; // reference categorical order, dark steps
   if (!entries.length) return <p className="text-sm text-mist">No traffic observed yet.</p>;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex h-2.5 w-full gap-[2px] overflow-hidden rounded-sm" role="img" aria-label={entries.map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`).join(", ")}>
         {entries.map(([key, value], index) => (
-          <span key={key} style={{ width: `${value * 100}%`, background: palette[index % palette.length] }} />
+          <span key={key} style={{ width: `${value * 100}%`, background: protocolColor(key) }} />
         ))}
       </div>
       <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
         {entries.map(([key, value], index) => (
           <li key={key} className="flex items-center gap-1.5 text-mist">
-            <span className="size-2 rounded-sm" style={{ background: palette[index % palette.length] }} aria-hidden />
+            <span className="size-2 rounded-sm" style={{ background: protocolColor(key) }} aria-hidden />
             <span className="uppercase">{key}</span>
             <span className="font-mono tabular text-frost">{(value * 100).toFixed(1)}%</span>
           </li>

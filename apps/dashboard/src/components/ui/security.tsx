@@ -57,7 +57,7 @@ const FACTOR_LABELS: Record<string, string> = {
 /**
  * The explainability view of a score: each factor's contribution as a segment of
  * one bar, labelled, followed by the engine's own rationale sentences. Segments use
- * a 2px surface gap and iris steps rather than severity colours - they identify
+ * a 2px surface gap and steel steps rather than severity colours - they identify
  * factors, not severity.
  */
 export function RiskBreakdown({ risk }: { risk: Risk }) {
@@ -65,7 +65,9 @@ export function RiskBreakdown({ risk }: { risk: Risk }) {
   const negative = Object.entries(risk.contributions).filter(([, value]) => value < 0);
   const total = positive.reduce((sum, [, value]) => sum + value, 0) || 1;
   const scale = Math.max(total, 100);
-  const shades = ["#8c9eff", "#7486ec", "#5f71d6", "#a6b3ff", "#4d5fbf", "#bcc6ff", "#3f4fa8"];
+  // One-hue steel ramp (validated ordinal on the dark panel): factors are parts of one
+  // score, identified by the labelled legend below, not by hue.
+  const shades = ["#e1eaed", "#c1d1d6", "#a2b8c0", "#839fa9", "#678792", "#4f6f7a", "#3b5a65"];
   return (
     <div className="flex flex-col gap-3">
       <RiskScore score={risk.score} size="lg" />
