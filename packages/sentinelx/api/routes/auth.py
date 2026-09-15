@@ -101,13 +101,11 @@ async def login(
 
 @router.post("/auth/refresh", response_model=TokenResponse, summary="Rotate a refresh token")
 async def refresh(request: Request, response: Response, platform: PlatformDep) -> TokenResponse:
-    """Rotate the refresh token from the JSON body (API clients) or the session cookie.
-
-    The cookie is honoured only with ``X-SentinelX-Client: dashboard``, the header the
-    dashboard sends on every call. A page on another site cannot add that header to a
-    cross-site request without a CORS preflight, so the cookie alone never rotates a
-    session (SameSite=Strict already keeps the cookie off such requests).
-    """
+    # The refresh token comes from the JSON body (API clients) or the session cookie. The
+    # cookie is honoured only with ``X-SentinelX-Client: dashboard``, the header the
+    # dashboard sends on every call: a page on another site cannot add it to a cross-site
+    # request without a CORS preflight, so the cookie alone never rotates a session
+    # (SameSite=Strict already keeps the cookie off such requests).
     cookie = request.cookies.get(REFRESH_COOKIE)
     token: object = None
     if cookie and request.headers.get("x-sentinelx-client") == "dashboard":

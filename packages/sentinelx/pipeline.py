@@ -207,6 +207,8 @@ class Pipeline:
         self.last_report: RunReport | None = None
         self._packet_hooks: list[Callable[[PacketEvent], None]] = []
         self._replay_id: str | None = None
+        #: TELEMETRY__PROFILE_PIPELINE: time each stage into sentinelx_stage_latency_seconds.
+        self.profile = settings.telemetry.profile_pipeline
 
     @property
     def replay_id(self) -> str | None:
@@ -255,20 +257,33 @@ class Pipeline:
         packet = self.decoder.decode(
             frame.data, frame.timestamp, frame.link_type, frame.interface, frame.wire_length
         )
+        if self.profile:
+            decoded = time.perf_counter()
+            metrics.stage_latency.labels(stage="decode").observe(decoded - started)
         if packet is None:
             return []
         for hook in self._packet_hooks:
             hook(packet)
 
         context = self.extractor.process(packet)
+        if self.profile:
+            extracted = time.perf_counter()
+            metrics.stage_latency.labels(stage="features").observe(extracted - decoded)
         detections = self.detection.evaluate(context)
+        if self.profile:
+            evaluated = time.perf_counter()
+            metrics.stage_latency.labels(stage="detection").observe(evaluated - extracted)
         metrics.packets_processed.labels(protocol=packet.protocol.value).inc()
         if not detections:
             metrics.pipeline_latency.observe(time.perf_counter() - started)
             return []
 
         records = [await self._handle_detection(detection, started) for detection in detections]
-        metrics.pipeline_latency.observe(time.perf_counter() - started)
+        finished = time.perf_counter()
+        if self.profile:
+            # Threat intel, risk, correlation, response and publishing, for every detection.
+            metrics.stage_latency.labels(stage="response").observe(finished - evaluated)
+        metrics.pipeline_latency.observe(finished - started)
         return records
 
     async def _handle_detection(self, detection: Detection, started: float) -> DetectionRecord:

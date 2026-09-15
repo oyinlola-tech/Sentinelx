@@ -261,9 +261,6 @@ class ScoringSettings(BaseModel):
         description="Risk at or above which an automatic block may be proposed. "
         "Only acted on when RESPONSE_MODE=automatic and DRY_RUN=false.",
     )
-    incident_threshold: Percent = Field(
-        default=60.0, description="Risk at or above which a correlated incident is opened."
-    )
 
 
 # ================================================================= correlation
@@ -314,7 +311,13 @@ class AnomalySettings(BaseModel):
         "model, and an untrained one adds noise rather than signal.",
     )
     ml_model_path: Path = Field(default=Path("models/isolation_forest.joblib"))
-    ml_contamination: float = Field(default=0.02, gt=0, lt=0.5)
+    ml_contamination: float = Field(
+        default=0.02,
+        gt=0,
+        lt=0.5,
+        description="Expected share of anomalies in training traffic: the default for "
+        "'sentinelx anomaly train --contamination'.",
+    )
     ml_min_score: Fraction = Field(default=0.75)
 
 
@@ -611,10 +614,13 @@ class TelemetrySettings(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_format: Literal["console", "json"] = "console"
     log_file: Path | None = None
-    metrics_enabled: bool = True
-    metrics_path: str = "/metrics"
+    metrics_enabled: bool = Field(
+        default=True, description="Serve Prometheus metrics at /api/v1/metrics (404 when false)."
+    )
     profile_pipeline: bool = Field(
-        default=False, description="Record per-stage latency histograms. Small but non-zero cost."
+        default=False,
+        description="Record per-stage latency (sentinelx_stage_latency_seconds{stage}). Small "
+        "but non-zero cost per packet.",
     )
 
 

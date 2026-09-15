@@ -221,61 +221,47 @@ class QueryService:
     # ---------------------------------------------------------------- threats
 
     async def threats(self, *, since: datetime, limit: int = 100) -> list[dict[str, Any]]:
-        """Detections grouped by source: the "who is attacking us" view."""
+        """Detections grouped by source: the "who is attacking us" view.
+
+        Aggregated in the database over every detection in the window, so counts are
+        exact however busy the window was, in a fixed number of queries.
+        """
         async with self.database.session() as session:
-            page = await DetectionRepository(session).page(
-                DetectionFilter(since=since), limit=500, order="risk"
+            sources = await DetectionRepository(session).by_source(
+                DetectionFilter(since=since), limit=limit
             )
             active_blocks = {b.network for b in await BlockRepository(session).active()}
-        grouped: dict[str, dict[str, Any]] = {}
-        for record in page.items:
-            entry = grouped.setdefault(
-                record.source_ip,
-                {
-                    "source_ip": record.source_ip,
-                    "detections": 0,
-                    "max_risk": 0.0,
-                    "severities": {},
-                    "categories": set(),
-                    "detectors": set(),
-                    "destinations": set(),
-                    "first_seen": record.timestamp,
-                    "last_seen": record.timestamp,
-                    "top_detection": detection_record_to_dict(record),
-                    "incident_ids": set(),
-                    "statuses": {},
-                },
-            )
-            entry["detections"] += 1
-            entry["max_risk"] = max(entry["max_risk"], record.risk_score)
-            entry["severities"][record.severity] = entry["severities"].get(record.severity, 0) + 1
-            entry["statuses"][record.status] = entry["statuses"].get(record.status, 0) + 1
-            entry["categories"].add(record.category)
-            entry["detectors"].add(record.detector)
-            if record.destination_ip:
-                entry["destinations"].add(record.destination_ip)
-            if record.incident_id:
-                entry["incident_ids"].add(record.incident_id)
-            entry["first_seen"] = min(entry["first_seen"], record.timestamp)
-            entry["last_seen"] = max(entry["last_seen"], record.timestamp)
         output = []
-        for entry in grouped.values():
+        for source in sources:
+            severities: dict[str, int] = {}
+            statuses: dict[str, int] = {}
+            categories: set[str] = set()
+            detectors: set[str] = set()
+            for severity, status, category, detector, total in source["breakdown"]:
+                severities[severity] = severities.get(severity, 0) + total
+                statuses[status] = statuses.get(status, 0) + total
+                categories.add(category)
+                detectors.add(detector)
+            ip = source["source_ip"]
             output.append(
                 {
-                    **entry,
-                    "categories": sorted(entry["categories"]),
-                    "detectors": sorted(entry["detectors"]),
-                    "destinations": sorted(entry["destinations"])[:20],
-                    "incident_ids": sorted(entry["incident_ids"]),
-                    "first_seen": _iso(entry["first_seen"]),
-                    "last_seen": _iso(entry["last_seen"]),
-                    "blocked": f"{entry['source_ip']}/32" in active_blocks
-                    or f"{entry['source_ip']}/128" in active_blocks,
-                    "history": self.pipeline.risk.source_summary(entry["source_ip"]),
+                    "source_ip": ip,
+                    "detections": source["detections"],
+                    "max_risk": source["max_risk"],
+                    "severities": severities,
+                    "categories": sorted(categories),
+                    "detectors": sorted(detectors),
+                    "destinations": source["destinations"],
+                    "first_seen": _iso(source["first_seen"]),
+                    "last_seen": _iso(source["last_seen"]),
+                    "top_detection": detection_record_to_dict(source["top_detection"]),
+                    "incident_ids": source["incident_ids"],
+                    "statuses": statuses,
+                    "blocked": f"{ip}/32" in active_blocks or f"{ip}/128" in active_blocks,
+                    "history": self.pipeline.risk.source_summary(ip),
                 }
             )
-        output.sort(key=lambda item: item["max_risk"], reverse=True)
-        return output[:limit]
+        return output
 
     # --------------------------------------------------------------- firewall
 

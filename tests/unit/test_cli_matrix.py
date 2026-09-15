@@ -186,6 +186,8 @@ def test_missing_required_argument_is_a_usage_error(path: tuple[str, ...]) -> No
         ["rules", "validate", "/nonexistent.yml"],  # used to report "0 valid" and exit 0
         ["users", "create", "bob", "--role", "wizard"],
         ["config", "--section", "nosuch"],  # used to print {"nosuch": null} and exit 0
+        ["config", "set", "nosuch", "key", "1"],  # used to exit 1
+        ["config", "set", "scoring", "nosuch", "1"],
         ["db", "upgrade", "extra-argument"],
         ["doctor", "--api-url"],
         ["nonexistent-command"],
@@ -355,6 +357,31 @@ def test_rules_validate_fails_when_rules_directory_is_missing(
 def test_config_unknown_section_lists_the_real_ones(cli_env: Path) -> None:
     result = invoke("config", "--section", "nosuch")
     assert result.exit_code == 2 and "response" in result.stderr and result.stdout == ""
+
+
+def test_config_set_with_an_unknown_section_or_key_lists_the_valid_ones(cli_env: Path) -> None:
+    from sentinelx.services.config import EDITABLE
+
+    cases = {
+        ("nosuch", "retention_days"): ("no settings section 'nosuch'", sorted(EDITABLE)),
+        ("api", "port"): ("'api' cannot be changed at runtime", sorted(EDITABLE)),
+        ("storage", "nosuch"): (
+            "storage.nosuch is not a setting in this section",
+            sorted(EDITABLE["storage"]),
+        ),
+        ("storage", "database_url"): (
+            "storage.database_url is set via the environment and needs a restart",
+            sorted(EDITABLE["storage"]),
+        ),
+    }
+    for (section, key), (message, valid) in cases.items():
+        result = invoke("config", "set", section, key, "1")
+        assert result.exit_code == 2, (section, key, result.output)
+        assert no_traceback(result) and result.stdout == ""
+        stderr = " ".join(result.stderr.split())
+        assert message in stderr and ", ".join(valid) in stderr, stderr
+    # Nothing was written: the database was never opened.
+    assert not (cli_env / "cli.db").exists()
 
 
 # ------------------------------------------------------- unavailable services
@@ -576,8 +603,8 @@ def test_doctor_default_environment(cli_env: Path) -> None:
     status = {name: check["status"] for name, check in checks.items()}
     assert status["python"] == "PASS" and status["dependencies"] == "PASS"
     assert status["pcap replay"] == "PASS"
-    assert status["rules"] == "PASS" and status["database"] == "PASS"
-    assert status["migrations"] == "WARN"  # fresh SQLite, migrated at start
+    assert status["rules"] == "PASS"
+    assert status["database"] == "WARN" and "migrations" not in status  # created at start
     assert status["redis"] == "WARN"
     assert status["api"] == "WARN" and "not reachable" in checks["api"]["detail"]
     assert status["dashboard"] == "WARN" and "not reachable" in checks["dashboard"]["detail"]
@@ -707,7 +734,7 @@ def test_doctor_redis_required_reports_instead_of_aborting(
     monkeypatch.setenv("STORAGE__REDIS_REQUIRED", "true")
     result, checks = doctor()
     assert checks["redis"]["status"] == "FAIL" and result.exit_code == 1
-    assert checks["database"]["status"] == "PASS"  # the other checks still ran
+    assert checks["database"]["status"] == "WARN"  # the other checks still ran
 
 
 def test_doctor_ml_enabled_without_the_extra_fails(

@@ -260,6 +260,127 @@ class DetectionRepository:
         )
         return Page(list(rows.scalars()), total, limit, offset)
 
+    async def by_source(
+        self, filters: DetectionFilter, *, limit: int = 100, destinations: int = 20
+    ) -> list[dict[str, Any]]:
+        """Detections aggregated per source address, highest risk first.
+
+        Every count, the risk maximum and first/last seen are computed in the database
+        over *all* matching detections, not a sample, in five queries whatever the
+        number of rows or sources. Each entry has ``source_ip``, ``detections``,
+        ``max_risk``, ``first_seen``, ``last_seen``, ``breakdown`` (``(severity,
+        status, category, detector, count)`` tuples), ``destinations`` (the first
+        ``destinations`` in sort order), ``incident_ids`` and ``top_detection`` (the
+        highest-risk record, ties broken by ``detection_id``).
+        """
+        model = DetectionRecord
+        limit = max(1, min(limit, MAX_PAGE_SIZE))
+        count = func.count().label("detections")
+        max_risk = func.max(model.risk_score).label("max_risk")
+        sources = await self.session.execute(
+            filters.apply(
+                select(
+                    model.source_ip,
+                    count,
+                    max_risk,
+                    func.min(model.timestamp).label("first_seen"),
+                    func.max(model.timestamp).label("last_seen"),
+                )
+            )
+            .group_by(model.source_ip)
+            .order_by(max_risk.desc(), count.desc(), model.source_ip)
+            .limit(limit)
+        )
+        entries: dict[str, dict[str, Any]] = {
+            row.source_ip: {
+                "source_ip": row.source_ip,
+                "detections": int(row.detections),
+                "max_risk": float(row.max_risk or 0.0),
+                "first_seen": row.first_seen,
+                "last_seen": row.last_seen,
+                "breakdown": [],
+                "destinations": [],
+                "incident_ids": [],
+                "top_detection": None,
+            }
+            for row in sources
+        }
+        if not entries:
+            return []
+        scoped = model.source_ip.in_(list(entries))
+
+        breakdown = await self.session.execute(
+            filters.apply(
+                select(
+                    model.source_ip,
+                    model.severity,
+                    model.status,
+                    model.category,
+                    model.detector,
+                    func.count(),
+                ).where(scoped)
+            ).group_by(
+                model.source_ip, model.severity, model.status, model.category, model.detector
+            )
+        )
+        for ip, severity, status, category, detector, total in breakdown:
+            entries[ip]["breakdown"].append((severity, status, category, detector, int(total)))
+
+        # A sweep can reach thousands of destinations: only the first few per source
+        # leave the database.
+        pairs = (
+            filters.apply(
+                select(model.source_ip, model.destination_ip).where(
+                    scoped, model.destination_ip.is_not(None)
+                )
+            )
+            .distinct()
+            .subquery()
+        )
+        ranked = select(
+            pairs.c.source_ip,
+            pairs.c.destination_ip,
+            func.row_number()
+            .over(partition_by=pairs.c.source_ip, order_by=pairs.c.destination_ip)
+            .label("position"),
+        ).subquery()
+        for ip, destination in await self.session.execute(
+            select(ranked.c.source_ip, ranked.c.destination_ip)
+            .where(ranked.c.position <= destinations)
+            .order_by(ranked.c.source_ip, ranked.c.destination_ip)
+        ):
+            entries[ip]["destinations"].append(destination)
+
+        for ip, incident_id in await self.session.execute(
+            filters.apply(
+                select(model.source_ip, model.incident_id).where(
+                    scoped, model.incident_id.is_not(None)
+                )
+            )
+            .distinct()
+            .order_by(model.source_ip, model.incident_id)
+        ):
+            entries[ip]["incident_ids"].append(incident_id)
+
+        top = filters.apply(
+            select(
+                model.detection_id,
+                func.row_number()
+                .over(
+                    partition_by=model.source_ip,
+                    order_by=(model.risk_score.desc(), model.detection_id),
+                )
+                .label("position"),
+            ).where(scoped)
+        ).subquery()
+        for record in await self.session.scalars(
+            select(model)
+            .join(top, model.detection_id == top.c.detection_id)
+            .where(top.c.position == 1)
+        ):
+            entries[record.source_ip]["top_detection"] = record
+        return list(entries.values())
+
     async def set_status(
         self, detection_id: str, status: str, reviewer: str
     ) -> DetectionRecord | None:

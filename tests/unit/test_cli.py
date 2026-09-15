@@ -99,15 +99,32 @@ def test_status_and_doctor_json(cli_env: Path) -> None:
     assert checks["firewall backend"] != "PASS"
 
 
+def test_doctor_does_not_create_a_missing_sqlite_database(cli_env: Path) -> None:
+    """Regression: the database check connected, which created an empty SQLite file."""
+    database = cli_env / "cli.db"
+    assert not database.exists()
+    doctor = CliRunner().invoke(app, ["doctor", "--json"])
+    assert doctor.exit_code == 0, doctor.output
+    checks = {c["name"]: c for c in json.loads(doctor.stdout)}
+    assert checks["database"]["status"] == "WARN"
+    assert checks["database"]["detail"] == (
+        f"database file does not exist yet ({database}); it is created and migrated when "
+        "SentinelX starts"
+    )
+    assert "migrations" not in checks
+    assert not database.exists()
+
+
 def test_doctor_inspects_a_fresh_database_without_migrating_it(cli_env: Path) -> None:
+    import sqlite3
+
+    sqlite3.connect(cli_env / "cli.db").close()  # an empty database file
     doctor = CliRunner().invoke(app, ["doctor", "--json"])
     checks = {c["name"]: c for c in json.loads(doctor.stdout)}
-    # A new SQLite file is reachable and is migrated when SentinelX starts: not a failure.
+    # An unmigrated SQLite file is reachable and migrated when SentinelX starts: not a failure.
     assert checks["database"]["status"] == "PASS"
     assert checks["migrations"]["status"] == "WARN"
     assert "migrated automatically" in checks["migrations"]["detail"]
-    import sqlite3
-
     with sqlite3.connect(cli_env / "cli.db") as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
     assert "alembic_version" not in tables

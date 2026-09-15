@@ -303,6 +303,23 @@ def _local_checks(settings: Settings) -> list[Check]:
     return checks
 
 
+def _missing_sqlite_file(url: str) -> Path | None:
+    """The path of a SQLite database file named by ``url`` that does not exist yet.
+
+    ``None`` for other databases, in-memory SQLite, URI filenames and existing files.
+    """
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "sqlite":
+        return None
+    name = parsed.database or ""
+    if not name or name == ":memory:" or name.startswith("file:") or parsed.query.get("uri"):
+        return None
+    path = Path(name)
+    return None if path.exists() else path
+
+
 async def _service_checks(settings: Settings) -> list[Check]:
     from sentinelx.storage.database import Database
     from sentinelx.storage.migrate import current_revision, head_revision
@@ -310,40 +327,55 @@ async def _service_checks(settings: Settings) -> list[Check]:
 
     checks: list[Check] = []
     database = Database(settings.storage)
-    try:
-        # Inspect only: doctor must not migrate the database it is diagnosing.
-        await database.connect(prepare_schema=False)
-        checks.append(Check("database", "PASS", database.safe_url))
-        applied = await current_revision(settings.storage.database_url)
-        head = head_revision()
-        if applied == head:
-            checks.append(Check("migrations", "PASS", f"at the latest revision ({head})"))
-        elif database.dialect == "sqlite":
-            checks.append(
-                Check(
-                    "migrations",
-                    "WARN",
-                    f"applied {applied or 'none'}, latest {head}: SQLite databases are "
-                    "migrated automatically when SentinelX starts",
-                    "or migrate now: sentinelx db upgrade",
-                )
-            )
-        else:
-            checks.append(
-                Check(
-                    "migrations",
-                    "FAIL",
-                    f"applied {applied or 'none'}, latest {head}: SentinelX refuses to start "
-                    "on an outdated PostgreSQL schema",
-                    "run: sentinelx db upgrade",
-                )
-            )
-    except Exception as exc:
+    missing = _missing_sqlite_file(database.url)
+    if missing is not None:
+        # Connecting would create an empty file; starting SentinelX creates and migrates it.
         checks.append(
-            Check("database", "FAIL", f"{type(exc).__name__}: {exc}"[:300], "check DATABASE_URL")
+            Check(
+                "database",
+                "WARN",
+                f"database file does not exist yet ({missing}); it is created and migrated "
+                "when SentinelX starts",
+                "start SentinelX, or create it now: sentinelx db upgrade",
+            )
         )
-    finally:
-        await database.close()
+    else:
+        try:
+            # Inspect only: doctor must not migrate the database it is diagnosing.
+            await database.connect(prepare_schema=False)
+            checks.append(Check("database", "PASS", database.safe_url))
+            applied = await current_revision(settings.storage.database_url)
+            head = head_revision()
+            if applied == head:
+                checks.append(Check("migrations", "PASS", f"at the latest revision ({head})"))
+            elif database.dialect == "sqlite":
+                checks.append(
+                    Check(
+                        "migrations",
+                        "WARN",
+                        f"applied {applied or 'none'}, latest {head}: SQLite databases are "
+                        "migrated automatically when SentinelX starts",
+                        "or migrate now: sentinelx db upgrade",
+                    )
+                )
+            else:
+                checks.append(
+                    Check(
+                        "migrations",
+                        "FAIL",
+                        f"applied {applied or 'none'}, latest {head}: SentinelX refuses to start "
+                        "on an outdated PostgreSQL schema",
+                        "run: sentinelx db upgrade",
+                    )
+                )
+        except Exception as exc:
+            checks.append(
+                Check(
+                    "database", "FAIL", f"{type(exc).__name__}: {exc}"[:300], "check DATABASE_URL"
+                )
+            )
+        finally:
+            await database.close()
 
     state = SharedState(settings.storage)
     try:

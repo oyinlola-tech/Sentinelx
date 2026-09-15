@@ -270,7 +270,30 @@ def register(app: typer.Typer) -> None:
             parsed = json.loads(value)
         except json.JSONDecodeError:
             parsed = value
-        from sentinelx.services.config import PREVENTION_CONFIRMATION
+        from sentinelx.services.config import EDITABLE, PREVENTION_CONFIRMATION
+
+        # Naming something that cannot be set is a usage error (2), reported before any
+        # database work.
+        if section not in EDITABLE:
+            known = section in type(settings).model_fields
+            err.print(
+                f"[bold red]error:[/] {'settings section' if known else 'no settings section'} "
+                f"{escape(section)!r}{' cannot be changed at runtime' if known else ''}; "
+                f"runtime-editable sections: {', '.join(sorted(EDITABLE))}"
+            )
+            raise typer.Exit(2)
+        if key not in EDITABLE[section]:
+            known = key in type(getattr(settings, section)).model_fields
+            reason = (
+                "is set via the environment and needs a restart"
+                if known
+                else "is not a setting in this section"
+            )
+            err.print(
+                f"[bold red]error:[/] {escape(section)}.{escape(key)} {reason}; "
+                f"runtime-editable keys: {', '.join(sorted(EDITABLE[section]))}"
+            )
+            raise typer.Exit(2)
 
         async def main() -> Any:
             async with platform_context(settings, persist=False) as platform:

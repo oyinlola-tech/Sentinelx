@@ -140,6 +140,14 @@ class ConfigService:
                         effect="the environment's safety posture applies",
                     )
                 values = {k: v for k, v in values.items() if k not in explicit_response}
+            current = getattr(self.settings, section, None)
+            if isinstance(current, BaseModel):
+                # A setting removed in a later release must not void the section's other
+                # stored changes.
+                obsolete = sorted(set(values) - set(type(current).model_fields))
+                if obsolete:
+                    log.warning("stored_setting_obsolete", section=section, fields=obsolete)
+                    values = {k: v for k, v in values.items() if k not in obsolete}
             try:
                 self._apply(section, values, allow_prevention=True)
             except (ConfigurationError, ValidationError) as exc:

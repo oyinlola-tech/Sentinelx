@@ -326,10 +326,19 @@ def register(app: typer.Typer) -> None:
             typer.Argument(exists=True, dir_okay=False, help="Captures of NORMAL traffic."),
         ],
         output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
-        contamination: Annotated[float, typer.Option(min=0.001, max=0.4)] = 0.02,
+        contamination: Annotated[
+            float | None,
+            typer.Option(
+                min=0.001,
+                max=0.4,
+                help="Expected share of anomalies in the capture [default: ANOMALY__ML_CONTAMINATION].",
+            ),
+        ] = None,
     ) -> None:
         """Train the Isolation Forest on known-normal traffic. The capture must be clean."""
         settings = load_settings()
+        if contamination is None:
+            contamination = settings.anomaly.ml_contamination
         from sentinelx.anomaly.ml import (
             collect_training_vectors,
             load_model,

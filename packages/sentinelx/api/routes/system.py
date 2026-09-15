@@ -110,6 +110,8 @@ async def stop_sensor(principal: Admin, request: Request, platform: PlatformDep)
     "/metrics", tags=["metrics"], summary="Prometheus exposition format", response_class=Response
 )
 async def prometheus(request: Request, platform: PlatformDep) -> Response:
+    if not platform.settings.telemetry.metrics_enabled:
+        raise HTTPException(status_code=404, detail="metrics are disabled")
     token = platform.settings.api.metrics_token
     if token:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()

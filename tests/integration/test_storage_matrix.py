@@ -1193,6 +1193,88 @@ async def test_list_queries_do_not_grow_with_row_count(backend: str, tmp_path: P
         assert large == small, {"20 rows": small, "200 rows": large}
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_threats_counts_every_detection_of_a_busy_window(
+    backend: str, tmp_path: Path
+) -> None:
+    """Regression: the threats view grouped only the 500 highest-risk detections of the
+    window, so a noisy low-risk source's counts were cut off."""
+    async with migrated_database(backend, tmp_path) as database:
+        pipeline = SimpleNamespace(risk=SimpleNamespace(source_summary=lambda ip: {"ip": ip}))
+        queries = QueryService(database, pipeline)  # type: ignore[arg-type]
+        counter = StatementCounter(database)
+        since = NOW - timedelta(days=1)
+
+        async def seed(start: int, stop: int) -> None:
+            async with database.session() as session:
+                await IncidentRepository(session).upsert(incident_values("noisy-inc"))
+                for index in range(start, stop):
+                    session.add(
+                        detection(
+                            f"noisy-{index:05d}",
+                            source_ip="198.51.100.1",
+                            destination_ip=f"192.0.2.{index % 250}",
+                            severity="low" if index % 3 else "medium",
+                            status="new" if index % 2 else "acknowledged",
+                            detector="tcp_port_scan" if index % 5 else "icmp_sweep",
+                            risk_score=10.0 + index % 7,
+                            incident_id="noisy-inc" if index % 100 == 0 else None,
+                            timestamp=NOW - timedelta(seconds=index + 1),
+                        )
+                    )
+
+        async with database.session() as session:
+            for index in range(10):
+                session.add(
+                    detection(
+                        f"loud-{index}",
+                        source_ip="203.0.113.9",
+                        severity="critical",
+                        risk_score=80.0 + index,
+                        timestamp=NOW - timedelta(minutes=index),
+                    )
+                )
+            session.add(
+                detection("old", source_ip="198.51.100.1", timestamp=NOW - timedelta(days=3))
+            )
+            session.add(detection("replayed", source_ip="198.51.100.1", replay_id="r1"))
+            await BlockRepository(session).record_block(
+                "203.0.113.9/32", reason="r", expires_at=None, rate_limited=False, backend="m"
+            )
+        await seed(0, 600)
+
+        first = await counter.measure(lambda: queries.threats(since=since))
+        threats = await queries.threats(since=since)
+        assert [t["source_ip"] for t in threats] == ["203.0.113.9", "198.51.100.1"]
+        loud, noisy = threats
+        assert loud["detections"] == 10 and loud["max_risk"] == 89.0 and loud["blocked"] is True
+        assert (
+            loud["severities"] == {"critical": 10}
+            and loud["top_detection"]["detection_id"] == "loud-9"
+        )
+
+        # Every one of the 600 counts; nothing outside the window or from replays does.
+        assert noisy["detections"] == 600 and noisy["max_risk"] == 16.0
+        assert sum(noisy["severities"].values()) == sum(noisy["statuses"].values()) == 600
+        assert noisy["severities"] == {"low": 400, "medium": 200}
+        assert noisy["statuses"] == {"new": 300, "acknowledged": 300}
+        assert noisy["detectors"] == ["icmp_sweep", "tcp_port_scan"]
+        assert noisy["categories"] == ["reconnaissance"]
+        assert noisy["destinations"] == sorted(f"192.0.2.{i}" for i in range(250))[:20]
+        assert noisy["incident_ids"] == ["noisy-inc"]
+        assert noisy["first_seen"] == (NOW - timedelta(seconds=600)).isoformat()
+        assert noisy["last_seen"] == (NOW - timedelta(seconds=1)).isoformat()
+        assert noisy["top_detection"]["detection_id"] == "noisy-00006"  # risk 16, lowest id
+        assert noisy["blocked"] is False and noisy["history"] == {"ip": "198.51.100.1"}
+        assert [t["source_ip"] for t in await queries.threats(since=since, limit=1)] == [
+            "203.0.113.9"
+        ]
+
+        await seed(600, 1200)
+        assert await counter.measure(lambda: queries.threats(since=since)) == first
+        assert (await queries.threats(since=since))[1]["detections"] == 1200
+
+
 # ======================================================================= 5. Redis
 
 
