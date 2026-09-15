@@ -300,7 +300,10 @@ class EventPersister:
 
     async def _write(self, batch: list[Event]) -> None:
         sensor = self.settings.sensor_name
-        async with self.database.session() as session:
+        # A batch is not a request: it gets the persister's own write timeout, not the
+        # short per-request session deadline, or a batch that is merely slow (a large
+        # batch, a slow disk) would be abandoned and retried forever without committing.
+        async with self.database.session(timeout_seconds=self.write_timeout_seconds) as session:
             detections = DetectionRepository(session)
             incidents = IncidentRepository(session)
             actions = ResponseActionRepository(session)

@@ -514,6 +514,74 @@ class TestDatabaseLocationIsForAdministrators:
         assert platform.database.safe_url not in str(event.payload)
 
 
+class TestAuthenticationBeforeBodyParsing:
+    """Regression: FastAPI parsed a JSON body before running the route's authentication
+    dependency, so an unauthenticated request with a malformed body got 422, not 401."""
+
+    async def test_unauthenticated_malformed_body_is_401_and_the_token_is_checked_once(
+        self,
+        platform: Platform,
+        client: httpx.AsyncClient,
+        admin: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        malformed = {
+            "content": b'{"unterminated": ',
+            "headers": {"content-type": "application/json"},
+        }
+        refused = await client.post("/rules/validate", **malformed)  # type: ignore[arg-type]
+        assert refused.status_code == 401 and refused.json() == {
+            "detail": "authentication required"
+        }
+        # An unknown API path does not reveal whether it exists to an anonymous caller.
+        assert (await client.get("/no-such-endpoint")).status_code == 401
+        assert (await client.get("/no-such-endpoint", headers=admin)).status_code == 404
+
+        calls = 0
+        authenticate = platform.auth.authenticate
+
+        async def counted(token: str) -> object:
+            nonlocal calls
+            calls += 1
+            return await authenticate(token)
+
+        monkeypatch.setattr(platform.auth, "authenticate", counted)
+        signed_in = await client.post(
+            "/rules/validate",
+            headers={**admin, "content-type": "application/json"},
+            content=b'{"unterminated": ',
+        )
+        assert signed_in.status_code == 422  # authenticated, so the body is examined
+        assert (await client.get("/detections", headers=admin)).status_code == 200
+        assert calls == 2  # one lookup per request, not one per layer
+
+    async def test_public_paths_and_root_path_prefixed_requests(self, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from sentinelx.firewall import MemoryFirewall
+        from tests.api.conftest import make_settings
+
+        assert isinstance(tmp_path, Path)
+        settings = make_settings(tmp_path, root_path="/sx", docs_enabled=True)
+        instance = Platform(settings, firewall=MemoryFirewall())
+        await instance.start()
+        try:
+            app = create_app(settings, platform=instance)
+            transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+                assert (await http.get("/api/v1/openapi.json")).status_code == 200
+                assert (await http.get("/api/v1/system/health")).status_code == 200
+                for path in ("/sx/api/v1/detections", "/api/v1/detections"):
+                    response = await http.post(
+                        path.replace("detections", "rules/validate"),
+                        content=b"{",
+                        headers={"content-type": "application/json"},
+                    )
+                    assert response.status_code == 401, (path, response.text)
+        finally:
+            await instance.stop()
+
+
 class TestSessionCutOffSurvivesCacheLoss:
     async def test_signed_out_sessions_stay_refused_when_shared_state_is_lost(
         self, platform: Platform, client: httpx.AsyncClient

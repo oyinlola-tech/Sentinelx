@@ -492,9 +492,10 @@ class StorageSettings(BaseModel):
         default=10.0,
         gt=0,
         le=3600,
-        description="Seconds one unit of database work (an API request's session, a batch of "
-        "events) may take in total, waiting for a connection included. Past it the "
-        "connection is discarded without waiting on the server and the API answers 503.",
+        description="Seconds one unit of database work (an API request's session) may take "
+        "in total, waiting for a connection included. Past it the connection is discarded "
+        "without waiting on the server and the API answers 503. Event batches and "
+        "retention purges have longer limits of their own.",
     )
 
     redis_url: str = Field(default="redis://localhost:6379/0")

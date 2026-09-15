@@ -37,6 +37,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from sentinelx.api.app import create_app
+from sentinelx.api.security import PUBLIC_PATHS
 from sentinelx.common.enums import UserRole
 from sentinelx.firewall import MemoryFirewall
 from sentinelx.services.platform import Platform
@@ -571,6 +572,9 @@ def test_policy_table_matches_the_live_routes(tmp_path: Path) -> None:
     assert not mismatched
     public = {key for key, access in table.items() if access in ("public", "metrics")}
     assert public == set(PUBLIC_JUSTIFICATION)
+    # The authentication gate lets exactly these paths through without a session (plus
+    # the OpenAPI document, served only when docs are enabled).
+    assert {API + template for _, template in public} == PUBLIC_PATHS - {f"{API}/openapi.json"}
     assert websockets == [f"{API}/ws/events"]
 
 
@@ -592,6 +596,22 @@ class TestMatrix:
             if op.json is not NO_BODY or op.content is not None:
                 bare = await env.client.request(op.method, op.concrete, params=op.params)
                 assert bare.status_code == 401, bare.text
+                # Authentication comes before the body is parsed: a malformed or
+                # undecodable body was 422 (or 400) for an unauthenticated caller.
+                for content in (b'{"unterminated": ', b"\xff\xfe\xfd"):
+                    for headers, detail in (
+                        ({}, "authentication required"),
+                        ({"Authorization": "Bearer not.a.token"}, "invalid token"),
+                    ):
+                        malformed = await env.call(
+                            op,
+                            headers,
+                            content=content,
+                            extra_headers={"content-type": "application/json"},
+                        )
+                        assert malformed.status_code == 401, (content, malformed.text)
+                        assert malformed.json() == {"detail": detail}
+                        assert malformed.headers.get("www-authenticate") == "Bearer"
         elif op.access == "metrics":
             assert response.status_code == 200  # direct loopback scrape
             proxied = await env.call(op, {}, extra_headers={"X-Forwarded-For": "203.0.113.9"})

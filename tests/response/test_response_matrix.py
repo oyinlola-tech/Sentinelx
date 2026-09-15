@@ -13,6 +13,7 @@ import ipaddress
 import json
 import ssl
 import stat
+import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -795,6 +796,10 @@ def adapter_for(kind: str, binary: Path, timeout: float = 10.0) -> FirewallAdapt
 FailureSetup = Callable[[Path], Awaitable[tuple[Path, float, str]]]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the fake nft and iptables binaries are shell scripts; both tools are Linux-only",
+)
 class TestFirewallFailures:
     @pytest.mark.parametrize("kind", ["nftables", "iptables"])
     @pytest.mark.parametrize(

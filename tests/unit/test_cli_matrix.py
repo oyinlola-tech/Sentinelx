@@ -498,6 +498,26 @@ def test_anomaly_train_success(cli_env: Path, fixture_pcap: Path, normal_vectors
         assert stat.S_IMODE(model.stat().st_mode) == 0o600
 
 
+def test_anomaly_train_contamination_defaults_to_the_setting(
+    cli_env: Path, fixture_pcap: Path, normal_vectors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: ANOMALY__ML_CONTAMINATION was accepted but training always used 0.02."""
+    model = cli_env / "models" / "m.joblib"
+    model.parent.mkdir(mode=0o700)
+    monkeypatch.setenv("ANOMALY__ML_CONTAMINATION", "0.1")
+    result = invoke("anomaly", "train", str(fixture_pcap), "-o", str(model))
+    assert result.exit_code == 0, result.output
+
+    from sentinelx.anomaly.ml import load_model
+
+    assert load_model(model).contamination == 0.1
+    explicit = invoke(
+        "anomaly", "train", str(fixture_pcap), "-o", str(model), "--contamination", "0.05"
+    )
+    assert explicit.exit_code == 0, explicit.output
+    assert load_model(model).contamination == 0.05
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission checks")
 def test_anomaly_train_into_a_shared_directory_fails(
     cli_env: Path, fixture_pcap: Path, normal_vectors: None
@@ -614,7 +634,11 @@ def test_doctor_default_environment(cli_env: Path) -> None:
 
     # Detail text describes this machine.
     assert checks["python"]["detail"] == platform.python_version()
-    assert platform.machine().lower() in checks["operating system"]["detail"].lower()
+    # The report uses the normalised architecture name: Windows' AMD64 reads x86_64 and
+    # Linux's aarch64 reads arm64.
+    from sentinelx.system.environment import detect_environment
+
+    assert detect_environment().label() in checks["operating system"]["detail"]
     from sentinelx.system.interfaces import list_interfaces
 
     assert checks["interface enumeration"]["detail"].startswith(f"{len(list_interfaces())} ")

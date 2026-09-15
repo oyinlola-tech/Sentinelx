@@ -26,6 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from sentinelx.api.errors import STORAGE_ERRORS, storage_unavailable
 from sentinelx.common.enums import UserRole
 from sentinelx.common.netutils import in_any_network, parse_ip, parse_networks
 from sentinelx.services.auth import AuthError, Principal, TokenPair
@@ -36,9 +37,11 @@ from sentinelx.telemetry.metrics import metrics
 __all__ = [
     "ACCESS_COOKIE",
     "CSRF_COOKIE",
+    "PUBLIC_PATHS",
     "REFRESH_COOKIE",
     "Admin",
     "Analyst",
+    "AuthenticationGateMiddleware",
     "BodySizeLimitMiddleware",
     "PlatformDep",
     "RateLimitMiddleware",
@@ -143,6 +146,79 @@ def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(CSRF_COOKIE, path="/")
 
 
+#: Paths under ``/api/v1`` served without a user session (each has its own guard).
+PUBLIC_PATHS = frozenset(
+    {
+        "/api/v1/auth/login",  # credential exchange
+        "/api/v1/auth/refresh",  # authenticated by the refresh token itself
+        "/api/v1/system/health",  # liveness probe: status and version only
+        "/api/v1/metrics",  # metrics token, or a direct loopback request
+        "/api/v1/openapi.json",  # only served when docs are enabled
+    }
+)
+
+
+def _presented_token(request: Request) -> tuple[str | None, bool]:
+    """The access token a request carries, and whether it came from the cookie."""
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip() or None, False
+    cookie = request.cookies.get(ACCESS_COOKIE)
+    return (cookie, True) if cookie else (None, False)
+
+
+class AuthenticationGateMiddleware:
+    """Refuse unauthenticated requests to protected ``/api/v1`` routes before routing.
+
+    FastAPI reads and parses a JSON body before it runs a route's dependencies, so an
+    unauthenticated request with a malformed body used to get 422 instead of 401. This
+    runs first: no token, or a token that does not authenticate, is 401 with the same
+    body the dependency gives. A valid token's principal is kept on the request, so
+    the dependency does not look the user up a second time. Roles, CSRF and the forced
+    password change stay with the dependency. WebSocket connections use tickets and
+    are not handled here.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        path = app_path(request)
+        platform: Platform = request.app.state.platform
+        if (
+            not path.startswith("/api/v1/")
+            or path in PUBLIC_PATHS
+            or not platform.settings.api.auth_enabled
+        ):
+            await self.app(scope, receive, send)
+            return
+        token, _ = _presented_token(request)
+        refusal: JSONResponse | None = None
+        if not token:
+            refusal = _unauthenticated("authentication required")
+        else:
+            try:
+                principal = await platform.auth.authenticate(token)
+            except AuthError as exc:
+                refusal = _unauthenticated(str(exc))
+            except STORAGE_ERRORS as exc:
+                refusal = storage_unavailable(request, exc)
+            else:
+                request.state.verified_token = (token, principal)
+        if refusal is not None:
+            await refusal(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def _unauthenticated(detail: str) -> JSONResponse:
+    return JSONResponse({"detail": detail}, status_code=401, headers={"WWW-Authenticate": "Bearer"})
+
+
 async def current_principal(
     request: Request, platform: Annotated[Platform, Depends(get_platform)]
 ) -> Principal:
@@ -150,14 +226,7 @@ async def current_principal(
         # Development only; Settings refuses auth_enabled=False in production.
         return Principal(user_id=0, username="anonymous", role=UserRole.ADMIN)
 
-    header = request.headers.get("authorization", "")
-    token: str | None = None
-    via_cookie = False
-    if header.lower().startswith("bearer "):
-        token = header[7:].strip()
-    elif request.cookies.get(ACCESS_COOKIE):
-        token = request.cookies[ACCESS_COOKIE]
-        via_cookie = True
+    token, via_cookie = _presented_token(request)
     if not token:
         raise HTTPException(
             status_code=401,
@@ -171,12 +240,18 @@ async def current_principal(
         if not expected or not hmac.compare_digest(expected, supplied):
             raise HTTPException(status_code=403, detail="CSRF token missing or invalid")
 
-    try:
-        principal = await platform.auth.authenticate(token)
-    except AuthError as exc:
-        raise HTTPException(
-            status_code=401, detail=str(exc), headers={"WWW-Authenticate": "Bearer"}
-        ) from exc
+    # AuthenticationGateMiddleware has usually validated this token already.
+    verified = getattr(request.state, "verified_token", None)
+    principal: Principal
+    if verified is not None and verified[0] == token:
+        principal = verified[1]
+    else:
+        try:
+            principal = await platform.auth.authenticate(token)
+        except AuthError as exc:
+            raise HTTPException(
+                status_code=401, detail=str(exc), headers={"WWW-Authenticate": "Bearer"}
+            ) from exc
 
     # An account with a generated or reset password may only change it.
     allowed_paths = ("/api/v1/auth/change-password", "/api/v1/auth/me", "/api/v1/auth/logout")

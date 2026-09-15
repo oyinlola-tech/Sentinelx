@@ -1003,6 +1003,7 @@ async def test_paused_database_answers_503_within_the_deadline_and_loses_nothing
         await platform.start(background=False)
         assert platform.persister is not None
         platform.persister.max_backoff_seconds = 0.5
+        platform.persister.write_timeout_seconds = 3
         persister = platform.persister
         app = create_app(settings, platform=platform)
         transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
@@ -1054,6 +1055,32 @@ async def test_paused_database_answers_503_within_the_deadline_and_loses_nothing
         await verify.close()
         assert counts["detections"] == counts["distinct"] == 300
         assert persister.rejected == 0 and persister.dropped == 0
+
+
+async def test_a_slow_batch_is_not_cut_off_by_the_request_deadline(tmp_path: Path) -> None:
+    """A persister batch used the short per-request session deadline, so a batch slower
+    than it (a large batch, a slow disk) was abandoned and retried forever."""
+    async with migrated_database("sqlite", tmp_path, session_timeout_seconds=0.2) as database:
+        settings = Settings(storage={"batch_size": 50, "flush_interval_seconds": 60})
+        bus = EventBus()
+        persister = EventPersister(database, bus, settings, write_timeout_seconds=10)
+        slow_database = database.session
+
+        @contextlib.asynccontextmanager
+        async def slow_session(**kwargs: Any) -> AsyncIterator[Any]:
+            async with slow_database(**kwargs) as session:
+                await asyncio.sleep(0.5)  # longer than the request deadline
+                yield session
+
+        database.session = slow_session  # type: ignore[method-assign]
+        for index in range(20):
+            await persister._enqueue(
+                bus_event(EventType.DETECTION_CREATED, detection_payload(index))
+            )
+        assert await persister.flush() is True
+        database.session = slow_database  # type: ignore[method-assign]
+        assert persister.failed_batches == 0 and persister.written == 20
+        assert (await stored_counts(database))["detections"] == 20
 
 
 async def test_outage_buffer_is_bounded_and_every_drop_is_counted(tmp_path: Path) -> None:

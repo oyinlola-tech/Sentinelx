@@ -30,9 +30,34 @@ from sentinelx.common.errors import (
 from sentinelx.services.auth import AuthError
 from sentinelx.telemetry.logging import get_logger
 
-__all__ = ["install_error_handlers"]
+__all__ = ["STORAGE_ERRORS", "install_error_handlers", "storage_unavailable"]
 
 log = get_logger(__name__)
+
+
+#: The database being unreachable surfaces from SQLAlchemy mid-request (a lost
+#: connection, a refused connect, an exhausted pool) as well as StorageError. All of them
+#: are outages, not programming errors.
+STORAGE_ERRORS: tuple[type[Exception], ...] = (
+    StorageError,
+    OperationalError,
+    InterfaceError,
+    DisconnectionError,
+    PoolTimeoutError,
+)
+
+
+def storage_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    """503 with a correlation id; the detail goes to the log only."""
+    incident = secrets.token_hex(6)
+    log.error(
+        "storage_error",
+        error=str(exc),
+        error_type=type(exc).__name__,
+        error_id=incident,
+        path=request.url.path,
+    )
+    return JSONResponse({"detail": "storage unavailable", "error_id": incident}, status_code=503)
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -88,28 +113,9 @@ def install_error_handlers(app: FastAPI) -> None:
         return JSONResponse({"detail": f"firewall operation failed: {exc}"}, status_code=502)
 
     async def _storage(request: Request, exc: Exception) -> JSONResponse:
-        incident = secrets.token_hex(6)
-        log.error(
-            "storage_error",
-            error=str(exc),
-            error_type=type(exc).__name__,
-            error_id=incident,
-            path=request.url.path,
-        )
-        return JSONResponse(
-            {"detail": "storage unavailable", "error_id": incident}, status_code=503
-        )
+        return storage_unavailable(request, exc)
 
-    # The database being unreachable surfaces from SQLAlchemy mid-request (a lost
-    # connection, a refused connect, an exhausted pool), not as StorageError, which is
-    # only raised at start-up. All of them are outages, not programming errors.
-    for storage_error in (
-        StorageError,
-        OperationalError,
-        InterfaceError,
-        DisconnectionError,
-        PoolTimeoutError,
-    ):
+    for storage_error in STORAGE_ERRORS:
         app.add_exception_handler(storage_error, _storage)
 
     @app.exception_handler(Exception)

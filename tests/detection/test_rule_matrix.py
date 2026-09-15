@@ -111,14 +111,16 @@ class TestDirectoryLoading:
         finally:
             locked.chmod(0o600)
 
-        root = hasattr(os, "geteuid") and os.geteuid() == 0  # root reads mode-000 files
+        # Root reads mode-000 files, and on Windows chmod only sets the read-only
+        # attribute, so the file stays readable there too.
+        readable = (hasattr(os, "geteuid") and os.geteuid() == 0) or os.name == "nt"
         assert sorted(r.id for r in result.rules) == (
-            ["locked", "survivor"] if root else ["survivor"]
+            ["locked", "survivor"] if readable else ["survivor"]
         )
         joined = "\n".join(result.problems)
         assert "dangling.yml: not a regular file" in joined
         assert "directory.yml: not a regular file" in joined
-        if not root:
+        if not readable:
             assert "locked.yml: cannot be read" in joined
 
     def test_oversized_file_is_refused_without_parsing(self, tmp_path: Path) -> None:

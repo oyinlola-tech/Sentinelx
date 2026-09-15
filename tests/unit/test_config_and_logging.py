@@ -201,9 +201,8 @@ def test_removed_settings_in_the_environment_are_ignored(monkeypatch: pytest.Mon
 
 async def test_profile_pipeline_records_per_stage_latency() -> None:
     """Regression: TELEMETRY__PROFILE_PIPELINE was accepted but nothing was recorded."""
-    from prometheus_client import REGISTRY
-
     from sentinelx.pipeline import Pipeline
+    from sentinelx.telemetry.metrics import REGISTRY
     from sentinelx.testing.scenarios import tcp_port_scan
 
     stages = ("decode", "features", "detection", "response")
