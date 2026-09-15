@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState, type FormEvent } from "react";
 import { Wordmark } from "@/components/shell/wordmark";
 import { ConsoleFooter } from "@/components/shell/footer";
-import { Trace } from "@/components/shell/trace";
 import { Button, Field, Input } from "@/components/ui/primitives";
 import { RiskScore } from "@/components/ui/security";
 import { ApiError } from "@/lib/api";
@@ -68,10 +67,10 @@ function LoginForm() {
   }
 
   return (
-    <form onSubmit={submit} className="flex w-full max-w-sm flex-col gap-4" aria-describedby={error ? "login-error" : undefined}>
-      <div>
+    <form onSubmit={submit} className="flex w-full flex-col gap-4" aria-describedby={error ? "login-error" : undefined}>
+      <div className="mb-1">
         <p className="eyebrow">Console access</p>
-        <h2 className="mt-1 font-display text-xl font-semibold">Sign in</h2>
+        <h2 className="heading-display mt-2 text-4xl text-frost">Sign in</h2>
       </div>
       <Field label="Username" htmlFor="username">
         <Input id="username" autoComplete="username" autoFocus required value={username} onChange={(event) => setUsername(event.target.value)} maxLength={64} />
@@ -80,11 +79,11 @@ function LoginForm() {
         <Input id="password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} maxLength={256} />
       </Field>
       {error && (
-        <p id="login-error" role="alert" className="rounded-md border border-sev-critical/40 bg-sev-critical/10 px-3 py-2 text-sm text-sev-critical">
+        <p id="login-error" role="alert" className="rounded-sm border border-sev-critical/50 bg-sev-critical/10 px-3 py-2 text-sm text-sev-critical">
           {error}
         </p>
       )}
-      <Button type="submit" variant="primary" loading={busy} className="justify-between">
+      <Button type="submit" variant="primary" loading={busy} className="mt-1 h-11 justify-between">
         Sign in <ArrowRight className="size-4" aria-hidden />
       </Button>
       <p className="flex items-start gap-1.5 text-xs text-fog">
@@ -95,49 +94,90 @@ function LoginForm() {
   );
 }
 
+/** Plain statements of how SentinelX behaves out of the box; each is enforced in code. */
+const FACTS = [
+  ["Detection only", "by default: nothing touches traffic until you enable prevention"],
+  ["Explained", "every detection lists its evidence and how its risk was scored"],
+  ["Self-hosted", "runs on your own host, air-gapped if you need it"],
+];
+
 export default function LoginPage() {
   return (
     <div className="flex min-h-dvh flex-col">
-      <main className="grid flex-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(24rem,1fr)]">
-        {/* Hero: the thesis, shown with the product's own output rather than described. */}
-        <section className="relative flex flex-col justify-between overflow-hidden border-b border-line px-6 py-8 lg:border-r lg:border-b-0 lg:px-12 lg:py-10" aria-labelledby="hero-title">
-          <Wordmark />
-          <div className="relative my-10 max-w-xl">
-            <h1 id="hero-title" className="font-display text-4xl leading-[1.05] font-bold tracking-tight text-frost sm:text-5xl">
-              Every alert shows its&nbsp;work.
-            </h1>
-            <p className="mt-4 max-w-md text-base text-mist">
-              SentinelX watches the wire, correlates what it sees into incidents, and tells you exactly why it thinks a source is hostile before anything is blocked.
-            </p>
+      <main className="relative flex-1 overflow-hidden">
+        {/* The scope: graticule fading out from the centre, range rings off to the right. */}
+        <div className="graticule pointer-events-none absolute inset-0 [mask-image:radial-gradient(ellipse_at_40%_45%,black_20%,transparent_75%)]" aria-hidden />
+        <div className="range-rings pointer-events-none absolute top-1/2 right-[-18rem] size-[64rem] -translate-y-1/2 rounded-full opacity-40 [mask-image:radial-gradient(circle,black_35%,transparent_70%)]" aria-hidden>
+          <div className="absolute inset-0 origin-center rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,color-mix(in_oklab,var(--color-signal)_18%,transparent)_40deg,transparent_42deg)] motion-safe:animate-[sweep_9s_linear_infinite]" />
+        </div>
+
+        <div className="relative mx-auto flex min-h-full max-w-[1400px] flex-col px-5 py-6 lg:px-10">
+          <header className="flex items-center justify-between">
+            <Wordmark size="md" />
+            <p className="hidden font-mono text-[10px] tracking-[0.14em] text-fog uppercase sm:block">Network intrusion detection &amp; prevention</p>
+          </header>
+
+          <div className="grid flex-1 items-center gap-12 py-12 lg:grid-cols-[minmax(0,7fr)_minmax(22rem,4fr)] lg:gap-16 lg:py-16">
+            <section aria-labelledby="hero-title">
+              <p className="eyebrow flex items-center gap-2">
+                <span className="size-1.5 rounded-full bg-signal" aria-hidden /> Console · sign in to continue
+              </p>
+              <h1 id="hero-title" className="heading-display mt-5 text-[clamp(3.6rem,8.4vw,8.25rem)] text-frost">
+                Every alert
+                <br />
+                shows its <span className="text-signal">work.</span>
+              </h1>
+              <p className="mt-6 max-w-xl text-lg leading-relaxed text-mist">
+                SentinelX watches the wire, correlates what it sees into incidents, and tells you exactly why it thinks a source is hostile, before anything is blocked.
+              </p>
+              <dl className="mt-9 grid max-w-2xl gap-px border border-line bg-line sm:grid-cols-3">
+                {FACTS.map(([term, detail]) => (
+                  <div key={term} className="bg-ground/80 px-4 py-3 backdrop-blur">
+                    <dt className="font-display text-xl font-semibold text-frost">{term}</dt>
+                    <dd className="mt-1 text-xs leading-relaxed text-mist">{detail}</dd>
+                  </div>
+                ))}
+              </dl>
+
+              <figure className="mt-10 hidden max-w-2xl border border-line-strong bg-panel/90 backdrop-blur md:block">
+                <figcaption className="flex items-center justify-between border-b border-line px-4 py-2">
+                  <span className="eyebrow">Example explanation · synthetic fixture</span>
+                  <RiskScore score={EXAMPLE.score} />
+                </figcaption>
+                <div className="grid gap-4 p-4 sm:grid-cols-[minmax(0,1fr)_12rem]">
+                  <div>
+                    <p className="text-sm font-medium text-frost">
+                      {EXAMPLE.title} <span className="font-mono text-xs text-mist">from {EXAMPLE.source}</span>
+                    </p>
+                    <ul className="mt-2 flex flex-col gap-1 text-xs text-mist">
+                      {EXAMPLE.evidence.slice(0, 4).map((line) => (
+                        <li key={line} className="flex gap-2"><span className="text-signal" aria-hidden>›</span>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="border-line sm:border-l sm:pl-4">
+                    <p className="eyebrow">Risk contributions</p>
+                    <ul className="mt-2 space-y-1.5">
+                      {EXAMPLE.factors.map(([label, value]) => (
+                        <li key={label} className="text-xs">
+                          <span className="flex justify-between text-mist"><span>{label}</span><span className="font-mono text-frost tabular">+{value}</span></span>
+                          <span className="mt-1 block h-1 bg-line" aria-hidden><span className="block h-full bg-signal" style={{ width: `${Math.min(100, (value / 45) * 100)}%` }} /></span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                <p className="border-t border-line px-4 py-2 font-mono text-[11px] text-fog">{EXAMPLE.decision}</p>
+              </figure>
+            </section>
+
+            <section className="border border-line-strong bg-panel/95 p-6 shadow-[0_40px_120px_-40px_rgba(0,0,0,0.9)] backdrop-blur sm:p-8" aria-label="Sign in">
+              <Suspense>
+                <LoginForm />
+              </Suspense>
+            </section>
           </div>
-          <Trace className="pointer-events-none absolute inset-x-0 top-[46%] h-24 w-full opacity-40" />
-          <figure className="relative max-w-lg rounded-lg border border-line-strong bg-panel/90 p-4 shadow-2xl backdrop-blur">
-            <figcaption className="mb-3 flex items-center justify-between">
-              <span className="eyebrow">Example explanation · synthetic fixture</span>
-              <RiskScore score={EXAMPLE.score} />
-            </figcaption>
-            <p className="text-sm font-medium text-frost">
-              {EXAMPLE.title} <span className="font-mono text-xs text-mist">from {EXAMPLE.source}</span>
-            </p>
-            <ul className="mt-2 flex flex-col gap-1 text-xs text-mist">
-              {EXAMPLE.evidence.map((line) => (
-                <li key={line} className="flex gap-2"><span className="text-iris" aria-hidden>›</span>{line}</li>
-              ))}
-            </ul>
-            <div className="mt-3 flex h-1.5 gap-[2px] overflow-hidden rounded-sm bg-line" aria-hidden>
-              {EXAMPLE.factors.map(([label, value], index) => (
-                <span key={label} style={{ width: `${value}%`, background: ["#8c9eff", "#5f71d6", "#bcc6ff"][index] }} />
-              ))}
-            </div>
-            <p className="mt-2 font-mono text-2xs text-fog">{EXAMPLE.factors.map(([label, value]) => `${label} +${value}`).join("  ·  ")}</p>
-            <p className="mt-3 border-t border-line pt-2 text-xs text-mist">{EXAMPLE.decision}</p>
-          </figure>
-        </section>
-        <section className="flex items-center justify-center px-6 py-10">
-          <Suspense>
-            <LoginForm />
-          </Suspense>
-        </section>
+        </div>
       </main>
       <ConsoleFooter minimal />
     </div>
